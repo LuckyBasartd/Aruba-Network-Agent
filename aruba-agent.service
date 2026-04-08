@@ -1,0 +1,51 @@
+# /etc/systemd/system/aruba-agent.service
+#
+# Installation:
+#   sudo useradd -r -s /sbin/nologin aruba-agent
+#   sudo mkdir -p /opt/aruba-agent /etc/aruba-agent /var/lib/aruba-agent
+#   sudo cp -r Network\ Agent/* /opt/aruba-agent/
+#   sudo cp config.ini /etc/aruba-agent/config.ini
+#   sudo chmod 600 /etc/aruba-agent/config.ini
+#   sudo chown -R aruba-agent:aruba-agent /opt/aruba-agent /var/lib/aruba-agent
+#   pip3 install requests urllib3 flask scapy
+#   sudo cp aruba-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aruba-agent
+#
+# Logs:
+#   journalctl -u aruba-agent -f
+#
+# Web UI:
+#   http://<host>:8080
+
+[Unit]
+Description=Aruba All-in-One Network Monitoring Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/aruba-agent/main.py /etc/aruba-agent/config.ini
+WorkingDirectory=/opt/aruba-agent
+Restart=on-failure
+RestartSec=10
+
+# Dedicated low-privilege user
+User=aruba-agent
+Group=aruba-agent
+
+# CAP_NET_BIND_SERVICE  — bind UDP 514 (privileged port)
+# CAP_NET_RAW           — Scapy ICMP scanning
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/aruba-agent
+
+[Install]
+WantedBy=multi-user.target

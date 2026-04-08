@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Secrets / config with credentials — never commit these
+config.ini
+.env
+
+# Runtime data
+*.log
+*.csv
+*.cfg
+backups/
+arp/
+firmware/
+
+# macOS
+.DS_Store

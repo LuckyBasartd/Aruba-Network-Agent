@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aruba Network Agent</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body { background: #0d1117; }
+    .navbar-brand { font-weight: 700; letter-spacing: .04em; }
+    .card { border: 1px solid #21262d; background: #161b22; }
+    .card-header { background: #21262d; border-bottom: 1px solid #30363d; font-weight: 600; }
+    .badge-up   { background-color: #238636; }
+    .badge-down { background-color: #da3633; }
+    .status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+    .dot-up     { background:#3fb950; box-shadow: 0 0 6px #3fb950; }
+    .dot-down   { background:#f85149; box-shadow: 0 0 6px #f85149; animation: blink 1s step-start infinite; }
+    .dot-init   { background:#8b949e; }
+    @keyframes blink { 50% { opacity: 0; } }
+    .table-sm td, .table-sm th { padding: .35rem .5rem; font-size:.85rem; }
+    #refresh-timer { font-size:.75rem; color:#8b949e; }
+    .btn-trigger { font-size:.8rem; padding:.25rem .6rem; }
+    .last-event  { font-size:.78rem; color:#8b949e; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark" style="background:#161b22; border-bottom:1px solid #21262d;">
+  <div class="container-fluid">
+    <span class="navbar-brand">
+      <i class="bi bi-router me-2 text-primary"></i>Aruba Network Agent
+    </span>
+    <span id="refresh-timer" class="me-3">Refreshing in <span id="countdown">30</span>s</span>
+    <button class="btn btn-outline-secondary btn-sm" onclick="fetchState()">
+      <i class="bi bi-arrow-clockwise"></i> Refresh Now
+    </button>
+  </div>
+</nav>
+
+<div class="container-fluid py-4 px-4">
+
+  <!-- ── Row 1: Summary cards ─────────────────────────────────────────── -->
+  <div class="row g-3 mb-4">
+    <div class="col-sm-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="display-6 fw-bold text-success" id="stat-switches-up">—</div>
+          <div class="small text-muted">Switches UP</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-sm-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="display-6 fw-bold text-danger" id="stat-switches-down">—</div>
+          <div class="small text-muted">Switches DOWN</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-sm-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="display-6 fw-bold text-info" id="stat-devices">—</div>
+          <div class="small text-muted">Devices in Inventory</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-sm-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="display-6 fw-bold text-warning" id="stat-ap-events">—</div>
+          <div class="small text-muted">AP Events Logged</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Row 2: Switch status + AP Events ─────────────────────────────── -->
+  <div class="row g-3 mb-4">
+
+    <!-- Switch Status -->
+    <div class="col-lg-6">
+      <div class="card h-100">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-hdd-network me-2"></i>Switch Reachability</span>
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-dark table-hover mb-0">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Switch</th>
+                <th>Host</th>
+                <th>Last Seen</th>
+                <th class="d-none d-xl-table-cell">Last Event</th>
+              </tr>
+            </thead>
+            <tbody id="switch-tbody">
+              <tr><td colspan="5" class="text-center text-muted py-3">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- AP Events -->
+    <div class="col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-wifi me-2"></i>AP State Events
+          <span class="badge bg-secondary ms-2" id="ap-event-count">0</span>
+        </div>
+        <div class="card-body p-0" style="max-height:320px; overflow-y:auto;">
+          <table class="table table-sm table-dark table-hover mb-0">
+            <thead class="sticky-top" style="top:0; background:#21262d;">
+              <tr>
+                <th>Time</th>
+                <th>AP Name</th>
+                <th>State</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody id="ap-tbody">
+              <tr><td colspan="4" class="text-center text-muted py-3">No events yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Row 3: Backup + Scanner + ARP ────────────────────────────────── -->
+  <div class="row g-3">
+
+    <!-- Backup -->
+    <div class="col-md-4">
+      <div class="card h-100">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-cloud-arrow-down me-2"></i>Config Backup</span>
+          <button class="btn btn-outline-primary btn-trigger" onclick="triggerBackup()">
+            <i class="bi bi-play-fill"></i> Run Now
+          </button>
+        </div>
+        <div class="card-body">
+          <dl class="row mb-0 small">
+            <dt class="col-5 text-muted">Last Run</dt>
+            <dd class="col-7 mb-1" id="backup-ts">—</dd>
+            <dt class="col-5 text-muted">Successful</dt>
+            <dd class="col-7 mb-1 text-success fw-bold" id="backup-ok">—</dd>
+            <dt class="col-5 text-muted">Failed</dt>
+            <dd class="col-7 mb-1 text-danger fw-bold" id="backup-fail">—</dd>
+          </dl>
+          <div id="backup-failures" class="mt-2"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Network Scanner -->
+    <div class="col-md-4">
+      <div class="card h-100">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-binoculars me-2"></i>Network Scanner</span>
+          <button class="btn btn-outline-primary btn-trigger" onclick="triggerScan()">
+            <i class="bi bi-play-fill"></i> Run Now
+          </button>
+        </div>
+        <div class="card-body">
+          <dl class="row mb-0 small">
+            <dt class="col-5 text-muted">Last Scan</dt>
+            <dd class="col-7 mb-1" id="scan-ts">—</dd>
+            <dt class="col-5 text-muted">Devices Found</dt>
+            <dd class="col-7 mb-1 fw-bold" id="scan-count">—</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <!-- ARP Discovery -->
+    <div class="col-md-4">
+      <div class="card h-100">
+        <div class="card-header">
+          <i class="bi bi-diagram-3 me-2"></i>ARP Discovery
+        </div>
+        <div class="card-body">
+          <table class="table table-sm table-dark mb-0">
+            <thead>
+              <tr><th>Location</th><th>Last Run</th></tr>
+            </thead>
+            <tbody id="arp-tbody">
+              <tr><td colspan="2" class="text-muted text-center">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /row 3 -->
+</div><!-- /container -->
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  const REFRESH_INTERVAL = 30;  // seconds
+  let countdown = REFRESH_INTERVAL;
+  let timer;
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+  const $ = id => document.getElementById(id);
+
+  function fmtTs(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleString();
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return d.toLocaleTimeString();
+  }
+
+  // ── fetch & render ───────────────────────────────────────────────────────
+  async function fetchState() {
+    try {
+      const res  = await fetch('/api/state');
+      const data = await res.json();
+      render(data);
+    } catch(e) {
+      console.error('Failed to fetch state:', e);
+    }
+    resetTimer();
+  }
+
+  function render(data) {
+    renderSwitches(data.switches || []);
+    renderApEvents(data.ap_events || []);
+    renderBackup(data.backup || {});
+    renderScanner(data.scanner || {});
+    renderArp(data.arp_last_run || {});
+
+    // Summary bar
+    const up   = (data.switches || []).filter(s => !s.is_down).length;
+    const down = (data.switches || []).filter(s =>  s.is_down).length;
+    $('stat-switches-up').textContent   = up;
+    $('stat-switches-down').textContent = down;
+    $('stat-devices').textContent       = (data.scanner || {}).device_count ?? '—';
+    $('stat-ap-events').textContent     = (data.ap_events || []).length;
+  }
+
+  function renderSwitches(switches) {
+    if (!switches.length) {
+      $('switch-tbody').innerHTML = '<tr><td colspan="5" class="text-muted text-center py-3">No switches configured.</td></tr>';
+      return;
+    }
+    $('switch-tbody').innerHTML = switches.map(sw => {
+      const dotCls = sw.is_down ? 'dot-down' : 'dot-up';
+      const badge  = sw.is_down
+        ? '<span class="badge badge-down">DOWN</span>'
+        : '<span class="badge badge-up">UP</span>';
+      return `<tr>
+        <td><span class="status-dot ${dotCls}"></span>${badge}</td>
+        <td class="fw-semibold">${esc(sw.hostname)}</td>
+        <td class="text-muted">${esc(sw.host)}</td>
+        <td>${sw.last_seen ? fmtTime(sw.last_seen) : '<span class="text-muted">—</span>'}</td>
+        <td class="d-none d-xl-table-cell last-event">${esc(sw.last_event)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderApEvents(events) {
+    $('ap-event-count').textContent = events.length;
+    if (!events.length) {
+      $('ap-tbody').innerHTML = '<tr><td colspan="4" class="text-muted text-center py-3">No AP events recorded.</td></tr>';
+      return;
+    }
+    $('ap-tbody').innerHTML = events.slice(0, 100).map(e => {
+      const badge = e.state === 'down'
+        ? '<span class="badge badge-down">DOWN</span>'
+        : '<span class="badge badge-up">UP</span>';
+      return `<tr>
+        <td class="text-muted">${fmtTime(e.timestamp)}</td>
+        <td>${esc(e.ap_name)}</td>
+        <td>${badge}</td>
+        <td class="text-muted">${esc(e.source_ip)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderBackup(b) {
+    $('backup-ts').textContent   = fmtTs(b.timestamp);
+    $('backup-ok').textContent   = b.success_count ?? '—';
+    $('backup-fail').textContent = b.failed_count  ?? '—';
+
+    const failures = b.failed_devices || [];
+    if (failures.length) {
+      $('backup-failures').innerHTML = '<ul class="list-unstyled small mb-0">'
+        + failures.map(f =>
+            `<li class="text-danger"><i class="bi bi-x-circle me-1"></i>${esc(f.hostname)} (${esc(f.ip)}) — ${esc(f.issue)}</li>`
+          ).join('')
+        + '</ul>';
+    } else {
+      $('backup-failures').innerHTML = '';
+    }
+  }
+
+  function renderScanner(s) {
+    $('scan-ts').textContent    = fmtTs(s.last_run);
+    $('scan-count').textContent = s.device_count ?? '—';
+  }
+
+  function renderArp(arpRuns) {
+    const entries = Object.entries(arpRuns);
+    if (!entries.length) {
+      $('arp-tbody').innerHTML = '<tr><td colspan="2" class="text-muted text-center">No locations configured.</td></tr>';
+      return;
+    }
+    $('arp-tbody').innerHTML = entries.map(([loc, ts]) =>
+      `<tr><td>${esc(loc)}</td><td>${fmtTs(ts)}</td></tr>`
+    ).join('');
+  }
+
+  // ── manual triggers ──────────────────────────────────────────────────────
+  async function triggerBackup() {
+    await fetch('/api/backup/trigger', { method: 'POST' });
+    showToast('Backup started — check logs for progress.');
+  }
+
+  async function triggerScan() {
+    await fetch('/api/scanner/trigger', { method: 'POST' });
+    showToast('Network scan started — check logs for progress.');
+  }
+
+  function showToast(msg) {
+    const el = document.createElement('div');
+    el.className = 'position-fixed bottom-0 end-0 m-3 alert alert-info alert-dismissible fade show';
+    el.style.zIndex = 9999;
+    el.innerHTML = msg + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 5000);
+  }
+
+  // ── XSS-safe escaping ────────────────────────────────────────────────────
+  function esc(str) {
+    return String(str ?? '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  // ── countdown timer ──────────────────────────────────────────────────────
+  function resetTimer() {
+    clearInterval(timer);
+    countdown = REFRESH_INTERVAL;
+    $('countdown').textContent = countdown;
+    timer = setInterval(() => {
+      countdown--;
+      $('countdown').textContent = countdown;
+      if (countdown <= 0) fetchState();
+    }, 1000);
+  }
+
+  // Boot
+  fetchState();
+</script>
+</body>
+</html>
