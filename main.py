@@ -92,6 +92,21 @@ def main() -> None:
     # Returns a manager — scanner will call manager.sync() after each discovery run
     manager = switch_poller.start_all(cfg, notifier, state)
 
+    # Pre-seed the manager from the existing ip_list.txt so all previously
+    # discovered switches are monitored immediately on startup without waiting
+    # for the next scheduled scan.
+    _ip_list_path = cfg.get("scanner", "ip_list_output",
+                            fallback="/var/lib/aruba-agent/ip_list.txt")
+    try:
+        with open(_ip_list_path) as _f:
+            _existing_ips = [l.strip() for l in _f if l.strip() and not l.startswith("#")]
+        if _existing_ips:
+            log.info("Pre-seeding monitor manager with %d IPs from %s",
+                     len(_existing_ips), _ip_list_path)
+            manager.sync(_existing_ips)
+    except FileNotFoundError:
+        log.info("No existing ip_list found at %s — waiting for first scan", _ip_list_path)
+
     # ── scheduled tasks ──────────────────────────────────────────────────────
     scheduler = Scheduler()
 
