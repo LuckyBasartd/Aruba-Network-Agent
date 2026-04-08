@@ -24,6 +24,7 @@ import re
 import socketserver
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Dict, Tuple
 
 from aruba_agent.notifier import EmailNotifier
@@ -134,6 +135,46 @@ class SyslogServer(socketserver.ThreadingUDPServer):
         self.dedup_lock  = threading.Lock()
 
 
+def _heartbeat_monitor(
+    state: AgentState,
+    notifier: EmailNotifier,
+    timeout_minutes: int,
+    check_interval: int,
+    stop_event: threading.Event,
+) -> None:
+    """
+    Runs in a background thread.
+    Checks every *check_interval* seconds whether any known AP has not sent
+    an 'Added AP' heartbeat within *timeout_minutes*.
+    If so, marks it down and fires an alert — one alert per AP until it recovers.
+    """
+    log.info("AP heartbeat monitor started (timeout=%dm, check every %ds)",
+             timeout_minutes, check_interval)
+    while not stop_event.wait(check_interval):
+        cutoff = datetime.now() - timedelta(minutes=timeout_minutes)
+        with state._lock:
+            stale = {
+                name: ts
+                for name, ts in state.ap_last_seen.items()
+                if ts < cutoff and not state.ap_is_down.get(name, False)
+            }
+        for ap_name, last_seen in stale.items():
+            log.warning("AP heartbeat timeout: %s (last seen %s)", ap_name, last_seen)
+            state.mark_ap_down(ap_name)
+            notifier.send(
+                f"[Aruba] AP DOWN (timeout): {ap_name}",
+                (
+                    f"Access Point Heartbeat Timeout\n"
+                    f"==============================\n"
+                    f"AP Name   : {ap_name}\n"
+                    f"Status    : DOWN\n"
+                    f"Last Seen : {last_seen.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"Timeout   : {timeout_minutes} minutes\n"
+                    f"Note      : No 'Added AP' heartbeat received within the timeout window.\n"
+                ),
+            )
+
+
 def start(
     cfg: configparser.ConfigParser,
     notifier: EmailNotifier,
@@ -141,6 +182,22 @@ def start(
 ) -> None:
     host = cfg.get("syslog", "host", fallback="0.0.0.0")
     port = cfg.getint("syslog", "port", fallback=514)
-    srv  = SyslogServer(host, port, notifier, state)
+
+    # How long without an 'Added AP' heartbeat before we flag the AP as down
+    timeout_minutes = cfg.getint("syslog", "ap_timeout_minutes", fallback=10)
+    # How often to check for stale APs (seconds)
+    check_interval  = cfg.getint("syslog", "ap_check_interval",  fallback=60)
+
+    srv = SyslogServer(host, port, notifier, state)
     threading.Thread(target=srv.serve_forever, name="syslog", daemon=True).start()
     log.info("Syslog listener on %s:%s/udp", host, port)
+
+    # Start heartbeat monitor only if timeout is enabled (> 0)
+    if timeout_minutes > 0:
+        stop_event = threading.Event()
+        threading.Thread(
+            target=_heartbeat_monitor,
+            args=(state, notifier, timeout_minutes, check_interval, stop_event),
+            name="ap-heartbeat",
+            daemon=True,
+        ).start()

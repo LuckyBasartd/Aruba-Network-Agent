@@ -53,6 +53,11 @@ class AgentState:
         # AP syslog events — keep last 200
         self.ap_events: deque[ApEvent] = deque(maxlen=200)
 
+        # AP heartbeat tracking — {ap_name: last_seen_datetime}
+        # Used by the syslog monitor to detect APs that stop checking in
+        self.ap_last_seen: Dict[str, datetime] = {}
+        self.ap_is_down:   Dict[str, bool]     = {}
+
         # Most recent config-backup run
         self.backup: BackupRun = BackupRun()
 
@@ -84,6 +89,32 @@ class AgentState:
                 ApEvent(timestamp=datetime.now(), ap_name=ap_name,
                         state=state, source_ip=source_ip)
             )
+            if state == "up":
+                self.ap_last_seen[ap_name] = datetime.now()
+                self.ap_is_down[ap_name]   = False
+            else:
+                self.ap_is_down[ap_name] = True
+
+    def mark_ap_down(self, ap_name: str) -> None:
+        """Called by the heartbeat monitor when an AP stops checking in."""
+        with self._lock:
+            if not self.ap_is_down.get(ap_name, False):
+                self.ap_is_down[ap_name] = True
+                self.ap_events.appendleft(
+                    ApEvent(timestamp=datetime.now(), ap_name=ap_name,
+                            state="down", source_ip="heartbeat-timeout")
+                )
+
+    def get_ap_summary(self) -> Dict[str, dict]:
+        """Return current known AP states for the web UI."""
+        with self._lock:
+            return {
+                name: {
+                    "last_seen": ts.isoformat(),
+                    "is_down":   self.ap_is_down.get(name, False),
+                }
+                for name, ts in self.ap_last_seen.items()
+            }
 
     # --------------------------------------------------------- backup result
 
