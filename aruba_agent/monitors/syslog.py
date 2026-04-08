@@ -1,15 +1,19 @@
 """
 UDP Syslog listener — AP state change detection (AOS 8.10).
 
-Handles Aruba CEF (Common Event Format) syslog messages from the
-Mobility Conductor / Mobility Director.
+Handles two Aruba syslog formats from the Mobility Conductor / Director:
 
-CEF message format received:
-  CEF:0|Aruba|A92xx|...|msg=<400168> <pid> <NOTI> \|stm\|  Added AP <MAC>-<AP-Name>
-  CEF:0|Aruba|A92xx|...|msg=<400169> <pid> <NOTI> \|stm\|  Deleted AP <MAC>-<AP-Name>
+Format 1 — CEF (Common Event Format):
+  CEF:0|Aruba|A92xx|...|deviceProcessName=stm ... msg=<400168> ... Added AP <MAC>-<AP-Name>
+  CEF:0|Aruba|A92xx|...|deviceProcessName=stm ... msg=<400169> ... Deleted AP <MAC>-<AP-Name>
 
-AP name is extracted from the MAC-APName string at the end of the msg field.
-Also handles legacy plain-syslog nanny format as a fallback.
+Format 2 — Plain BSD syslog:
+  <133>Apr  8 14:12:33 2026 9240-MD-3 stm[13821]: <400168> ... Added AP <MAC>-<AP-Name>
+  <133>Apr  8 14:12:33 2026 9240-MD-3 stm[13821]: <400169> ... Deleted AP <MAC>-<AP-Name>
+
+AP name is extracted from the portion after the last MAC address dash separator.
+Multi-radio APs send one message per radio (same AP name, different MACs).
+A per-AP-name cooldown (60 s) prevents duplicate emails for the same event.
 """
 
 from __future__ import annotations
@@ -19,50 +23,48 @@ import logging
 import re
 import socketserver
 import threading
+import time
+from typing import Dict, Tuple
 
 from aruba_agent.notifier import EmailNotifier
 from aruba_agent.state    import AgentState
 
 log = logging.getLogger(__name__)
 
-# ── CEF parser ───────────────────────────────────────────────────────────────
-# Matches the msg= field value from a CEF syslog line
-_CEF_MSG_RE = re.compile(r"msg=(?P<msg>.+)$")
-
-# Matches "Added AP" or "Deleted AP" followed by MAC-APName
-# MAC format: xx:xx:xx:xx:xx:xx  then  -  then AP name (rest of string)
-_STM_AP_RE = re.compile(
+# ── Shared regex ──────────────────────────────────────────────────────────────
+# Matches "Added AP" or "Deleted AP" followed by MAC-APName anywhere in the line
+_AP_EVENT_RE = re.compile(
     r"(?P<action>Added|Deleted)\s+AP\s+"
     r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}-(?P<ap_name>\S+)",
     re.IGNORECASE,
 )
 
-# ── Legacy plain-syslog fallback ─────────────────────────────────────────────
-# Matches:  nanny[1234]: AP-floor2-office is now down
+# ── Legacy plain-syslog nanny fallback ────────────────────────────────────────
 _NANNY_RE = re.compile(
     r"nanny(?:\[\d+\])?:\s+(?P<ap_name>\S+)\s+is\s+now\s+(?P<state>up|down)",
     re.IGNORECASE,
 )
 
+# Cooldown in seconds — suppress duplicate events for the same AP within this window
+_DEDUP_WINDOW = 60
+
 
 def _parse(raw: str) -> tuple[str, str] | None:
     """
-    Returns (ap_name, state) or None if the message is not an AP event.
+    Returns (ap_name, state) or None if not an AP event.
     state is 'up' or 'down'.
+    Works for both CEF and plain BSD syslog formats.
     """
-    # ── Try CEF format first ──────────────────────────────────────────────
-    if "CEF:" in raw:
-        msg_match = _CEF_MSG_RE.search(raw)
-        if msg_match:
-            msg = msg_match.group("msg")
-            ap_match = _STM_AP_RE.search(msg)
-            if ap_match:
-                action  = ap_match.group("action").lower()
-                ap_name = ap_match.group("ap_name").strip()
-                state   = "up" if action == "added" else "down"
-                return ap_name, state
+    # _AP_EVENT_RE works on both CEF and plain syslog since both contain
+    # "Added AP MAC-Name" or "Deleted AP MAC-Name" in the message body
+    m = _AP_EVENT_RE.search(raw)
+    if m:
+        action  = m.group("action").lower()
+        ap_name = m.group("ap_name").strip()
+        state   = "up" if action == "added" else "down"
+        return ap_name, state
 
-    # ── Fallback: legacy nanny format ────────────────────────────────────
+    # Legacy nanny format fallback
     m = _NANNY_RE.search(raw)
     if m:
         return m.group("ap_name"), m.group("state").lower()
@@ -85,6 +87,18 @@ class _Handler(socketserver.BaseRequestHandler):
 
         ap_name, state = result
         source_ip = self.client_address[0]
+
+        # ── Deduplication — one alert per AP per state per window ────────
+        now = time.monotonic()
+        key = (ap_name, state)
+        with self.server.dedup_lock:
+            last = self.server.dedup_cache.get(key, 0)
+            if now - last < _DEDUP_WINDOW:
+                log.debug("Suppressing duplicate event: AP %s → %s", ap_name, state.upper())
+                # Still update state so the dashboard stays accurate
+                self.server.state.add_ap_event(ap_name, state, source_ip)
+                return
+            self.server.dedup_cache[key] = now
 
         log.info("AP %s → %s  (src=%s)", ap_name, state.upper(), source_ip)
         self.server.state.add_ap_event(ap_name, state, source_ip)
@@ -114,8 +128,10 @@ class SyslogServer(socketserver.ThreadingUDPServer):
         state: AgentState,
     ) -> None:
         super().__init__((host, port), _Handler)
-        self.notifier = notifier
-        self.state    = state
+        self.notifier    = notifier
+        self.state       = state
+        self.dedup_cache: Dict[Tuple[str, str], float] = {}
+        self.dedup_lock  = threading.Lock()
 
 
 def start(
