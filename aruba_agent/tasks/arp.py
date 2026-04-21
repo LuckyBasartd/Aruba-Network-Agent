@@ -25,7 +25,7 @@ from aruba_agent.state      import AgentState
 
 log = logging.getLogger(__name__)
 
-_VLAN_RE = re.compile(r"^vlan[23]\d{2}$", re.IGNORECASE)
+_VLAN_RE = re.compile(r"^vlan\d+$", re.IGNORECASE)
 
 
 class ArpDiscoveryTask:

@@ -211,14 +211,18 @@ def start_all(
     then add any static [switch.*] entries from config.ini.
     Returns the manager so the scanner can call manager.sync() later.
     """
+    # Global defaults come from [credentials] only — per-switch overrides are applied
+    # inside manager.add() via the individual [switch.*] sections below.
+    # There is no global [monitoring] section; per-switch values default to the
+    # constants defined in SwitchMonitor.__init__ (poll_interval=30, threshold=3).
     manager = SwitchMonitorManager(
-        username          = cfg.get("credentials", "username",          fallback="admin"),
-        password          = cfg.get("credentials", "password",          fallback=""),
+        username          = cfg.get("credentials", "username", fallback="admin"),
+        password          = cfg.get("credentials", "password", fallback=""),
         notifier          = notifier,
         state             = state,
-        verify_ssl        = cfg.getboolean("monitoring", "verify_ssl",        fallback=False),
-        poll_interval     = cfg.getint("monitoring",    "poll_interval",      fallback=30),
-        failure_threshold = cfg.getint("monitoring",    "failure_threshold",  fallback=3),
+        verify_ssl        = False,
+        poll_interval     = 30,
+        failure_threshold = 3,
     )
 
     # Seed with any manually configured switches

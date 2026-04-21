@@ -74,6 +74,8 @@ class ArubaCXSession:
             except requests.exceptions.RequestException as exc:
                 err = str(exc)
                 if any(kw in err for kw in ("Connection refused", "timed out", "Timeout")):
+                    # Host is unreachable — no point trying remaining API versions
+                    # on the same host; bail out immediately.
                     self.error = err
                     return False
                 self.error = err
