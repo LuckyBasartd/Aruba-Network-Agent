@@ -25,10 +25,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/aruba-agent/main.py /etc/aruba-agent/config.ini
+ExecStart=/usr/bin/python3 -u /opt/aruba-agent/main.py /etc/aruba-agent/config.ini
 WorkingDirectory=/opt/aruba-agent
 Restart=on-failure
 RestartSec=10
+
+# Explicit output capture — routes stdout+stderr to the systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aruba-agent
 
 # Dedicated low-privilege user
 User=aruba-agent
@@ -44,8 +49,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-PrivateDevices=true
-ReadWritePaths=/var/lib/aruba-agent
+PrivateDevices=false
+ReadWritePaths=/var/lib/aruba-agent /etc/aruba-agent
 
 [Install]
 WantedBy=multi-user.target
