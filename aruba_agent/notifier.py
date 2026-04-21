@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 class EmailNotifier:
     def __init__(self, cfg: configparser.ConfigParser) -> None:
         # Use cfg.get(section, key, fallback=...) so missing sections never crash
+        self.enabled  = cfg.getboolean("smtp", "enabled",  fallback=True)
         self.host     = cfg.get("smtp",     "host",     fallback="localhost")
         self.port     = cfg.getint("smtp",  "port",     fallback=587)
         self.use_tls  = cfg.getboolean("smtp", "use_tls", fallback=True)
@@ -33,6 +34,9 @@ class EmailNotifier:
         self._lock = threading.Lock()
 
     def send(self, subject: str, body: str) -> None:
+        if not self.enabled:
+            log.debug("Email notifications disabled — skipping: %s", subject)
+            return
         if not self.to:
             log.warning("No recipients configured — skipping: %s", subject)
             return
