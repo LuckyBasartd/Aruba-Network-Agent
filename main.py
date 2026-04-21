@@ -79,7 +79,12 @@ def main() -> None:
     )
 
     cfg      = load_config(config_path)
-    state    = AgentState()
+    state    = AgentState(
+        ap_registry_path=cfg.get(
+            "syslog", "ap_registry",
+            fallback="/var/lib/aruba-agent/ap_registry.json",
+        )
+    )
     notifier = EmailNotifier(cfg)
 
     # ── on-demand firmware update ────────────────────────────────────────────

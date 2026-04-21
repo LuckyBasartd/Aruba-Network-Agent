@@ -63,7 +63,7 @@
 
   <!-- ── Row 1: Summary cards ─────────────────────────────────────────── -->
   <div class="row g-3 mb-4">
-    <div class="col-sm-6 col-md-3">
+    <div class="col-sm-6 col-md-2">
       <div class="card h-100 stat-card" id="card-up" onclick="setFilter('up')" title="Click to show UP switches only">
         <div class="card-body text-center">
           <div class="display-6 fw-bold text-success" id="stat-switches-up">—</div>
@@ -71,7 +71,7 @@
         </div>
       </div>
     </div>
-    <div class="col-sm-6 col-md-3">
+    <div class="col-sm-6 col-md-2">
       <div class="card h-100 stat-card" id="card-down" onclick="setFilter('down')" title="Click to show DOWN switches only">
         <div class="card-body text-center">
           <div class="display-6 fw-bold text-danger" id="stat-switches-down">—</div>
@@ -79,7 +79,7 @@
         </div>
       </div>
     </div>
-    <div class="col-sm-6 col-md-3">
+    <div class="col-sm-6 col-md-2">
       <div class="card h-100">
         <div class="card-body text-center">
           <div class="display-6 fw-bold text-info" id="stat-devices">—</div>
@@ -87,11 +87,27 @@
         </div>
       </div>
     </div>
-    <div class="col-sm-6 col-md-3">
+    <div class="col-sm-6 col-md-2">
       <div class="card h-100">
         <div class="card-body text-center">
-          <div class="display-6 fw-bold text-warning" id="stat-ap-events">—</div>
-          <div class="small text-muted">AP Events Logged</div>
+          <div class="display-6 fw-bold text-secondary" id="stat-ap-total">—</div>
+          <div class="small text-muted">APs Known</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-sm-6 col-md-2">
+      <div class="card h-100 stat-card" id="card-ap-up" onclick="setApFilter('up')" title="Click to show UP APs only">
+        <div class="card-body text-center">
+          <div class="display-6 fw-bold text-success" id="stat-ap-up">—</div>
+          <div class="small text-muted">APs UP <i class="bi bi-funnel ms-1" style="font-size:.7rem"></i></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-sm-6 col-md-2">
+      <div class="card h-100 stat-card" id="card-ap-down" onclick="setApFilter('down')" title="Click to show DOWN APs only">
+        <div class="card-body text-center">
+          <div class="display-6 fw-bold text-danger" id="stat-ap-down">—</div>
+          <div class="small text-muted">APs DOWN <i class="bi bi-funnel ms-1" style="font-size:.7rem"></i></div>
         </div>
       </div>
     </div>
@@ -160,7 +176,39 @@
     </div>
   </div>
 
-  <!-- ── Row 3: Backup + Scanner + ARP ────────────────────────────────── -->
+  <!-- ── Row 3: AP Inventory ──────────────────────────────────────────── -->
+  <div class="row g-3 mb-4">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>
+            <i class="bi bi-wifi me-2"></i>AP Inventory
+            <span id="ap-filter-badge" class="badge bg-primary ms-2 d-none"></span>
+          </span>
+          <button class="btn btn-outline-secondary btn-sm py-0" id="clear-ap-filter-btn"
+                  onclick="setApFilter('all')" style="display:none!important">
+            <i class="bi bi-x"></i> All
+          </button>
+        </div>
+        <div class="card-body p-0" style="max-height:320px; overflow-y:auto;">
+          <table class="table table-sm table-dark table-hover mb-0">
+            <thead class="sticky-top" style="top:0; background:#21262d;">
+              <tr>
+                <th>Status</th>
+                <th>AP Name</th>
+                <th>Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="ap-inventory-tbody">
+              <tr><td colspan="3" class="text-center text-muted py-3">No APs discovered yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Row 4: Backup + Scanner + ARP ────────────────────────────────── -->
   <div class="row g-3">
     <div class="col-md-4">
       <div class="card h-100">
@@ -251,10 +299,12 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
   const REFRESH_INTERVAL = 30;
-  let countdown  = REFRESH_INTERVAL;
+  let countdown    = REFRESH_INTERVAL;
   let timer;
-  let activeFilter = 'all';   // 'all' | 'up' | 'down'
-  let allSwitches  = [];
+  let activeFilter   = 'all';   // 'all' | 'up' | 'down'
+  let activeApFilter = 'all';   // 'all' | 'up' | 'down'
+  let allSwitches    = [];
+  let allAps         = [];
   let backupModal;
 
   window.addEventListener('DOMContentLoaded', () => {
@@ -317,18 +367,24 @@
 
   function render(data) {
     allSwitches = data.switches || [];
+    allAps      = data.ap_inventory || [];
     renderSwitches(allSwitches);
     renderApEvents(data.ap_events || []);
+    renderApInventory(allAps);
     renderBackup(data.backup || {});
     renderScanner(data.scanner || {});
     renderArp(data.arp_last_run || {});
 
-    const up   = allSwitches.filter(s => !s.is_down).length;
-    const down = allSwitches.filter(s =>  s.is_down).length;
-    $('stat-switches-up').textContent   = up;
-    $('stat-switches-down').textContent = down;
+    const swUp   = allSwitches.filter(s => !s.is_down).length;
+    const swDown = allSwitches.filter(s =>  s.is_down).length;
+    const apUp   = allAps.filter(a => !a.is_down).length;
+    const apDown = allAps.filter(a =>  a.is_down).length;
+    $('stat-switches-up').textContent   = swUp;
+    $('stat-switches-down').textContent = swDown;
     $('stat-devices').textContent       = (data.scanner || {}).device_count ?? '—';
-    $('stat-ap-events').textContent     = (data.ap_events || []).length;
+    $('stat-ap-total').textContent      = allAps.length || '—';
+    $('stat-ap-up').textContent         = allAps.length ? apUp   : '—';
+    $('stat-ap-down').textContent       = allAps.length ? apDown : '—';
   }
 
   function renderSwitches(switches) {
@@ -401,6 +457,53 @@
           `<tr><td>${esc(loc)}</td><td>${fmtTs(ts)}</td></tr>`
         ).join('')
       : '<tr><td colspan="2" class="text-muted text-center">No locations configured.</td></tr>';
+  }
+
+  // ── AP inventory filter ──────────────────────────────────────────────────
+  function setApFilter(f) {
+    if (activeApFilter === f) f = 'all';
+    activeApFilter = f;
+
+    ['card-ap-up','card-ap-down'].forEach(id => $(id).classList.remove('active-filter'));
+    if (f === 'up')   $('card-ap-up').classList.add('active-filter');
+    if (f === 'down') $('card-ap-down').classList.add('active-filter');
+
+    const badge   = $('ap-filter-badge');
+    const clearBtn = $('clear-ap-filter-btn');
+    if (f === 'all') {
+      badge.classList.add('d-none');
+      clearBtn.style.setProperty('display','none','important');
+    } else {
+      badge.textContent = f.toUpperCase();
+      badge.classList.remove('d-none');
+      clearBtn.style.removeProperty('display');
+    }
+    renderApInventory(allAps);
+  }
+
+  function renderApInventory(aps) {
+    const filtered = activeApFilter === 'all' ? aps
+                   : aps.filter(a => activeApFilter === 'down' ? a.is_down : !a.is_down);
+
+    if (!filtered.length) {
+      const msg = aps.length === 0 ? 'No APs discovered yet.'
+                : `No APs currently ${activeApFilter.toUpperCase()}.`;
+      $('ap-inventory-tbody').innerHTML =
+        `<tr><td colspan="3" class="text-center text-muted py-3">${msg}</td></tr>`;
+      return;
+    }
+
+    $('ap-inventory-tbody').innerHTML = filtered.map(a => {
+      const dotCls = a.is_down ? 'dot-down' : 'dot-up';
+      const badge  = a.is_down
+        ? '<span class="badge badge-down">DOWN</span>'
+        : '<span class="badge badge-up">UP</span>';
+      return `<tr>
+        <td><span class="status-dot ${dotCls}"></span>${badge}</td>
+        <td class="fw-semibold">${esc(a.ap_name)}</td>
+        <td class="text-muted">${fmtTs(a.last_seen)}</td>
+      </tr>`;
+    }).join('');
   }
 
   // ── backup file modal ─────────────────────────────────────────────────────

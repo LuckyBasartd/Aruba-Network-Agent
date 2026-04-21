@@ -40,6 +40,19 @@ _AP_EVENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches stm message 305003: "AP <name> is down"
+_AP_IS_DOWN_RE = re.compile(
+    r"<305003>\s.*?\bAP\s+(?P<ap_name>\S+)\s+is\s+down",
+    re.IGNORECASE,
+)
+
+# Matches stm message 305061: "AP <name> ip ... down, reason: ..."
+# Also matches the simpler variant "AP <name> ... down"
+_AP_HB_TIMEOUT_RE = re.compile(
+    r"<305061>\s.*?\bAP\s+(?P<ap_name>\S+)\s+(?:ip\s+\S+\s+.*?)?down",
+    re.IGNORECASE,
+)
+
 # ── Legacy plain-syslog nanny fallback ────────────────────────────────────────
 _NANNY_RE = re.compile(
     r"nanny(?:\[\d+\])?:\s+(?P<ap_name>\S+)\s+is\s+now\s+(?P<state>up|down)",
@@ -64,6 +77,16 @@ def _parse(raw: str) -> tuple[str, str] | None:
         ap_name = m.group("ap_name").strip()
         state   = "up" if action == "added" else "down"
         return ap_name, state
+
+    # 305003: "AP <name> is down" — definitive down from stm
+    m = _AP_IS_DOWN_RE.search(raw)
+    if m:
+        return m.group("ap_name").strip(), "down"
+
+    # 305061: "AP <name> ip ... down, reason: ..." — controller heartbeat timeout
+    m = _AP_HB_TIMEOUT_RE.search(raw)
+    if m:
+        return m.group("ap_name").strip(), "down"
 
     # Legacy nanny format fallback
     m = _NANNY_RE.search(raw)
@@ -102,9 +125,24 @@ class _Handler(socketserver.BaseRequestHandler):
             self.server.dedup_cache[key] = now
 
         log.info("AP %s → %s  (src=%s)", ap_name, state.upper(), source_ip)
+
+        # Register the AP in the persistent registry (no-op if already known)
+        self.server.state.register_ap(ap_name, source_ip)
+
+        # Determine previous state before updating
+        was_down = self.server.state.ap_is_down.get(ap_name, None)
         self.server.state.add_ap_event(ap_name, state, source_ip)
 
-        icon = "DOWN" if state == "down" else "UP"
+        # Keep the persistent registry current
+        self.server.state.update_ap_registry(ap_name, source_ip, is_down=(state == "down"))
+
+        # Only email on DOWN events or recovery (UP after being DOWN)
+        # Suppress routine heartbeat UP events for APs that were already up
+        should_alert = (state == "down") or (state == "up" and was_down is True)
+        if not should_alert:
+            return
+
+        icon = "DOWN" if state == "down" else "RECOVERED"
         self.server.notifier.send(
             f"[Aruba] AP {icon}: {ap_name}",
             (
@@ -152,15 +190,11 @@ def _heartbeat_monitor(
              timeout_minutes, check_interval)
     while not stop_event.wait(check_interval):
         cutoff = datetime.now() - timedelta(minutes=timeout_minutes)
-        with state._lock:
-            stale = {
-                name: ts
-                for name, ts in state.ap_last_seen.items()
-                if ts < cutoff and not state.ap_is_down.get(name, False)
-            }
+        stale  = state.get_stale_aps(cutoff)
         for ap_name, last_seen in stale.items():
             log.warning("AP heartbeat timeout: %s (last seen %s)", ap_name, last_seen)
             state.mark_ap_down(ap_name)
+            state.update_ap_registry(ap_name, "heartbeat-timeout", is_down=True)
             notifier.send(
                 f"[Aruba] AP DOWN (timeout): {ap_name}",
                 (
