@@ -24,7 +24,11 @@ log = logging.getLogger(__name__)
 
 
 class _ProgressFile:
-    """Wraps an open file to log upload progress every 20%."""
+    """Wraps an open file to log upload progress every 20%.
+
+    Supports use as a context manager so the underlying file is always closed,
+    even if an exception occurs during the upload.
+    """
 
     def __init__(self, path: str, ip: str) -> None:
         self._f        = open(path, "rb")
@@ -48,6 +52,12 @@ class _ProgressFile:
 
     def close(self) -> None:
         self._f.close()
+
+    def __enter__(self) -> "_ProgressFile":
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
 
 
 class FirmwareUpdater:
@@ -111,23 +121,21 @@ class FirmwareUpdater:
                 result["msg"] = f"Login failed: {cx.error}"
                 return result
 
-            url     = f"{cx.base_url}firmware?image={partition}"
-            wrapped = _ProgressFile(self.fw_path, ip)
-            fname   = os.path.basename(self.fw_path)
+            url   = f"{cx.base_url}firmware?image={partition}"
+            fname = os.path.basename(self.fw_path)
             try:
-                resp = cx._session.post(
-                    url,
-                    files={"fileupload": (fname, wrapped, "application/octet-stream")},
-                    verify=False,
-                    timeout=900,
-                )
-                wrapped.close()
+                with _ProgressFile(self.fw_path, ip) as wrapped:
+                    resp = cx._session.post(
+                        url,
+                        files={"fileupload": (fname, wrapped, "application/octet-stream")},
+                        verify=False,
+                        timeout=900,
+                    )
                 if resp.status_code in (200, 201, 202):
                     result["status"] = "UPDATED"
                 else:
                     result["msg"] = f"HTTP {resp.status_code}"
             except Exception as exc:
-                wrapped.close()
                 result["msg"] = str(exc)
 
         return result
