@@ -3,16 +3,23 @@ Simple daily task scheduler.
 
 Registers callables at a fixed HH:MM and fires them once per calendar day.
 Checks the clock every 60 s in a daemon thread.
+
+A ±1-minute tolerance window is used when comparing the current time to the
+configured schedule so that a tick delayed by system load will never silently
+skip a task for the entire day.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Callable, List, Tuple
 
 log = logging.getLogger(__name__)
+
+# How many minutes either side of the scheduled HH:MM are still considered "on time".
+_TOLERANCE_MINUTES = 1
 
 
 class Scheduler:
@@ -28,10 +35,18 @@ class Scheduler:
     def _tick(self) -> None:
         now   = datetime.now()
         today = now.date()
-        hhmm  = now.strftime("%H:%M")
         for time_str, fn in self._tasks:
             key = id(fn)
-            if hhmm == time_str and self._last_run.get(key) != today:
+            if self._last_run.get(key) == today:
+                continue   # already ran today
+            try:
+                hh, mm = map(int, time_str.split(":"))
+                scheduled = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            except (ValueError, AttributeError):
+                log.warning("Scheduler: invalid time string '%s' — skipping", time_str)
+                continue
+            # Fire if we're within the tolerance window of the scheduled time
+            if abs((now - scheduled).total_seconds()) <= _TOLERANCE_MINUTES * 60:
                 self._last_run[key] = today
                 name = getattr(fn, "__name__", repr(fn))
                 log.info("Scheduler: firing '%s' at %s", name, time_str)
