@@ -1,18 +1,17 @@
 # Aruba Network Agent
 
-An all-in-one monitoring and automation agent for Aruba infrastructure, designed to run as a systemd service on **AlmaLinux 9**.
+A monitoring and automation agent for Aruba switch infrastructure, designed to run as a systemd service on **AlmaLinux 9**.
 
 ## Features
 
 | Feature | Description |
 |---|---|
-| **AP Monitoring** | Syslog listener (UDP 514) parses AOS 8.10 Conductor messages and fires email alerts on AP UP/DOWN state changes |
 | **Switch Reachability** | Active REST API polling every 30s per switch; alerts after 3 consecutive failures, clears on recovery |
 | **Auto-Discovery** | ICMP scan of configured subnets discovers Aruba switches by hostname; newly found switches are automatically added to reachability monitoring |
 | **Config Backup** | Downloads running-config from every discovered switch via AOS-CX REST API; rolling 7-day retention |
 | **ARP Discovery** | Queries router ARP tables per campus location via CLI API; enriches with nmap DNS data; outputs timestamped CSVs |
 | **Firmware Update** | Two-phase concurrent firmware compliance check and upload (on-demand) |
-| **Web Dashboard** | Flask-based dark UI with live switch status, AP event log, backup results, and manual Run Now triggers |
+| **Web Dashboard** | Flask-based dark UI with live switch status, backup results, and manual Run Now triggers |
 
 ## Project Structure
 
@@ -28,7 +27,6 @@ Aruba-Network-Agent/
     ├── state.py                     # Shared in-memory state (monitors → web UI)
     ├── scheduler.py                 # Daily HH:MM task scheduler
     ├── monitors/
-    │   ├── syslog.py                # UDP syslog listener (AP events)
     │   └── switch_poller.py         # Switch reachability poller + dynamic manager
     ├── tasks/
     │   ├── backup.py                # Config backup task
@@ -44,7 +42,6 @@ Aruba-Network-Agent/
 ## Requirements
 
 - AlmaLinux 9 (Python 3.9+)
-- Aruba Mobility Conductor running AOS 8.10
 - Aruba AOS-CX 6300M switches running AOS-CX 10.13
 - `nmap` installed on the agent host (for ARP discovery)
 
@@ -127,7 +124,6 @@ sudo systemctl enable --now aruba-agent
 
 ```bash
 sudo firewall-cmd --permanent --add-port=8080/tcp   # Web UI
-sudo firewall-cmd --permanent --add-port=514/udp    # Syslog
 sudo firewall-cmd --reload
 ```
 
@@ -138,7 +134,6 @@ sudo firewall-cmd --reload
 Access at `http://<server-ip>:8080`
 
 - **Switch Reachability** — live UP/DOWN status for all monitored switches
-- **AP State Events** — real-time log of AP UP/DOWN events from syslog
 - **Config Backup** — last run summary with success/failure counts; Run Now button
 - **Network Scanner** — last scan time, device count; Run Now button
 - **ARP Discovery** — last run timestamp per campus location
@@ -185,10 +180,6 @@ Continuous  Switch Reachability Poller
          Poll /system endpoint every 30s per switch
          Alert after 3 consecutive failures
          Clear alert on recovery
-
-Continuous  Syslog Listener (UDP 514)
-         Parse Conductor nanny messages
-         Email alert on AP UP/DOWN state changes
 ```
 
 ## Configuration Reference
@@ -211,10 +202,6 @@ host     = 0.0.0.0
 port     = 8080
 username =                   # leave blank to disable Basic Auth
 password =
-
-[syslog]
-host = 0.0.0.0
-port = 514
 
 [switch.<name>]         # Static switch — monitored immediately at startup
 host              = 192.168.1.1
@@ -250,16 +237,6 @@ ip_list        = /var/lib/aruba-agent/ip_list.txt
 target_version = 10.13.1150
 image_path     = /var/lib/aruba-agent/firmware/ArubaOS-CX_6400-6300_10_13_1150.swi
 max_workers    = 2
-```
-
-## Conductor Syslog Configuration
-
-Point the Mobility Conductor syslog output at the agent host:
-
-```
-(config)# logging <agent-server-ip>
-(config)# logging level informational
-(config)# write memory
 ```
 
 ## AOS-CX API Versions

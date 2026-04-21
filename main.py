@@ -28,7 +28,7 @@ log = logging.getLogger("aruba-agent")
 from aruba_agent.notifier               import EmailNotifier
 from aruba_agent.state                  import AgentState
 from aruba_agent.scheduler              import Scheduler
-from aruba_agent.monitors               import syslog, switch_poller
+from aruba_agent.monitors               import switch_poller
 from aruba_agent.tasks.backup           import BackupTask
 from aruba_agent.tasks.scanner          import NetworkScannerTask
 from aruba_agent.tasks.arp              import ArpDiscoveryTask
@@ -79,12 +79,7 @@ def main() -> None:
     )
 
     cfg      = load_config(config_path)
-    state    = AgentState(
-        ap_registry_path=cfg.get(
-            "syslog", "ap_registry",
-            fallback="/var/lib/aruba-agent/ap_registry.json",
-        )
-    )
+    state    = AgentState()
     notifier = EmailNotifier(cfg)
 
     # ── on-demand firmware update ────────────────────────────────────────────
@@ -93,7 +88,6 @@ def main() -> None:
         return
 
     # ── continuous monitors ──────────────────────────────────────────────────
-    syslog.start(cfg, notifier, state)
     # Returns a manager — scanner will call manager.sync() after each discovery run
     manager = switch_poller.start_all(cfg, notifier, state)
 
