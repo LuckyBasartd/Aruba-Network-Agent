@@ -207,8 +207,10 @@ password = YourAppPassword
 to       = noc@example.com, admin@example.com
 
 [web]
-host = 0.0.0.0
-port = 8080
+host     = 0.0.0.0
+port     = 8080
+username =                   # leave blank to disable Basic Auth
+password =
 
 [syslog]
 host = 0.0.0.0

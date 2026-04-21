@@ -9,17 +9,22 @@ Routes:
   POST /api/scanner/trigger         — Fire a manual network scan
   GET  /api/backups/<hostname>      — List backup files for a switch
   GET  /api/backups/<hostname>/<filename> — Download a specific backup file
+
+Optional HTTP Basic Auth:
+  Set [web] username and password in config.ini to enable.  Leave both blank
+  (the default) to run without authentication (trusted-network mode).
 """
 
 from __future__ import annotations
 
 import configparser
+import functools
 import logging
 import os
 import threading
 from typing import Callable, Optional
 
-from flask import Flask, jsonify, render_template, send_file, abort
+from flask import Flask, jsonify, render_template, send_file, abort, request, Response
 
 from aruba_agent.state import AgentState
 
@@ -36,31 +41,61 @@ def create_app(
     app.config["JSON_SORT_KEYS"] = False
 
     backup_path = "/var/lib/aruba-agent/backups"
+    _auth_user  = ""
+    _auth_pass  = ""
     if cfg:
         backup_path = cfg.get("backup", "backup_path", fallback=backup_path)
+        _auth_user  = cfg.get("web", "username", fallback="")
+        _auth_pass  = cfg.get("web", "password", fallback="")
+
+    _auth_enabled = bool(_auth_user and _auth_pass)
+    if _auth_enabled:
+        log.info("Web UI: HTTP Basic Auth enabled (user=%s)", _auth_user)
+    else:
+        log.info("Web UI: HTTP Basic Auth disabled — set [web] username/password to enable")
 
     # ---------------------------------------------------------------- helpers
 
     def _run_in_thread(fn: Callable, name: str) -> None:
         threading.Thread(target=fn, name=name, daemon=True).start()
 
+    def _require_auth(fn: Callable) -> Callable:
+        """Decorator: enforce HTTP Basic Auth when credentials are configured."""
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not _auth_enabled:
+                return fn(*args, **kwargs)
+            auth = request.authorization
+            if auth and auth.username == _auth_user and auth.password == _auth_pass:
+                return fn(*args, **kwargs)
+            return Response(
+                "Authentication required",
+                401,
+                {"WWW-Authenticate": 'Basic realm="Aruba Agent"'},
+            )
+        return wrapper
+
     # --------------------------------------------------------------- routes
 
     @app.get("/")
+    @_require_auth
     def dashboard():
         return render_template("dashboard.html")
 
     @app.get("/api/state")
+    @_require_auth
     def api_state():
         return jsonify(state.to_dict())
 
     @app.get("/api/devices")
+    @_require_auth
     def api_devices():
         with state._lock:
             devices = list(state.device_inventory)
         return jsonify(devices)
 
     @app.post("/api/backup/trigger")
+    @_require_auth
     def api_backup_trigger():
         if backup_fn is None:
             return jsonify({"error": "Backup not configured"}), 503
@@ -69,6 +104,7 @@ def create_app(
         return jsonify({"status": "triggered"})
 
     @app.post("/api/scanner/trigger")
+    @_require_auth
     def api_scanner_trigger():
         if scanner_fn is None:
             return jsonify({"error": "Scanner not configured"}), 503
@@ -77,6 +113,7 @@ def create_app(
         return jsonify({"status": "triggered"})
 
     @app.get("/api/backups/<hostname>")
+    @_require_auth
     def api_backup_list(hostname: str):
         """Return a sorted list of backup filenames for a switch (newest first)."""
         # Sanitise hostname — only allow safe characters
@@ -92,6 +129,7 @@ def create_app(
         return jsonify(files)
 
     @app.get("/api/backups/<hostname>/<filename>")
+    @_require_auth
     def api_backup_download(hostname: str, filename: str):
         """Stream a backup .cfg file as a download."""
         if not all(c.isalnum() or c in "-_." for c in hostname):
