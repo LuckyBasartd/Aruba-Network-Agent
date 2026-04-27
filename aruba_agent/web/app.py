@@ -263,11 +263,55 @@ def start(
     app: Flask,
     host: str = "0.0.0.0",
     port: int  = 8080,
+    threads: int = 8,
 ) -> None:
-    """Start Flask in a background daemon thread (non-blocking)."""
-    def _run() -> None:
-        app.run(host=host, port=port, use_reloader=False, threaded=True)
+    """
+    Start Flask under a production WSGI server in a background daemon thread.
 
-    threading.Thread(target=_run, name="web-ui", daemon=True).start()
-    log.info("Web UI available at http://%s:%d",
-             host if host != "0.0.0.0" else "localhost", port)
+    Uses **waitress** as the WSGI server. Why waitress and not gunicorn:
+
+      * Single-process, multi-threaded — shared in-memory ``AgentState``
+        keeps working without forks or IPC.
+      * Pure Python, no native dependencies, runs on AlmaLinux without
+        compiler toolchain headaches.
+      * Doesn't claim signal handlers, so main.py's SIGTERM/SIGINT
+        graceful shutdown keeps working.
+      * Genuine production server (it's the default for Pyramid).
+
+    Falls back to werkzeug's dev server only if waitress isn't installed
+    — with a loud warning so it can't silently happen in production.
+    """
+    try:
+        from waitress import serve  # type: ignore[import]
+    except ImportError:
+        log.warning(
+            "waitress is NOT installed — falling back to werkzeug dev server. "
+            "This is fine for local dev but UNSUPPORTED in production. "
+            "Run: pip3 install waitress"
+        )
+
+        def _run_dev() -> None:
+            app.run(host=host, port=port, use_reloader=False, threaded=True)
+
+        threading.Thread(target=_run_dev, name="web-ui-dev", daemon=True).start()
+        log.info("Web UI (dev) available at http://%s:%d",
+                 host if host != "0.0.0.0" else "localhost", port)
+        return
+
+    def _run_prod() -> None:
+        # ident= shows up in the Server: response header
+        serve(
+            app,
+            host    = host,
+            port    = port,
+            threads = threads,
+            ident   = "aruba-agent",
+            # We sit behind Apache, which already times out idle conns;
+            # waitress's default channel_timeout (120s) is fine.
+        )
+
+    threading.Thread(target=_run_prod, name="web-ui", daemon=True).start()
+    log.info(
+        "Web UI (waitress, %d threads) available at http://%s:%d",
+        threads, host if host != "0.0.0.0" else "localhost", port,
+    )

@@ -1,5 +1,6 @@
 requests>=2.32
 urllib3>=2.0
 flask>=3.0
+waitress>=3.0
 scapy>=2.5
 pyrad>=2.4

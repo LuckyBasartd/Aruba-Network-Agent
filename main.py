@@ -142,16 +142,17 @@ def main() -> None:
     scheduler.start()
 
     # ── web UI ───────────────────────────────────────────────────────────────
-    web_cfg  = cfg["web"] if "web" in cfg else {}
-    web_host = web_cfg.get("host", "0.0.0.0")
-    web_port = int(web_cfg.get("port", "8080"))
+    web_cfg     = cfg["web"] if "web" in cfg else {}
+    web_host    = web_cfg.get("host", "0.0.0.0")
+    web_port    = int(web_cfg.get("port", "8080"))
+    web_threads = int(web_cfg.get("threads", "8"))
     flask_app = create_app(
         state,
         backup_fn  = backup_task.run  if backup_task  else None,
         scanner_fn = scanner_task.run if scanner_task else None,
         cfg        = cfg,
     )
-    start_web(flask_app, host=web_host, port=web_port)
+    start_web(flask_app, host=web_host, port=web_port, threads=web_threads)
 
     # ── graceful shutdown ────────────────────────────────────────────────────
     stop_event = threading.Event()

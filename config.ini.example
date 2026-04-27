@@ -55,13 +55,21 @@ to       = noc@example.com, admin@example.com
 # ------------------------------------------------------------
 # Web UI
 # In production the dashboard is reached via the Apache2 HTTPS
-# reverse proxy on :443. Apache forwards to the Flask backend
-# on 127.0.0.1:8080, which is why the default host below is
-# 127.0.0.1 — the Flask listener is NOT exposed to the network.
+# reverse proxy on :443. Apache forwards to the WSGI backend
+# (waitress) on 127.0.0.1:8080, which is why the default host
+# below is 127.0.0.1 — the listener is NOT exposed to the network.
 #
-# host                  — interface Flask binds to.
+# Server stack:
+#   browser  →  Apache (TLS, :443)  →  waitress (WSGI, :8080)  →  Flask
+#
+# host                  — interface waitress binds to.
 #                         127.0.0.1   — production (Apache fronts it)
 #                         0.0.0.0     — direct access (no Apache)
+#
+# threads               — waitress worker-thread count. 8 is plenty
+#                         for an internal dashboard with ~20 concurrent
+#                         operators. Increase if /api/state polls back
+#                         up under load.
 #
 # secret_key            — session cookie signing key.
 #                         Generate one with:
@@ -83,6 +91,7 @@ to       = noc@example.com, admin@example.com
 [web]
 host                  = 127.0.0.1
 port                  = 8080
+threads               = 8
 secret_key            =
 session_timeout_hours = 8
 secure_cookies        = true
