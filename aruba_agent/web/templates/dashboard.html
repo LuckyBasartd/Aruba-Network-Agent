@@ -52,10 +52,20 @@
     <span class="navbar-brand">
       <i class="bi bi-router me-2 text-primary"></i>Aruba Network Agent
     </span>
-    <span id="refresh-timer" class="me-3">Refreshing in <span id="countdown">30</span>s</span>
-    <button class="btn btn-outline-secondary btn-sm" onclick="fetchState()">
-      <i class="bi bi-arrow-clockwise"></i> Refresh Now
-    </button>
+    <div class="d-flex align-items-center gap-2">
+      <span id="refresh-timer" class="me-2 small text-muted">Refreshing in <span id="countdown">30</span>s</span>
+      <button class="btn btn-outline-secondary btn-sm" onclick="fetchState()">
+        <i class="bi bi-arrow-clockwise"></i> Refresh Now
+      </button>
+      {% if current_user %}
+      <span class="text-muted small ms-3 d-none d-md-inline">
+        <i class="bi bi-person-circle me-1"></i>{{ current_user }}
+      </span>
+      <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}" title="Sign out">
+        <i class="bi bi-box-arrow-right"></i> Logout
+      </a>
+      {% endif %}
+    </div>
   </div>
 </nav>
 

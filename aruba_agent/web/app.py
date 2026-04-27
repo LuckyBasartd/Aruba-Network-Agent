@@ -1,8 +1,11 @@
 """
-Flask web UI for the Aruba Agent.
+Flask web UI for the Aruba Switch Manager.
 
 Routes:
-  GET  /                            — Dashboard (HTML)
+  GET  /login                       — Login page (RADIUS auth)
+  POST /login                       — Validate credentials, establish session
+  GET  /logout                      — Destroy session, redirect to login
+  GET  /                            — Dashboard (HTML, login-required)
   GET  /api/state                   — Full state JSON (polled by dashboard JS)
   GET  /api/devices                 — Device inventory JSON
   POST /api/backup/trigger          — Fire a manual backup run
@@ -10,9 +13,10 @@ Routes:
   GET  /api/backups/<hostname>      — List backup files for a switch
   GET  /api/backups/<hostname>/<filename> — Download a specific backup file
 
-Optional HTTP Basic Auth:
-  Set [web] username and password in config.ini to enable.  Leave both blank
-  (the default) to run without authentication (trusted-network mode).
+Authentication:
+  Session-based. Credentials are validated against a RADIUS server (PAP).
+  See aruba_agent.auth.RadiusAuthenticator and the [radius] config section.
+  Sessions are signed with a server-side secret_key from [web] secret_key.
 """
 
 from __future__ import annotations
@@ -21,11 +25,26 @@ import configparser
 import functools
 import logging
 import os
+import secrets
 import threading
+from datetime import timedelta
 from typing import Callable, Optional
 
-from flask import Flask, jsonify, render_template, send_file, abort, request, Response
+from flask import (
+    Flask,
+    abort,
+    flash,
+    get_flashed_messages,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
 
+from aruba_agent.auth  import RadiusAuthenticator
 from aruba_agent.state import AgentState
 
 log = logging.getLogger(__name__)
@@ -41,82 +60,159 @@ def create_app(
     app.config["JSON_SORT_KEYS"] = False
 
     backup_path = "/var/lib/aruba-agent/backups"
-    _auth_user  = ""
-    _auth_pass  = ""
-    if cfg:
-        backup_path = cfg.get("backup", "backup_path", fallback=backup_path)
-        _auth_user  = cfg.get("web", "username", fallback="")
-        _auth_pass  = cfg.get("web", "password", fallback="")
+    secret_key            = ""
+    session_timeout_hours = 8
+    secure_cookies        = False
 
-    _auth_enabled = bool(_auth_user and _auth_pass)
-    if _auth_enabled:
-        log.info("Web UI: HTTP Basic Auth enabled (user=%s)", _auth_user)
+    if cfg:
+        backup_path           = cfg.get("backup", "backup_path", fallback=backup_path)
+        secret_key            = cfg.get("web", "secret_key", fallback="").strip()
+        session_timeout_hours = cfg.getint("web", "session_timeout_hours", fallback=8)
+        secure_cookies        = cfg.getboolean("web", "secure_cookies", fallback=False)
+
+    # A stable secret_key is REQUIRED so sessions survive agent restarts.
+    # If the admin forgot to set one, generate an ephemeral one and warn —
+    # users will just need to re-login after every restart.
+    if not secret_key:
+        secret_key = secrets.token_urlsafe(48)
+        log.warning(
+            "No [web] secret_key configured — generated an ephemeral key. "
+            "Sessions will be invalidated on every agent restart. "
+            "Set [web] secret_key in config.ini to a long random string."
+        )
+
+    app.config["SECRET_KEY"]              = secret_key
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=session_timeout_hours)
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"]   = secure_cookies
+
+    # RADIUS authenticator — always created; it knows how to self-disable
+    # when [radius] is missing or incomplete.
+    radius = RadiusAuthenticator(cfg) if cfg else RadiusAuthenticator(configparser.ConfigParser())
+
+    if not radius.is_configured():
+        log.warning(
+            "Web UI: RADIUS is not configured — login will reject all attempts. "
+            "Set [radius] enabled=true and fill in server/secret to enable login."
+        )
     else:
-        log.info("Web UI: HTTP Basic Auth disabled — set [web] username/password to enable")
+        log.info("Web UI: session-based login with RADIUS PAP enabled")
 
     # ---------------------------------------------------------------- helpers
 
     def _run_in_thread(fn: Callable, name: str) -> None:
         threading.Thread(target=fn, name=name, daemon=True).start()
 
-    def _require_auth(fn: Callable) -> Callable:
-        """Decorator: enforce HTTP Basic Auth when credentials are configured."""
+    def require_login(fn: Callable) -> Callable:
+        """Decorator: redirect unauthenticated users to the login page."""
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            if not _auth_enabled:
-                return fn(*args, **kwargs)
-            auth = request.authorization
-            if auth and auth.username == _auth_user and auth.password == _auth_pass:
-                return fn(*args, **kwargs)
-            return Response(
-                "Authentication required",
-                401,
-                {"WWW-Authenticate": 'Basic realm="Aruba Agent"'},
-            )
+            if not session.get("user"):
+                # For API endpoints (JSON) return 401 instead of redirect
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": "Authentication required"}), 401
+                return redirect(url_for("login", next=request.path))
+            return fn(*args, **kwargs)
         return wrapper
 
-    # --------------------------------------------------------------- routes
+    # --------------------------------------------------------------- auth routes
+
+    @app.get("/login")
+    def login():
+        if session.get("user"):
+            return redirect(url_for("dashboard"))
+        return render_template(
+            "login.html",
+            radius_configured=radius.is_configured(),
+            errors=get_flashed_messages(category_filter=["error"]),
+            next_url=request.args.get("next", ""),
+        )
+
+    @app.post("/login")
+    def login_post():
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        next_url = request.form.get("next", "") or url_for("dashboard")
+
+        # Only redirect to internal paths — blocks open-redirect attacks.
+        if not next_url.startswith("/") or next_url.startswith("//"):
+            next_url = url_for("dashboard")
+
+        if not username or not password:
+            flash("Username and password are required.", "error")
+            return redirect(url_for("login", next=next_url))
+
+        if not radius.is_configured():
+            log.warning("Login attempt rejected — RADIUS not configured (user=%s)", username)
+            flash("Authentication service is not configured. Contact your administrator.", "error")
+            return redirect(url_for("login", next=next_url))
+
+        if radius.authenticate(username, password):
+            session.clear()
+            session["user"]   = username
+            session.permanent = True
+            log.info("Web UI: user=%s logged in from %s", username, request.remote_addr)
+            return redirect(next_url)
+
+        log.info("Web UI: failed login attempt user=%s from %s", username, request.remote_addr)
+        flash("Invalid username or password.", "error")
+        return redirect(url_for("login", next=next_url))
+
+    @app.get("/logout")
+    def logout():
+        user = session.get("user")
+        session.clear()
+        if user:
+            log.info("Web UI: user=%s logged out", user)
+        return redirect(url_for("login"))
+
+    # --------------------------------------------------------------- dashboard
 
     @app.get("/")
-    @_require_auth
+    @require_login
     def dashboard():
-        return render_template("dashboard.html")
+        return render_template("dashboard.html", current_user=session.get("user"))
 
     @app.get("/api/state")
-    @_require_auth
+    @require_login
     def api_state():
         return jsonify(state.to_dict())
 
     @app.get("/api/devices")
-    @_require_auth
+    @require_login
     def api_devices():
         with state._lock:
             devices = list(state.device_inventory)
         return jsonify(devices)
 
+    @app.get("/api/whoami")
+    @require_login
+    def api_whoami():
+        return jsonify({"user": session.get("user")})
+
     @app.post("/api/backup/trigger")
-    @_require_auth
+    @require_login
     def api_backup_trigger():
         if backup_fn is None:
             return jsonify({"error": "Backup not configured"}), 503
         _run_in_thread(backup_fn, "manual-backup")
-        log.info("Web UI: manual backup triggered")
+        log.info("Web UI: manual backup triggered by user=%s", session.get("user"))
         return jsonify({"status": "triggered"})
 
     @app.post("/api/scanner/trigger")
-    @_require_auth
+    @require_login
     def api_scanner_trigger():
         if scanner_fn is None:
             return jsonify({"error": "Scanner not configured"}), 503
         _run_in_thread(scanner_fn, "manual-scan")
-        log.info("Web UI: manual scan triggered")
+        log.info("Web UI: manual scan triggered by user=%s", session.get("user"))
         return jsonify({"status": "triggered"})
 
     @app.get("/api/backups/<hostname>")
-    @_require_auth
+    @require_login
     def api_backup_list(hostname: str):
         """Return a sorted list of backup filenames for a switch (newest first)."""
-        # Sanitise hostname — only allow safe characters
         if not all(c.isalnum() or c in "-_." for c in hostname):
             abort(400)
         host_dir = os.path.join(backup_path, hostname)
@@ -124,12 +220,12 @@ def create_app(
             return jsonify([])
         files = sorted(
             [f for f in os.listdir(host_dir) if f.endswith(".cfg")],
-            reverse=True,   # newest first
+            reverse=True,
         )
         return jsonify(files)
 
     @app.get("/api/backups/<hostname>/<filename>")
-    @_require_auth
+    @require_login
     def api_backup_download(hostname: str, filename: str):
         """Stream a backup .cfg file as a download."""
         if not all(c.isalnum() or c in "-_." for c in hostname):
@@ -137,7 +233,6 @@ def create_app(
         if not all(c.isalnum() or c in "-_." for c in filename):
             abort(400)
         filepath = os.path.join(backup_path, hostname, filename)
-        # Resolve and verify the path stays inside backup_path (path traversal guard)
         real_backup = os.path.realpath(backup_path)
         real_file   = os.path.realpath(filepath)
         if not real_file.startswith(real_backup + os.sep):

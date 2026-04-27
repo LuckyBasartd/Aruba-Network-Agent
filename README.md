@@ -12,6 +12,7 @@ A monitoring and automation agent for Aruba switch infrastructure, designed to r
 | **ARP Discovery** | Queries router ARP tables per campus location via CLI API; enriches with nmap DNS data; outputs timestamped CSVs |
 | **Firmware Update** | Two-phase concurrent firmware compliance check and upload (on-demand) |
 | **Web Dashboard** | Flask-based dark UI with live switch status, backup results, and manual Run Now triggers |
+| **RADIUS Login** | Session-based web login validated against an external RADIUS server (PAP, UDP 1812); HTTPOnly signed-cookie sessions with configurable timeout |
 
 ## Project Structure
 
@@ -26,6 +27,7 @@ Aruba-Network-Agent/
     ├── notifier.py                  # Thread-safe SMTP email notifier
     ├── state.py                     # Shared in-memory state (monitors → web UI)
     ├── scheduler.py                 # Daily HH:MM task scheduler
+    ├── auth.py                      # RADIUS PAP authenticator (pyrad)
     ├── monitors/
     │   └── switch_poller.py         # Switch reachability poller + dynamic manager
     ├── tasks/
@@ -34,9 +36,10 @@ Aruba-Network-Agent/
     │   ├── arp.py                   # ARP discovery task
     │   └── firmware.py              # Firmware updater (on-demand)
     └── web/
-        ├── app.py                   # Flask app + REST API routes
+        ├── app.py                   # Flask app + REST API routes + login/logout
         └── templates/
-            └── dashboard.html       # Bootstrap 5 dark dashboard
+            ├── dashboard.html       # Bootstrap 5 dark dashboard
+            └── login.html           # RADIUS sign-in page
 ```
 
 ## Requirements
@@ -52,8 +55,10 @@ pip3 install -r requirements.txt
 
 **Python dependencies:**
 ```
-requests, urllib3, flask, scapy, python-dotenv
+requests, urllib3, flask, scapy, pyrad
 ```
+
+`pyrad` is required for RADIUS authentication on the login page.
 
 ## Installation
 
@@ -109,9 +114,19 @@ sudo nano /etc/aruba-agent/config.ini
 Fill in:
 - `[credentials]` — switch admin username/password
 - `[smtp]` — SMTP host, port, credentials, and recipients
+- `[web]` — generate a `secret_key` for session signing (see below)
+- `[radius]` — RADIUS server, shared secret, and NAS identifier for login
 - `[switch.*]` — static switch IPs to monitor before first scan
 - `[scanner]` — subnets to scan
 - `[arp.*]` — router IPs and subnet lists per location
+
+Generate a stable session signing key:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Paste the output into `[web] secret_key`. Without this, the agent generates an ephemeral key on every restart and all sessions are invalidated.
 
 ### 5 — Enable and start
 
@@ -131,12 +146,23 @@ sudo firewall-cmd --reload
 
 ### Web Dashboard
 
-Access at `http://<server-ip>:8080`
+Access at `http://<server-ip>:8080` (or via the Apache2 HTTPS reverse proxy on port 443 in production).
+
+You will be redirected to a sign-in page. Enter your RADIUS credentials — the agent forwards them to the configured RADIUS server using PAP. On success, a signed session cookie is set (HTTPOnly, SameSite=Lax) that lasts `[web] session_timeout_hours`. Click **Logout** in the navbar to end the session immediately.
 
 - **Switch Reachability** — live UP/DOWN status for all monitored switches
 - **Config Backup** — last run summary with success/failure counts; Run Now button
 - **Network Scanner** — last scan time, device count; Run Now button
 - **ARP Discovery** — last run timestamp per campus location
+
+### Authentication
+
+Logins are validated against an external RADIUS server. There is no local admin fallback; if `[radius] enabled = false` or the server is unreachable, the dashboard is inaccessible.
+
+Behaviour:
+- **PAP on UDP 1812** — the standard RADIUS auth flow.
+- **Per-attempt audit log** — every login attempt is logged with username, source IP, and result. Passwords are never logged.
+- **NAS-Identifier** — sent to the RADIUS server as `[radius] nas_identifier` (defaults to the agent's hostname). Configure your RADIUS server to authorise this NAS.
 
 ### Logs
 
@@ -198,10 +224,20 @@ password = YourAppPassword
 to       = noc@example.com, admin@example.com
 
 [web]
-host     = 0.0.0.0
-port     = 8080
-username =                   # leave blank to disable Basic Auth
-password =
+host                  = 0.0.0.0
+port                  = 8080
+secret_key            =      # python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+session_timeout_hours = 8
+secure_cookies        = false   # set to true when fronted by HTTPS (Apache2)
+
+[radius]
+enabled        = true
+server         = 10.0.0.50
+secret         = SharedSecretHere
+port           = 1812
+nas_identifier = aruba-switch-manager
+timeout        = 5
+retries        = 2
 
 [switch.<name>]         # Static switch — monitored immediately at startup
 host              = 192.168.1.1
