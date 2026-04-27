@@ -67,6 +67,8 @@ requests, urllib3, flask, scapy, pyrad
 
 ## Installation
 
+For a fresh AlmaLinux 9 server, see **[INSTALL.md](INSTALL.md)** for an end-to-end walkthrough (system updates → service account → Apache + TLS → first login). The condensed reference below assumes you have read that.
+
 ### 1 — Create directories and service account
 
 ```bash
