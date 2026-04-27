@@ -52,6 +52,25 @@ dnf install -y httpd mod_ssl
 echo "==> Installing vhost: ${DEST_VHOST}"
 install -m 0644 -o root -g root "${SRC_VHOST}" "${DEST_VHOST}"
 
+# ─── 2b. Patch default ssl.conf to use OUR cert ────────────────────────
+# AlmaLinux 10 / EL10 ships mod_ssl WITHOUT auto-generating the dummy
+# /etc/pki/tls/certs/localhost.crt that ssl.conf references. The stock
+# ssl.conf then makes `apachectl configtest` fail. Point its default
+# vhost at the cert this project just generated. The patch is a no-op
+# if ssl.conf has already been customised.
+DEFAULT_SSL_CONF="/etc/httpd/conf.d/ssl.conf"
+if [[ -f "${DEFAULT_SSL_CONF}" ]] && \
+   grep -qE '^[[:space:]]*SSLCertificateFile[[:space:]]+/etc/pki/tls/certs/localhost\.crt' "${DEFAULT_SSL_CONF}"; then
+    echo "==> Patching ${DEFAULT_SSL_CONF} to reference ${CERT_FILE}"
+    cp -f "${DEFAULT_SSL_CONF}" "${DEFAULT_SSL_CONF}.bak"
+    sed -i \
+        -e "s|^[[:space:]]*SSLCertificateFile[[:space:]].*|SSLCertificateFile ${CERT_FILE}|" \
+        -e "s|^[[:space:]]*SSLCertificateKeyFile[[:space:]].*|SSLCertificateKeyFile ${KEY_FILE}|" \
+        "${DEFAULT_SSL_CONF}"
+else
+    echo "==> ssl.conf already customised (or missing) — skipping cert patch"
+fi
+
 # ─── 3. SELinux: let httpd reach the Flask backend on localhost:8080 ───
 if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" != "Disabled" ]]; then
     echo "==> Enabling SELinux boolean: httpd_can_network_connect"

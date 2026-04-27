@@ -255,6 +255,7 @@ sudo tail /var/log/httpd/aruba-switch-manager_ssl_access.log
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| `apachectl configtest` fails with `SSLCertificateFile: file '/etc/pki/tls/certs/localhost.crt' does not exist or is empty` | AlmaLinux 10's mod_ssl no longer auto-creates the dummy `localhost.crt`; the default `ssl.conf` then references a missing file | The current `install-apache.sh` patches this automatically. If you ran an older script: `sudo sed -i.bak -e 's\|^SSLCertificateFile.*\|SSLCertificateFile /etc/pki/tls/certs/aruba-switch-manager.crt\|' -e 's\|^SSLCertificateKeyFile.*\|SSLCertificateKeyFile /etc/pki/tls/private/aruba-switch-manager.key\|' /etc/httpd/conf.d/ssl.conf` then `apachectl configtest` |
 | Browser says `ERR_CONNECTION_REFUSED` on :443 | httpd not running, or firewall blocking 443 | `sudo systemctl status httpd`; `sudo firewall-cmd --list-all` |
 | 502 Bad Gateway on the dashboard | Flask not running, or SELinux blocking httpd→localhost:8080 | `systemctl status aruba-agent`; `sudo setsebool -P httpd_can_network_connect 1` |
 | "Authentication service is not configured" on login | `[radius] enabled` is false or server/secret missing | Edit `/etc/aruba-agent/config.ini`, then `systemctl restart aruba-agent` |
