@@ -49,8 +49,25 @@ echo "==> Installing httpd + mod_ssl"
 dnf install -y httpd mod_ssl
 
 # ─── 2. Drop in the vhost ──────────────────────────────────────────────
-echo "==> Installing vhost: ${DEST_VHOST}"
+# Substitute the placeholder ServerName with the host's actual FQDN so
+# `httpd -S` shows a meaningful name. ServerAlias * already makes the
+# vhost a catch-all, so the ServerName value is mostly cosmetic.
+HOST_FQDN="$(hostname -f 2>/dev/null || hostname)"
+echo "==> Installing vhost: ${DEST_VHOST} (ServerName=${HOST_FQDN})"
 install -m 0644 -o root -g root "${SRC_VHOST}" "${DEST_VHOST}"
+sed -i "s/ServerName aruba-switch-manager/ServerName ${HOST_FQDN}/g" "${DEST_VHOST}"
+
+# ─── 2a. Disable the AlmaLinux test page ───────────────────────────────
+# welcome.conf serves /var/www/html/index.html as a friendly default.
+# It only fires when no vhost matches — but with ServerAlias * we
+# already match everything, so welcome.conf is redundant. Disable it
+# so a misconfigured vhost can never accidentally show a "welcome"
+# page that leaks the OS version.
+WELCOME_CONF="/etc/httpd/conf.d/welcome.conf"
+if [[ -f "${WELCOME_CONF}" ]]; then
+    echo "==> Disabling ${WELCOME_CONF}"
+    mv -f "${WELCOME_CONF}" "${WELCOME_CONF}.disabled"
+fi
 
 # ─── 2b. Patch default ssl.conf to use OUR cert ────────────────────────
 # AlmaLinux 10 / EL10 ships mod_ssl WITHOUT auto-generating the dummy
