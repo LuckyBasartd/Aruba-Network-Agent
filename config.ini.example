@@ -144,9 +144,21 @@ failure_threshold = 3
 
 # ------------------------------------------------------------
 # Network Scanner Task
-# Runs first — scans subnets via ICMP, filters hostnames
-# containing filter_keywords, and writes matching IPs to
-# ip_list_output. The backup task reads that same file.
+# Runs first — scans subnets via ICMP, then identifies Aruba
+# switches in two passes:
+#
+#   1. Fast path: hostname matches one of filter_keywords.
+#   2. Slow path (verify_via_api): for every responder that
+#      DIDN'T match the keyword filter, attempt an AOS-CX REST
+#      login. If the switch authenticates, it's Aruba — include
+#      it regardless of DNS naming. Cisco / non-Aruba devices
+#      reject the login and stay excluded.
+#
+# This recovers Aruba switches that have missing PTR records or
+# non-matching naming conventions (6200, 6400, 8325, 2930F, etc.)
+# Probe runs across api_workers threads so it doesn't blow out
+# scan time on large campuses.
+#
 # Requires scapy + CAP_NET_RAW capability.
 # ------------------------------------------------------------
 [scanner]
@@ -157,7 +169,9 @@ exclude_suffixes = 1,2,3,255
 filter_keywords  = 6100,6300,Aruba
 device_file      = /var/lib/aruba-agent/network_devices.csv
 ip_list_output   = /var/lib/aruba-agent/ip_list.txt
-icmp_timeout     = 3
+icmp_timeout     = 8        # raise if not all switches reply in time
+verify_via_api   = true     # REST-probe non-matching responders
+api_workers      = 16       # parallel REST logins during verify
 
 
 # ------------------------------------------------------------
