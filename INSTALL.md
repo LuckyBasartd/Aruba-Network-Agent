@@ -79,10 +79,11 @@ instead and skip ahead.
 # Code
 sudo cp -r aruba_agent main.py requirements.txt /opt/aruba-agent/
 
-# Config template — secured because it will hold credentials
-sudo cp config.ini /etc/aruba-agent/config.ini
+# Config template — secured because it will hold credentials.
+# The real config.ini is gitignored; the repo ships config.ini.example.
+sudo cp config.ini.example /etc/aruba-agent/config.ini
 sudo chown root:aruba-agent /etc/aruba-agent/config.ini
-sudo chmod 640            /etc/aruba-agent/config.ini
+sudo chmod 640              /etc/aruba-agent/config.ini
 
 # Subnet lists for ARP discovery (if you have any)
 [ -d subnets ] && sudo cp subnets/*.txt /etc/aruba-agent/subnets/ 2>/dev/null || true

@@ -1,0 +1,185 @@
+# /etc/aruba-agent/config.ini
+# ============================================================
+# Aruba All-in-One Agent — configuration TEMPLATE
+#
+# This file ships in the repo as `config.ini.example`. The real
+# config.ini is gitignored because it holds credentials.
+#
+# To deploy:
+#     sudo cp config.ini.example /etc/aruba-agent/config.ini
+#     sudo chown root:aruba-agent /etc/aruba-agent/config.ini
+#     sudo chmod 640              /etc/aruba-agent/config.ini
+#     sudo nano                   /etc/aruba-agent/config.ini
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Shared switch credentials
+# Used as defaults; individual [switch.*] / [arp.*] sections
+# can override username / password.
+# ------------------------------------------------------------
+[credentials]
+username = admin
+password = YourSwitchPassword
+
+
+# ------------------------------------------------------------
+# SMTP — email alert settings
+# ------------------------------------------------------------
+[smtp]
+enabled  = false
+host     = smtp.gmail.com
+port     = 587
+use_tls  = true
+username = alerts@example.com
+password = YourSmtpAppPassword
+from     = Aruba Monitoring <alerts@example.com>
+# Comma-separated list of recipients
+to       = noc@example.com, admin@example.com
+
+
+# ------------------------------------------------------------
+# Web UI
+# In production the dashboard is reached via the Apache2 HTTPS
+# reverse proxy on :443. Apache forwards to the Flask backend
+# on 127.0.0.1:8080, which is why the default host below is
+# 127.0.0.1 — the Flask listener is NOT exposed to the network.
+#
+# host                  — interface Flask binds to.
+#                         127.0.0.1   — production (Apache fronts it)
+#                         0.0.0.0     — direct access (no Apache)
+#
+# secret_key            — session cookie signing key.
+#                         Generate one with:
+#                           python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+#                         MUST be set in production; otherwise sessions
+#                         will be invalidated on every agent restart.
+#
+# session_timeout_hours — how long a login session remains valid.
+#
+# secure_cookies        — set to true when fronted by HTTPS (Apache2
+#                         reverse proxy on :443). Set to false ONLY
+#                         during initial direct-HTTP development.
+#
+# trust_proxy_headers   — set to true when running behind Apache.
+#                         Enables werkzeug ProxyFix so the audit log
+#                         sees real client IPs (X-Forwarded-For) and
+#                         url_for() generates https:// URLs.
+# ------------------------------------------------------------
+[web]
+host                  = 127.0.0.1
+port                  = 8080
+secret_key            =
+session_timeout_hours = 8
+secure_cookies        = true
+trust_proxy_headers   = true
+
+
+# ------------------------------------------------------------
+# RADIUS Authentication
+# Session-based login on the web dashboard is validated against
+# a RADIUS server using classic PAP on UDP 1812.
+#
+# enabled        — master switch. Set to false to disable login
+#                  entirely (dashboard becomes inaccessible).
+# server         — RADIUS server IP or hostname
+# secret         — shared secret configured on the RADIUS server
+#                  for this NAS (the agent host).
+# port           — auth port (1812 is standard)
+# nas_identifier — string sent to the RADIUS server to identify
+#                  this NAS. Defaults to the host's hostname.
+# timeout        — per-request timeout in seconds
+# retries        — retry count before giving up
+# ------------------------------------------------------------
+[radius]
+enabled        = false
+server         = 10.0.0.50
+secret         = ChangeMeSharedSecret
+port           = 1812
+nas_identifier = aruba-switch-manager
+timeout        = 5
+retries        = 2
+
+
+# ------------------------------------------------------------
+# Switch reachability monitors
+# One [switch.<display-name>] section per AOS-CX 6300M.
+# username / password inherit from [credentials] if omitted.
+# ------------------------------------------------------------
+[switch.core-sw-01]
+host              = 192.168.1.1
+verify_ssl        = false
+poll_interval     = 30
+failure_threshold = 3
+
+[switch.core-sw-02]
+host              = 192.168.1.2
+verify_ssl        = false
+poll_interval     = 30
+failure_threshold = 3
+
+
+# ------------------------------------------------------------
+# Network Scanner Task
+# Runs first — scans subnets via ICMP, filters hostnames
+# containing filter_keywords, and writes matching IPs to
+# ip_list_output. The backup task reads that same file.
+# Requires scapy + CAP_NET_RAW capability.
+# ------------------------------------------------------------
+[scanner]
+enabled          = true
+schedule         = 00:00
+subnets          = 10.40.0.0/24,10.80.0.0/24,10.120.0.0/24,172.16.2.0/24
+exclude_suffixes = 1,2,3,255
+filter_keywords  = 6100,6300,Aruba
+device_file      = /var/lib/aruba-agent/network_devices.csv
+ip_list_output   = /var/lib/aruba-agent/ip_list.txt
+icmp_timeout     = 3
+
+
+# ------------------------------------------------------------
+# Config Backup Task
+# Reads ip_list generated by the scanner above.
+# ip_list path must match scanner.ip_list_output.
+# ------------------------------------------------------------
+[backup]
+enabled        = true
+schedule       = 02:00
+ip_list        = /var/lib/aruba-agent/ip_list.txt
+backup_path    = /var/lib/aruba-agent/backups
+retention_days = 7
+# Uncomment to pin API version instead of auto-detecting:
+# api_version  = v10.13
+
+
+# ------------------------------------------------------------
+# ARP Discovery Tasks
+# One [arp.<location>] section per campus location.
+# Requires nmap installed on the agent host.
+# ------------------------------------------------------------
+[arp.location-1]
+enabled    = true
+schedule   = 01:00
+routers    = 10.253.0.12,10.253.0.13
+ip_list    = /etc/aruba-agent/subnets/loc1_ip_list.txt
+output_dir = /var/lib/aruba-agent/arp/location-1
+
+[arp.location-2]
+enabled    = true
+schedule   = 01:15
+routers    = 10.253.0.14,10.253.0.15
+ip_list    = /etc/aruba-agent/subnets/loc2_ip_list.txt
+output_dir = /var/lib/aruba-agent/arp/location-2
+
+
+# ------------------------------------------------------------
+# Firmware Update (on-demand only)
+# Run:  python main.py config.ini --firmware-update
+# ip_list path should match scanner.ip_list_output after a
+# scan has run, or set to a manual list.
+# ------------------------------------------------------------
+[firmware]
+ip_list        = /var/lib/aruba-agent/ip_list.txt
+target_version = 10.13.1150
+image_path     = /var/lib/aruba-agent/firmware/ArubaOS-CX_6400-6300_10_13_1150.swi
+max_workers    = 2

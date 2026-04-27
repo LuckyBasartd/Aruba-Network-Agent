@@ -21,7 +21,7 @@ Aruba-Network-Agent/
 ├── main.py                          # Entry point
 ├── requirements.txt
 ├── aruba-agent.service              # Systemd unit file
-├── config.ini                       # Configuration template (not committed — contains credentials)
+├── config.ini.example               # Configuration template (commit-safe; copy to /etc/aruba-agent/config.ini)
 ├── apache/
 │   └── aruba-switch-manager.conf    # Apache2 vhost (HTTP→HTTPS + reverse proxy to Flask)
 ├── scripts/
@@ -92,10 +92,10 @@ cd Aruba-Network-Agent
 # Copy code
 sudo cp -r aruba_agent main.py requirements.txt /opt/aruba-agent/
 
-# Copy and secure config
-sudo cp config.ini /etc/aruba-agent/config.ini
+# Copy and secure config (real config.ini is gitignored — repo ships an example)
+sudo cp config.ini.example /etc/aruba-agent/config.ini
 sudo chown root:aruba-agent /etc/aruba-agent/config.ini
-sudo chmod 640 /etc/aruba-agent/config.ini
+sudo chmod 640              /etc/aruba-agent/config.ini
 
 # Copy subnet lists
 sudo cp subnets/*.txt /etc/aruba-agent/subnets/
