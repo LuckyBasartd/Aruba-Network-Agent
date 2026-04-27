@@ -22,6 +22,11 @@ Aruba-Network-Agent/
 ├── requirements.txt
 ├── aruba-agent.service              # Systemd unit file
 ├── config.ini                       # Configuration template (not committed — contains credentials)
+├── apache/
+│   └── aruba-switch-manager.conf    # Apache2 vhost (HTTP→HTTPS + reverse proxy to Flask)
+├── scripts/
+│   ├── generate-self-signed-cert.sh # OpenSSL helper — mints the TLS cert/key
+│   └── install-apache.sh            # One-shot httpd + mod_ssl installer
 └── aruba_agent/
     ├── cx_session.py                # Unified AOS-CX REST API client
     ├── notifier.py                  # Thread-safe SMTP email notifier
@@ -135,10 +140,30 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now aruba-agent
 ```
 
-### 6 — Open firewall ports
+### 6 — Front the dashboard with HTTPS (Apache2)
+
+In production the dashboard is served via Apache2 over HTTPS on port 443. The Flask app binds to `127.0.0.1:8080` only — Apache is the public face.
 
 ```bash
-sudo firewall-cmd --permanent --add-port=8080/tcp   # Web UI
+# 1. Mint a self-signed cert (valid 10 years, internal-only deployment).
+#    Pass an explicit hostname/IP if your box is reachable by something
+#    other than `hostname -f` returns.
+sudo ./scripts/generate-self-signed-cert.sh
+
+# 2. Install Apache + mod_ssl, drop in the vhost, fix SELinux + firewall,
+#    and restart httpd.
+sudo ./scripts/install-apache.sh
+
+# 3. Restart the agent so it picks up host=127.0.0.1 and trust_proxy_headers.
+sudo systemctl restart aruba-agent
+```
+
+The dashboard is now at `https://<server-ip>/`. Browsers will warn about the self-signed cert; click through, or import `/etc/pki/tls/certs/aruba-switch-manager.crt` into your workstation's trust store to silence it.
+
+If you instead want to expose Flask directly without Apache (development/testing only), set `host = 0.0.0.0`, `secure_cookies = false`, `trust_proxy_headers = false` in `[web]` and open the Flask port:
+
+```bash
+sudo firewall-cmd --permanent --add-port=8080/tcp
 sudo firewall-cmd --reload
 ```
 
@@ -224,11 +249,12 @@ password = YourAppPassword
 to       = noc@example.com, admin@example.com
 
 [web]
-host                  = 0.0.0.0
+host                  = 127.0.0.1   # 0.0.0.0 only when running without Apache
 port                  = 8080
-secret_key            =      # python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+secret_key            =             # python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 session_timeout_hours = 8
-secure_cookies        = false   # set to true when fronted by HTTPS (Apache2)
+secure_cookies        = true        # false only for direct-HTTP development
+trust_proxy_headers   = true        # ProxyFix — required when fronted by Apache
 
 [radius]
 enabled        = true

@@ -43,6 +43,7 @@ from flask import (
     session,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from aruba_agent.auth  import RadiusAuthenticator
 from aruba_agent.state import AgentState
@@ -63,12 +64,14 @@ def create_app(
     secret_key            = ""
     session_timeout_hours = 8
     secure_cookies        = False
+    trust_proxy_headers   = False
 
     if cfg:
         backup_path           = cfg.get("backup", "backup_path", fallback=backup_path)
         secret_key            = cfg.get("web", "secret_key", fallback="").strip()
         session_timeout_hours = cfg.getint("web", "session_timeout_hours", fallback=8)
         secure_cookies        = cfg.getboolean("web", "secure_cookies", fallback=False)
+        trust_proxy_headers   = cfg.getboolean("web", "trust_proxy_headers", fallback=False)
 
     # A stable secret_key is REQUIRED so sessions survive agent restarts.
     # If the admin forgot to set one, generate an ephemeral one and warn —
@@ -86,6 +89,18 @@ def create_app(
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"]   = secure_cookies
+
+    # Behind Apache's reverse proxy: trust the X-Forwarded-* headers it
+    # sets so request.remote_addr reflects the real client IP, and
+    # url_for() generates https:// URLs. We trust exactly one hop —
+    # the Apache vhost on the same host. Do NOT enable this when the
+    # agent is exposed directly; spoofed headers would defeat audit logs.
+    if trust_proxy_headers:
+        app.wsgi_app = ProxyFix(  # type: ignore[assignment]
+            app.wsgi_app,
+            x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1,
+        )
+        log.info("Web UI: ProxyFix enabled — trusting one upstream proxy hop")
 
     # RADIUS authenticator — always created; it knows how to self-disable
     # when [radius] is missing or incomplete.
