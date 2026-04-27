@@ -14,6 +14,20 @@
 
 
 # ------------------------------------------------------------
+# Agent-wide settings
+#
+# state_file — JSON snapshot of in-memory state (registered
+#              switches, last backup result, scanner inventory,
+#              per-location ARP timestamps). Reloaded at startup
+#              so the dashboard survives reboots and restarts.
+#              The aruba-agent service account must be able to
+#              write to this path.
+# ------------------------------------------------------------
+[agent]
+state_file = /var/lib/aruba-agent/state.json
+
+
+# ------------------------------------------------------------
 # Shared switch credentials
 # Used as defaults; individual [switch.*] / [arp.*] sections
 # can override username / password.

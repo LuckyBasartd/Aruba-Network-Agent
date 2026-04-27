@@ -79,7 +79,15 @@ def main() -> None:
     )
 
     cfg      = load_config(config_path)
-    state    = AgentState()
+
+    # State persistence — survives agent restarts and host reboots.
+    # Default lives alongside the rest of the runtime data under
+    # /var/lib/aruba-agent/. Override via [agent] state_file = ...
+    state_file = cfg.get(
+        "agent", "state_file",
+        fallback="/var/lib/aruba-agent/state.json",
+    )
+    state    = AgentState(snapshot_path=state_file)
     notifier = EmailNotifier(cfg)
 
     # ── on-demand firmware update ────────────────────────────────────────────
