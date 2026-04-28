@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings — Aruba Network Agent</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body  { background:#0d1117; color:#c9d1d9; }
+        .card { background:#161b22; border:1px solid #30363d; }
+        .navbar-brand { font-weight:700; letter-spacing:.04em; }
+        .section-card .bi { color:#58a6ff; }
+        .section-card.disabled { opacity:0.55; }
+        .section-card.disabled .badge-soon { background:#30363d; color:#8b949e; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark" style="background:#161b22; border-bottom:1px solid #21262d;">
+  <div class="container-fluid">
+    <span class="navbar-brand">
+      <i class="bi bi-router me-2 text-primary"></i>Aruba Network Agent
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('dashboard') }}">
+        <i class="bi bi-arrow-left"></i> Back to Dashboard
+      </a>
+      {% if current_user %}
+      <span class="text-muted small ms-3 d-none d-md-inline">
+        <i class="bi bi-person-circle me-1"></i>{{ current_user }}
+        {% if auth_method %}<span class="text-muted">({{ auth_method }})</span>{% endif %}
+      </span>
+      <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}" title="Sign out">
+        <i class="bi bi-box-arrow-right"></i> Logout
+      </a>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid py-4 px-4">
+
+  <div class="d-flex align-items-center mb-4">
+    <h2 class="mb-0"><i class="bi bi-gear-fill me-2 text-primary"></i>Settings</h2>
+  </div>
+
+  <div class="alert alert-info">
+    <i class="bi bi-info-circle me-2"></i>
+    Per-section editors for <code>/etc/aruba-agent/config.ini</code> are landing in
+    a follow-up phase. The cards below preview what's coming. For now, edit
+    <code>config.ini</code> directly and restart the service:
+    <code>sudo systemctl restart aruba-agent</code>.
+  </div>
+
+  <div class="row g-3">
+
+    <!-- Account / password -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-person-badge me-2"></i>Account
+          </h5>
+          <p class="card-text small text-muted">
+            Change your local account password.
+          </p>
+          {% if auth_method == "local" %}
+          <a href="{{ url_for('change_password') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-shield-lock me-1"></i>Change Password
+          </a>
+          {% else %}
+          <span class="badge bg-secondary">Managed by {{ auth_method }}</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Authentication (RADIUS toggle, local users) -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100 disabled">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-shield-check me-2"></i>Authentication
+            <span class="badge badge-soon ms-2">Phase B</span>
+          </h5>
+          <p class="card-text small text-muted">
+            RADIUS toggle, server, secret, NAS identifier. Add and remove
+            local users.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Email alerts -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100 disabled">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-envelope-at me-2"></i>Email Alerts
+            <span class="badge badge-soon ms-2">Phase B</span>
+          </h5>
+          <p class="card-text small text-muted">
+            Toggle SMTP on/off, server, port, TLS, sender, recipients,
+            test send.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Switch credentials -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100 disabled">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-key me-2"></i>Switch Credentials
+            <span class="badge badge-soon ms-2">Phase B</span>
+          </h5>
+          <p class="card-text small text-muted">
+            Default admin username/password used by the poller, backup,
+            ARP, and firmware tasks.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Network scanner -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100 disabled">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-broadcast-pin me-2"></i>Network Scanner
+            <span class="badge badge-soon ms-2">Phase B</span>
+          </h5>
+          <p class="card-text small text-muted">
+            Subnets, exclude suffixes, filter keywords, ICMP timeout,
+            REST-probe verification.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backup -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100 disabled">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-archive me-2"></i>Config Backup
+            <span class="badge badge-soon ms-2">Phase B</span>
+          </h5>
+          <p class="card-text small text-muted">
+            Daily schedule, retention days, output path, optional API
+            version pin.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ARP -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100 disabled">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-diagram-3 me-2"></i>ARP Discovery
+            <span class="badge badge-soon ms-2">Phase B</span>
+          </h5>
+          <p class="card-text small text-muted">
+            Add and remove campus locations, routers, subnet IP lists,
+            schedules.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firmware -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100 disabled">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-cpu me-2"></i>Firmware
+            <span class="badge badge-soon ms-2">Phase B</span>
+          </h5>
+          <p class="card-text small text-muted">
+            Target version, image path, max workers. On-demand updater
+            controls.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Web / sessions -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100 disabled">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-window me-2"></i>Web Server
+            <span class="badge badge-soon ms-2">Phase B</span>
+          </h5>
+          <p class="card-text small text-muted">
+            Bind host/port, waitress thread count, session timeout,
+            cookie security flags.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+</body>
+</html>

@@ -61,6 +61,10 @@
       <span class="text-muted small ms-3 d-none d-md-inline">
         <i class="bi bi-person-circle me-1"></i>{{ current_user }}
       </span>
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings_page') }}"
+         title="Settings">
+        <i class="bi bi-gear-fill"></i>
+      </a>
       <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}" title="Sign out">
         <i class="bi bi-box-arrow-right"></i> Logout
       </a>

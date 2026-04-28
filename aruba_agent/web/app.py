@@ -45,8 +45,9 @@ from flask import (
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from aruba_agent.auth  import RadiusAuthenticator
-from aruba_agent.state import AgentState
+from aruba_agent.auth        import RadiusAuthenticator
+from aruba_agent.local_auth  import LocalAuthStore
+from aruba_agent.state       import AgentState
 
 log = logging.getLogger(__name__)
 
@@ -106,13 +107,32 @@ def create_app(
     # when [radius] is missing or incomplete.
     radius = RadiusAuthenticator(cfg) if cfg else RadiusAuthenticator(configparser.ConfigParser())
 
-    if not radius.is_configured():
+    # Local credential store — always created. On first start the store
+    # bootstraps a default admin/admin entry flagged must_change=true so
+    # the operator is forced to set a real password on first login.
+    local_store_path = (
+        cfg.get("local_auth", "store_file",
+                fallback="/var/lib/aruba-agent/users.json")
+        if cfg else "/var/lib/aruba-agent/users.json"
+    )
+    local_auth_enabled = (
+        cfg.getboolean("local_auth", "enabled", fallback=True)
+        if cfg else True
+    )
+    local_store = LocalAuthStore(local_store_path)
+    if local_auth_enabled:
+        local_store.bootstrap_default_admin()
+
+    if local_auth_enabled:
+        log.info("Web UI: local authentication enabled (store=%s)", local_store_path)
+    if radius.is_configured():
+        log.info("Web UI: RADIUS PAP authentication enabled")
+
+    if not local_auth_enabled and not radius.is_configured():
         log.warning(
-            "Web UI: RADIUS is not configured — login will reject all attempts. "
-            "Set [radius] enabled=true and fill in server/secret to enable login."
+            "Web UI: NEITHER local auth NOR RADIUS is configured — "
+            "login will reject all attempts."
         )
-    else:
-        log.info("Web UI: session-based login with RADIUS PAP enabled")
 
     # ---------------------------------------------------------------- helpers
 
@@ -120,14 +140,32 @@ def create_app(
         threading.Thread(target=fn, name=name, daemon=True).start()
 
     def require_login(fn: Callable) -> Callable:
-        """Decorator: redirect unauthenticated users to the login page."""
+        """
+        Decorator: redirect unauthenticated users to the login page.
+
+        Also intercepts users with `must_change=True` flagged on their
+        session and force-redirects them to /change-password until they
+        comply. The /change-password and /logout endpoints are exempt
+        so the user can actually set a new password (or bail out).
+        """
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             if not session.get("user"):
-                # For API endpoints (JSON) return 401 instead of redirect
                 if request.path.startswith("/api/"):
                     return jsonify({"error": "Authentication required"}), 401
                 return redirect(url_for("login", next=request.path))
+
+            if session.get("must_change"):
+                # Block everything except the change-password page itself
+                # and the logout escape hatch.
+                exempt = {"change_password", "change_password_post", "logout"}
+                if request.endpoint not in exempt:
+                    if request.path.startswith("/api/"):
+                        return jsonify({
+                            "error": "Password change required",
+                            "redirect": url_for("change_password"),
+                        }), 403
+                    return redirect(url_for("change_password"))
             return fn(*args, **kwargs)
         return wrapper
 
@@ -136,16 +174,26 @@ def create_app(
     @app.get("/login")
     def login():
         if session.get("user"):
+            # Already logged in — but if they're flagged must_change,
+            # send them straight to the change-password page.
+            if session.get("must_change"):
+                return redirect(url_for("change_password"))
             return redirect(url_for("dashboard"))
         return render_template(
             "login.html",
             radius_configured=radius.is_configured(),
+            local_auth_enabled=local_auth_enabled,
             errors=get_flashed_messages(category_filter=["error"]),
             next_url=request.args.get("next", ""),
         )
 
     @app.post("/login")
     def login_post():
+        """
+        Authentication order: local first (covers the bootstrap admin
+        and any manually-added local accounts), then RADIUS if enabled.
+        Local first means RADIUS outages don't lock the operator out.
+        """
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         next_url = request.form.get("next", "") or url_for("dashboard")
@@ -158,21 +206,42 @@ def create_app(
             flash("Username and password are required.", "error")
             return redirect(url_for("login", next=next_url))
 
-        if not radius.is_configured():
-            log.warning("Login attempt rejected — RADIUS not configured (user=%s)", username)
-            flash("Authentication service is not configured. Contact your administrator.", "error")
+        if not local_auth_enabled and not radius.is_configured():
+            log.warning("Login attempt rejected — no auth backend configured (user=%s)",
+                        username)
+            flash("Authentication service is not configured. Contact your administrator.",
+                  "error")
             return redirect(url_for("login", next=next_url))
 
-        if radius.authenticate(username, password):
-            session.clear()
-            session["user"]   = username
-            session.permanent = True
-            log.info("Web UI: user=%s logged in from %s", username, request.remote_addr)
-            return redirect(next_url)
+        # Local first
+        auth_method:    Optional[str]  = None
+        must_change:    bool           = False
+        if local_auth_enabled and local_store.authenticate(username, password):
+            auth_method = "local"
+            must_change = local_store.must_change_password(username)
 
-        log.info("Web UI: failed login attempt user=%s from %s", username, request.remote_addr)
-        flash("Invalid username or password.", "error")
-        return redirect(url_for("login", next=next_url))
+        # RADIUS fallback
+        elif radius.is_configured() and radius.authenticate(username, password):
+            auth_method = "radius"
+
+        if auth_method is None:
+            log.info("Web UI: failed login attempt user=%s from %s",
+                     username, request.remote_addr)
+            flash("Invalid username or password.", "error")
+            return redirect(url_for("login", next=next_url))
+
+        session.clear()
+        session["user"]        = username
+        session["auth_method"] = auth_method
+        session["must_change"] = must_change
+        session.permanent      = True
+        log.info("Web UI: user=%s logged in via %s from %s",
+                 username, auth_method, request.remote_addr)
+
+        if must_change:
+            flash("You're using a default password. Please set a new one.", "warning")
+            return redirect(url_for("change_password"))
+        return redirect(next_url)
 
     @app.get("/logout")
     def logout():
@@ -181,6 +250,75 @@ def create_app(
         if user:
             log.info("Web UI: user=%s logged out", user)
         return redirect(url_for("login"))
+
+    # ------------------------------------------------------- forced password change
+
+    @app.get("/change-password")
+    @require_login
+    def change_password():
+        return render_template(
+            "change_password.html",
+            current_user = session.get("user"),
+            auth_method  = session.get("auth_method"),
+            must_change  = bool(session.get("must_change")),
+            errors       = get_flashed_messages(category_filter=["error"]),
+            messages     = get_flashed_messages(category_filter=["success"]),
+        )
+
+    @app.post("/change-password")
+    @require_login
+    def change_password_post():
+        """
+        Update a local user's password. RADIUS users can't change their
+        password here — that's owned by the RADIUS server.
+        """
+        if session.get("auth_method") != "local":
+            flash("Password changes for RADIUS users must be made on the RADIUS server.",
+                  "error")
+            return redirect(url_for("dashboard"))
+
+        username = session.get("user", "")
+        current  = request.form.get("current_password") or ""
+        new_pw   = request.form.get("new_password") or ""
+        confirm  = request.form.get("confirm_password") or ""
+
+        if not local_store.authenticate(username, current):
+            flash("Current password is incorrect.", "error")
+            return redirect(url_for("change_password"))
+        if new_pw != confirm:
+            flash("New passwords do not match.", "error")
+            return redirect(url_for("change_password"))
+        if len(new_pw) < 8:
+            flash("New password must be at least 8 characters.", "error")
+            return redirect(url_for("change_password"))
+        if new_pw == current:
+            flash("New password must be different from the current one.", "error")
+            return redirect(url_for("change_password"))
+
+        if not local_store.change_password(username, new_pw):
+            flash("Could not update password.", "error")
+            return redirect(url_for("change_password"))
+
+        # Lift the must_change session flag now that they've complied.
+        session["must_change"] = False
+        flash("Password updated.", "success")
+        return redirect(url_for("dashboard"))
+
+    # ----------------------------------------------------------------- settings
+
+    @app.get("/settings")
+    @require_login
+    def settings_page():
+        """
+        Settings shell. Phase B will add per-section editors for the
+        full config.ini surface. For now this is a placeholder that
+        confirms the route + sprocket icon are wired up correctly.
+        """
+        return render_template(
+            "settings.html",
+            current_user = session.get("user"),
+            auth_method  = session.get("auth_method"),
+        )
 
     # --------------------------------------------------------------- dashboard
 

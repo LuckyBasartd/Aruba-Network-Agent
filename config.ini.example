@@ -99,12 +99,32 @@ trust_proxy_headers   = true
 
 
 # ------------------------------------------------------------
-# RADIUS Authentication
-# Session-based login on the web dashboard is validated against
-# a RADIUS server using classic PAP on UDP 1812.
+# Local Authentication
+# A built-in user store that always works as a fallback to RADIUS.
+# Login order is: local first, RADIUS second — so a RADIUS outage
+# can't lock the operator out.
 #
-# enabled        — master switch. Set to false to disable login
-#                  entirely (dashboard becomes inaccessible).
+# On first start the store bootstraps a default admin / admin
+# user with must_change=true. On first login the operator is
+# forced to set a real password before the dashboard becomes
+# usable.
+#
+# enabled    — master switch for the local user backend.
+# store_file — JSON file holding scrypt-hashed credentials.
+#              Mode 0600, owned by aruba-agent.
+# ------------------------------------------------------------
+[local_auth]
+enabled    = true
+store_file = /var/lib/aruba-agent/users.json
+
+
+# ------------------------------------------------------------
+# RADIUS Authentication
+# Session-based login on the web dashboard validated against a
+# RADIUS server using classic PAP on UDP 1812. Optional — local
+# auth above is always available as a fallback.
+#
+# enabled        — master switch.
 # server         — RADIUS server IP or hostname
 # secret         — shared secret configured on the RADIUS server
 #                  for this NAS (the agent host).

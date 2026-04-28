@@ -233,9 +233,18 @@ Expect:
    import `/etc/pki/tls/certs/aruba-switch-manager.crt` into your
    workstation's trust store to silence it.
 2. The login page appears.
-3. Log in with your RADIUS credentials.
-4. The dashboard loads with Switch Reachability, Config Backup,
-   Network Scanner, and ARP Discovery cards.
+3. **First login** — sign in as `admin` / `admin`. The agent ships
+   with this default local account flagged "must change". You'll be
+   redirected to the password-change page and required to pick a real
+   password before reaching the dashboard. Local credentials are stored
+   scrypt-hashed in `/var/lib/aruba-agent/users.json` (mode 0600).
+4. **Subsequent logins** — local accounts continue to work, and if
+   `[radius] enabled = true`, RADIUS works as a second auth path.
+   Login order is local → RADIUS, so a RADIUS outage can't lock you out.
+5. The dashboard loads with Switch Reachability, Config Backup,
+   Network Scanner, and ARP Discovery cards. The sprocket icon in the
+   navbar opens **Settings** (account management today; full config.ini
+   editing coming in a follow-up phase).
 
 Confirm the audit trail:
 
