@@ -89,19 +89,20 @@ sudo mkdir -p \
 git clone https://github.com/LuckyBasartd/Aruba-Network-Agent.git
 cd Aruba-Network-Agent
 
-# Copy code
-sudo cp -r aruba_agent main.py requirements.txt /opt/aruba-agent/
+# Copy code (rsync skips unchanged files; --delete drops stale ones on update)
+sudo rsync -a --delete aruba_agent/ /opt/aruba-agent/aruba_agent/
+sudo rsync -a main.py requirements.txt /opt/aruba-agent/
 
 # Copy and secure config (real config.ini is gitignored — repo ships an example)
-sudo cp config.ini.example /etc/aruba-agent/config.ini
-sudo chown root:aruba-agent /etc/aruba-agent/config.ini
-sudo chmod 640              /etc/aruba-agent/config.ini
+# Owned by aruba-agent so the Settings page can write back to it.
+sudo install -m 640 -o aruba-agent -g aruba-agent \
+    config.ini.example /etc/aruba-agent/config.ini
 
 # Copy subnet lists
-sudo cp subnets/*.txt /etc/aruba-agent/subnets/
+sudo rsync -a subnets/ /etc/aruba-agent/subnets/
 
 # Install systemd unit
-sudo cp aruba-agent.service /etc/systemd/system/
+sudo rsync -a aruba-agent.service /etc/systemd/system/
 ```
 
 ### 3 — Set permissions

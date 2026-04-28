@@ -75,22 +75,27 @@ instead and skip ahead.
 
 ## 4 — Install the application files
 
+`rsync` is preferred over `cp -r` for both the initial install and
+later updates: it skips unchanged files (faster), and `--delete`
+removes anything that was deleted from the repo so stale `.py` files
+can't linger in `/opt/aruba-agent` and shadow newer modules.
+
 ```bash
 # Code
-sudo cp -r aruba_agent main.py requirements.txt /opt/aruba-agent/
+sudo rsync -a --delete aruba_agent/ /opt/aruba-agent/aruba_agent/
+sudo rsync -a main.py requirements.txt /opt/aruba-agent/
 
 # Config template — secured because it will hold credentials.
 # The real config.ini is gitignored; the repo ships config.ini.example.
 # Owned by aruba-agent so the Settings page can write back to it.
-sudo cp config.ini.example /etc/aruba-agent/config.ini
-sudo chown aruba-agent:aruba-agent /etc/aruba-agent/config.ini
-sudo chmod 640                     /etc/aruba-agent/config.ini
+sudo install -m 640 -o aruba-agent -g aruba-agent \
+    config.ini.example /etc/aruba-agent/config.ini
 
 # Subnet lists for ARP discovery (if you have any)
-[ -d subnets ] && sudo cp subnets/*.txt /etc/aruba-agent/subnets/ 2>/dev/null || true
+[ -d subnets ] && sudo rsync -a subnets/ /etc/aruba-agent/subnets/ || true
 
 # Systemd unit
-sudo cp aruba-agent.service /etc/systemd/system/
+sudo rsync -a aruba-agent.service /etc/systemd/system/
 ```
 
 ---
@@ -308,11 +313,16 @@ sudo tail /var/log/httpd/aruba-switch-manager_ssl_access.log
 
 ```bash
 cd /tmp/Aruba-Network-Agent
-git pull
-sudo cp -r aruba_agent main.py requirements.txt /opt/aruba-agent/
+sudo git pull
+sudo rsync -a --delete aruba_agent/ /opt/aruba-agent/aruba_agent/
+sudo rsync -a main.py requirements.txt /opt/aruba-agent/
 sudo pip3 install -r /opt/aruba-agent/requirements.txt
 sudo systemctl restart aruba-agent
 ```
+
+`rsync -a --delete` is the preferred update command — it copies only
+changed files and removes anything that was deleted from the repo so
+no stale module shadows the newer one.
 
 Apache + the cert do not need to change unless the vhost or scripts
 themselves were updated.
