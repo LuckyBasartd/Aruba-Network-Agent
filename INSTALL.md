@@ -81,9 +81,10 @@ sudo cp -r aruba_agent main.py requirements.txt /opt/aruba-agent/
 
 # Config template — secured because it will hold credentials.
 # The real config.ini is gitignored; the repo ships config.ini.example.
+# Owned by aruba-agent so the Settings page can write back to it.
 sudo cp config.ini.example /etc/aruba-agent/config.ini
-sudo chown root:aruba-agent /etc/aruba-agent/config.ini
-sudo chmod 640              /etc/aruba-agent/config.ini
+sudo chown aruba-agent:aruba-agent /etc/aruba-agent/config.ini
+sudo chmod 640                     /etc/aruba-agent/config.ini
 
 # Subnet lists for ARP discovery (if you have any)
 [ -d subnets ] && sudo cp subnets/*.txt /etc/aruba-agent/subnets/ 2>/dev/null || true
@@ -219,7 +220,32 @@ Web UI available at http://localhost:8080
 
 ---
 
-## 12 — Verify
+## 12 — (Optional) Enable the Settings → Restart Now button
+
+The Settings page in the dashboard has a **Restart Agent** button so
+you can apply config changes without dropping to a shell. It works by
+shelling out to `systemctl restart aruba-agent` via sudo, which means
+the `aruba-agent` service account needs a NOPASSWD sudoers rule.
+
+```bash
+sudo tee /etc/sudoers.d/aruba-agent-restart > /dev/null <<'EOF'
+# Allow the aruba-agent service account to restart its own service
+# from the web UI. No other systemctl operations are permitted.
+aruba-agent ALL=(root) NOPASSWD: /bin/systemctl restart aruba-agent
+EOF
+sudo chmod 440 /etc/sudoers.d/aruba-agent-restart
+
+# Validate before reloading systemd
+sudo visudo -c -f /etc/sudoers.d/aruba-agent-restart
+```
+
+If the rule is missing, the dashboard hides the Restart button and
+shows the manual command instead — settings still save correctly,
+they just don't auto-apply.
+
+---
+
+## 13 — Verify
 
 From a workstation on the same network:
 
@@ -243,8 +269,11 @@ Expect:
    Login order is local → RADIUS, so a RADIUS outage can't lock you out.
 5. The dashboard loads with Switch Reachability, Config Backup,
    Network Scanner, and ARP Discovery cards. The sprocket icon in the
-   navbar opens **Settings** (account management today; full config.ini
-   editing coming in a follow-up phase).
+   navbar opens **Settings**, where you can edit Authentication
+   (RADIUS + local users) and Email Alerts (SMTP + test send) directly
+   from the browser. The other config sections (Switch Credentials,
+   Scanner, Backup, ARP, Firmware, Web Server) are still edited via
+   `/etc/aruba-agent/config.ini` until Phase B2 fills them in.
 
 Confirm the audit trail:
 

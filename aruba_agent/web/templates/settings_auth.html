@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authentication — Settings — Aruba Network Agent</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body  { background:#0d1117; color:#c9d1d9; }
+        .card { background:#161b22; border:1px solid #30363d; }
+        .form-control, .form-select { background:#0d1117; border-color:#30363d; color:#c9d1d9; }
+        .form-control:focus, .form-select:focus {
+            background:#0d1117; border-color:#58a6ff; color:#c9d1d9;
+            box-shadow:0 0 0 0.2rem rgba(88,166,255,0.25);
+        }
+        .form-text { color:#8b949e; }
+        .form-control:disabled, .form-control[readonly] { background:#161b22; }
+        .table { color:#c9d1d9; --bs-table-bg: transparent; }
+        .table thead { color:#8b949e; }
+        code.path { color:#79c0ff; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark" style="background:#161b22; border-bottom:1px solid #21262d;">
+  <div class="container-fluid">
+    <span class="navbar-brand">
+      <i class="bi bi-router me-2 text-primary"></i>Aruba Network Agent
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings_page') }}">
+        <i class="bi bi-arrow-left"></i> Settings
+      </a>
+      {% if current_user %}
+      <span class="text-muted small ms-3 d-none d-md-inline">
+        <i class="bi bi-person-circle me-1"></i>{{ current_user }}
+      </span>
+      <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}">
+        <i class="bi bi-box-arrow-right"></i> Logout
+      </a>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid py-4 px-4">
+
+  <h2 class="mb-4"><i class="bi bi-shield-check me-2 text-primary"></i>Authentication</h2>
+
+  {% for err in errors %}
+  <div class="alert alert-danger py-2"><i class="bi bi-x-circle me-2"></i>{{ err }}</div>
+  {% endfor %}
+  {% for msg in messages %}
+  <div class="alert alert-success py-2"><i class="bi bi-check-circle me-2"></i>{{ msg }}</div>
+  {% endfor %}
+
+  {% if not editor_writable %}
+  <div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    <code class="path">{{ config_path }}</code> is not writable by the agent. Save buttons will fail until permissions are corrected.
+  </div>
+  {% endif %}
+
+  <div class="row g-4">
+
+    <!-- ── Auth backends form ──────────────────────────────────────── -->
+    <div class="col-lg-7">
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title mb-3">Backends</h5>
+          <p class="text-muted small">
+            Login order is local first, RADIUS second. At least one
+            must be enabled.
+          </p>
+
+          <form method="POST" action="{{ url_for('settings_auth_post') }}" autocomplete="off">
+
+            <!-- Local toggle -->
+            <div class="form-check form-switch mb-3">
+              <input class="form-check-input" type="checkbox" role="switch"
+                     id="local_enabled" name="local_enabled"
+                     {% if local_enabled %}checked{% endif %}>
+              <label class="form-check-label" for="local_enabled">
+                <strong>Enable local authentication</strong>
+              </label>
+              <div class="form-text">
+                Built-in user store. Always available as a fallback so a
+                RADIUS outage can't lock the dashboard.
+              </div>
+            </div>
+            <div class="mb-4">
+              <label class="form-label" for="local_store_file">User store file</label>
+              <input type="text" class="form-control" id="local_store_file"
+                     name="local_store_file" value="{{ local_store_file }}">
+              <div class="form-text">
+                Scrypt-hashed credentials. Mode 0600, owned by aruba-agent.
+              </div>
+            </div>
+
+            <hr class="border-secondary my-4">
+
+            <!-- RADIUS toggle -->
+            <div class="form-check form-switch mb-3">
+              <input class="form-check-input" type="checkbox" role="switch"
+                     id="radius_enabled" name="radius_enabled"
+                     {% if radius_enabled %}checked{% endif %}>
+              <label class="form-check-label" for="radius_enabled">
+                <strong>Enable RADIUS authentication</strong>
+              </label>
+              <div class="form-text">
+                PAP on UDP 1812. Tried after local auth.
+              </div>
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-7">
+                <label class="form-label" for="radius_server">Server</label>
+                <input type="text" class="form-control" id="radius_server"
+                       name="radius_server" value="{{ radius_server }}"
+                       placeholder="10.0.0.50">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label" for="radius_port">Port</label>
+                <input type="number" class="form-control" id="radius_port"
+                       name="radius_port" value="{{ radius_port }}">
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label" for="radius_secret">Shared secret</label>
+              <input type="password" class="form-control" id="radius_secret"
+                     name="radius_secret" autocomplete="new-password"
+                     placeholder="{% if radius_secret_set %}•••••••• (leave blank to keep){% else %}not configured{% endif %}">
+              <div class="form-text">
+                {% if radius_secret_set %}
+                Existing secret is preserved if you leave this blank.
+                {% else %}
+                Required when RADIUS is enabled.
+                {% endif %}
+              </div>
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label class="form-label" for="radius_nas">NAS-Identifier</label>
+                <input type="text" class="form-control" id="radius_nas"
+                       name="radius_nas" value="{{ radius_nas }}">
+                <div class="form-text">Sent to the RADIUS server to identify this NAS.</div>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label" for="radius_timeout">Timeout (s)</label>
+                <input type="number" class="form-control" id="radius_timeout"
+                       name="radius_timeout" value="{{ radius_timeout }}" min="1">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label" for="radius_retries">Retries</label>
+                <input type="number" class="form-control" id="radius_retries"
+                       name="radius_retries" value="{{ radius_retries }}" min="0">
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary"
+                    {% if not editor_writable %}disabled{% endif %}>
+              <i class="bi bi-save me-1"></i>Save
+            </button>
+            <span class="text-muted small ms-2">
+              Restart the agent from the Settings page to apply.
+            </span>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Local users panel ───────────────────────────────────────── -->
+    <div class="col-lg-5">
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title mb-3">Local users</h5>
+
+          <table class="table table-sm align-middle mb-3">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Last login</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in users %}
+              <tr>
+                <td>
+                  <i class="bi bi-person-circle me-1"></i>{{ u.username }}
+                  {% if u.must_change %}
+                  <span class="badge bg-warning text-dark ms-1" title="Must change password on next login">
+                    must change
+                  </span>
+                  {% endif %}
+                  {% if u.username == current_user %}
+                  <span class="badge bg-info ms-1">you</span>
+                  {% endif %}
+                </td>
+                <td class="small text-muted">
+                  {% if u.last_login %}{{ u.last_login }}{% else %}never{% endif %}
+                </td>
+                <td class="text-end">
+                  {% if u.username != current_user and users|length > 1 %}
+                  <form method="POST"
+                        action="{{ url_for('settings_user_remove', username=u.username) }}"
+                        onsubmit="return confirm('Remove user {{ u.username }}?');"
+                        class="d-inline">
+                    <button type="submit" class="btn btn-outline-danger btn-sm"
+                            title="Remove user">
+                      <i class="bi bi-trash"></i>
+                    </button>
+                  </form>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+
+          <hr class="border-secondary">
+
+          <h6 class="mb-2">Add a new user</h6>
+          <form method="POST" action="{{ url_for('settings_user_add') }}" autocomplete="off">
+            <div class="mb-2">
+              <input type="text" class="form-control form-control-sm"
+                     name="new_username" placeholder="Username" required>
+            </div>
+            <div class="mb-2">
+              <input type="password" class="form-control form-control-sm"
+                     name="new_password" placeholder="Password (min 8 chars)"
+                     minlength="8" required>
+            </div>
+            <button type="submit" class="btn btn-outline-primary btn-sm">
+              <i class="bi bi-plus-lg me-1"></i>Add User
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+</body>
+</html>

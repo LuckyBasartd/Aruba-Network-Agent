@@ -13,6 +13,19 @@
         .section-card .bi { color:#58a6ff; }
         .section-card.disabled { opacity:0.55; }
         .section-card.disabled .badge-soon { background:#30363d; color:#8b949e; }
+        .restart-overlay {
+            position:fixed; inset:0;
+            background:rgba(13,17,23,0.92);
+            display:none;
+            align-items:center; justify-content:center;
+            z-index:1080;
+        }
+        .restart-overlay.show { display:flex; }
+        .restart-overlay .panel {
+            background:#161b22; border:1px solid #30363d;
+            border-radius:12px; padding:2rem 2.5rem; text-align:center;
+            min-width:320px;
+        }
     </style>
 </head>
 <body>
@@ -41,21 +54,34 @@
 
 <div class="container-fluid py-4 px-4">
 
-  <div class="d-flex align-items-center mb-4">
+  <div class="d-flex align-items-center justify-content-between mb-4">
     <h2 class="mb-0"><i class="bi bi-gear-fill me-2 text-primary"></i>Settings</h2>
+    <div>
+      {% if can_restart %}
+      <button class="btn btn-warning" onclick="restartAgent()">
+        <i class="bi bi-arrow-repeat me-1"></i>Restart Agent
+      </button>
+      {% else %}
+      <span class="text-muted small me-2">Manual restart:</span>
+      <code>sudo systemctl restart aruba-agent</code>
+      {% endif %}
+    </div>
   </div>
 
-  <div class="alert alert-info">
-    <i class="bi bi-info-circle me-2"></i>
-    Per-section editors for <code>/etc/aruba-agent/config.ini</code> are landing in
-    a follow-up phase. The cards below preview what's coming. For now, edit
-    <code>config.ini</code> directly and restart the service:
-    <code>sudo systemctl restart aruba-agent</code>.
+  {% if not editor_writable %}
+  <div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    The agent does not have write permission on
+    <code>{{ config_path or '/etc/aruba-agent/config.ini' }}</code>.
+    Saving settings will fail until permissions are corrected:
+    <pre class="mt-2 mb-0"><code>sudo chown aruba-agent:aruba-agent {{ config_path or '/etc/aruba-agent/config.ini' }}
+sudo chmod 640 {{ config_path or '/etc/aruba-agent/config.ini' }}</code></pre>
   </div>
+  {% endif %}
 
   <div class="row g-3">
 
-    <!-- Account / password -->
+    <!-- Account / password (works in Phase A) -->
     <div class="col-md-6 col-lg-4">
       <div class="card section-card h-100">
         <div class="card-body">
@@ -76,34 +102,38 @@
       </div>
     </div>
 
-    <!-- Authentication (RADIUS toggle, local users) -->
+    <!-- Authentication -->
     <div class="col-md-6 col-lg-4">
-      <div class="card section-card h-100 disabled">
+      <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-shield-check me-2"></i>Authentication
-            <span class="badge badge-soon ms-2">Phase B</span>
           </h5>
           <p class="card-text small text-muted">
             RADIUS toggle, server, secret, NAS identifier. Add and remove
             local users.
           </p>
+          <a href="{{ url_for('settings_auth') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
         </div>
       </div>
     </div>
 
-    <!-- Email alerts -->
+    <!-- Email Alerts -->
     <div class="col-md-6 col-lg-4">
-      <div class="card section-card h-100 disabled">
+      <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-envelope-at me-2"></i>Email Alerts
-            <span class="badge badge-soon ms-2">Phase B</span>
           </h5>
           <p class="card-text small text-muted">
             Toggle SMTP on/off, server, port, TLS, sender, recipients,
             test send.
           </p>
+          <a href="{{ url_for('settings_email') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
         </div>
       </div>
     </div>
@@ -114,7 +144,7 @@
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-key me-2"></i>Switch Credentials
-            <span class="badge badge-soon ms-2">Phase B</span>
+            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Default admin username/password used by the poller, backup,
@@ -130,7 +160,7 @@
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-broadcast-pin me-2"></i>Network Scanner
-            <span class="badge badge-soon ms-2">Phase B</span>
+            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Subnets, exclude suffixes, filter keywords, ICMP timeout,
@@ -146,7 +176,7 @@
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-archive me-2"></i>Config Backup
-            <span class="badge badge-soon ms-2">Phase B</span>
+            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Daily schedule, retention days, output path, optional API
@@ -162,7 +192,7 @@
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-diagram-3 me-2"></i>ARP Discovery
-            <span class="badge badge-soon ms-2">Phase B</span>
+            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Add and remove campus locations, routers, subnet IP lists,
@@ -178,7 +208,7 @@
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-cpu me-2"></i>Firmware
-            <span class="badge badge-soon ms-2">Phase B</span>
+            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Target version, image path, max workers. On-demand updater
@@ -188,13 +218,13 @@
       </div>
     </div>
 
-    <!-- Web / sessions -->
+    <!-- Web Server -->
     <div class="col-md-6 col-lg-4">
       <div class="card section-card h-100 disabled">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-window me-2"></i>Web Server
-            <span class="badge badge-soon ms-2">Phase B</span>
+            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Bind host/port, waitress thread count, session timeout,
@@ -208,5 +238,55 @@
 
 </div>
 
+<div class="restart-overlay" id="restart-overlay">
+  <div class="panel">
+    <div class="spinner-border text-warning mb-3" role="status"></div>
+    <h5 id="restart-msg">Restarting agent…</h5>
+    <p class="text-muted small mb-0" id="restart-sub">This page will reload automatically.</p>
+  </div>
+</div>
+
+<script>
+async function restartAgent() {
+    const overlay = document.getElementById('restart-overlay');
+    const msg     = document.getElementById('restart-msg');
+    const sub     = document.getElementById('restart-sub');
+    overlay.classList.add('show');
+    msg.textContent = 'Restarting agent…';
+    sub.textContent = 'This page will reload automatically.';
+
+    try {
+        const r = await fetch('/api/settings/restart', { method: 'POST' });
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            msg.textContent = 'Restart failed';
+            sub.textContent = err.error || 'See journalctl for details.';
+            return;
+        }
+    } catch (e) {
+        msg.textContent = 'Restart request failed';
+        sub.textContent = e.message;
+        return;
+    }
+
+    // Service is going down. Poll until it answers, then reload.
+    msg.textContent = 'Waiting for agent…';
+    setTimeout(pollUp, 2500);
+}
+
+async function pollUp(attempt=0) {
+    const sub = document.getElementById('restart-sub');
+    try {
+        const r = await fetch('/api/state', { cache: 'no-store' });
+        if (r.ok) { window.location.reload(); return; }
+    } catch (e) { /* still down */ }
+    if (attempt > 30) {
+        sub.textContent = 'Still waiting after 60s — try reloading manually.';
+        return;
+    }
+    sub.textContent = `Waiting for agent… (${attempt + 1})`;
+    setTimeout(() => pollUp(attempt + 1), 2000);
+}
+</script>
 </body>
 </html>
