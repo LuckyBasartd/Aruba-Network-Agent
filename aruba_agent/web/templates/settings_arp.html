@@ -1,0 +1,117 @@
+{% extends "_settings_chrome.html" %}
+{% block title %}ARP Discovery{% endblock %}
+{% block icon %}bi-diagram-3{% endblock %}
+{% block heading %}ARP Discovery{% endblock %}
+
+{% block content %}
+<p class="text-muted small mb-4">
+  One block per campus location. Each location runs nmap against its
+  subnet list, queries each router's ARP table via the AOS-CX CLI API,
+  and writes a timestamped CSV to the output directory.
+</p>
+
+<div class="row g-3 mb-4">
+  {% for loc in locations %}
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h5 class="mb-0">
+            <i class="bi bi-geo-alt me-2 text-primary"></i>
+            <code>arp.{{ loc.name }}</code>
+          </h5>
+          <form method="POST"
+                action="{{ url_for('settings_arp_remove', location=loc.name) }}"
+                onsubmit="return confirm('Remove location {{ loc.name }}? This will delete the [arp.{{ loc.name }}] section.');"
+                class="d-inline">
+            <button type="submit" class="btn btn-outline-danger btn-sm">
+              <i class="bi bi-trash me-1"></i>Remove
+            </button>
+          </form>
+        </div>
+
+        <form method="POST"
+              action="{{ url_for('settings_arp_save', location=loc.name) }}"
+              autocomplete="off">
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-3">
+              <div class="form-check form-switch mt-4">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="enabled-{{ loc.name }}" name="enabled"
+                       {% if loc.enabled %}checked{% endif %}>
+                <label class="form-check-label" for="enabled-{{ loc.name }}">
+                  Enabled
+                </label>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label" for="schedule-{{ loc.name }}">Schedule</label>
+              <input type="text" class="form-control" id="schedule-{{ loc.name }}"
+                     name="schedule" value="{{ loc.schedule }}"
+                     pattern="^\d{1,2}:\d{2}$" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label" for="routers-{{ loc.name }}">Router IPs (comma-separated)</label>
+              <input type="text" class="form-control" id="routers-{{ loc.name }}"
+                     name="routers" value="{{ loc.routers }}"
+                     placeholder="10.253.0.12, 10.253.0.13">
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label" for="ip_list-{{ loc.name }}">Subnet IP list file</label>
+              <input type="text" class="form-control" id="ip_list-{{ loc.name }}"
+                     name="ip_list" value="{{ loc.ip_list }}">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label" for="output_dir-{{ loc.name }}">Output directory</label>
+              <input type="text" class="form-control" id="output_dir-{{ loc.name }}"
+                     name="output_dir" value="{{ loc.output_dir }}">
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-sm"
+                  {% if not editor_writable %}disabled{% endif %}>
+            <i class="bi bi-save me-1"></i>Save Location
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="col-12">
+    <div class="alert alert-info">
+      <i class="bi bi-info-circle me-2"></i>
+      No ARP locations configured yet. Add one below.
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <h6 class="mb-3"><i class="bi bi-plus-lg me-2"></i>Add a new location</h6>
+    <form method="POST" action="{{ url_for('settings_arp_add') }}"
+          autocomplete="off" class="row g-2 align-items-end">
+      <div class="col-md-6">
+        <label class="form-label" for="location_name">Location name</label>
+        <input type="text" class="form-control" id="location_name"
+               name="location_name" placeholder="main-campus"
+               pattern="^[a-zA-Z0-9._-]+$" required>
+        <div class="form-text">
+          Becomes <code>[arp.main-campus]</code>. Letters, digits, dot,
+          dash, underscore.
+        </div>
+      </div>
+      <div class="col-md-3">
+        <button type="submit" class="btn btn-outline-primary"
+                {% if not editor_writable %}disabled{% endif %}>
+          <i class="bi bi-plus-lg me-1"></i>Add Location
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

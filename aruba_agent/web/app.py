@@ -23,15 +23,17 @@ from __future__ import annotations
 
 import configparser
 import functools
+import ipaddress
 import logging
 import os
+import re
 import secrets
 import smtplib
 import subprocess
 import threading
 from datetime import timedelta
 from email.message import EmailMessage
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 from flask import (
     Flask,
@@ -619,6 +621,479 @@ def create_app(
         except (smtplib.SMTPException, OSError) as exc:
             log.warning("Web UI: SMTP test send failed: %s", exc)
             return jsonify({"error": str(exc)}), 502
+
+    # ── Validation helpers (shared by Phase B2 editors) ────────────────────
+
+    _HHMM = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+    _LOCATION_NAME = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+    def _csv(s: str) -> List[str]:
+        return [x.strip() for x in (s or "").split(",") if x.strip()]
+
+    def _validate_hhmm(s: str) -> Optional[str]:
+        m = _HHMM.match(s or "")
+        if not m:
+            return None
+        h, mn = int(m.group(1)), int(m.group(2))
+        if not (0 <= h <= 23 and 0 <= mn <= 59):
+            return None
+        return f"{h:02d}:{mn:02d}"
+
+    def _validate_cidrs(s: str) -> Tuple[bool, List[str]]:
+        """Returns (ok, list-of-bad-entries). Empty input is ok."""
+        bad: List[str] = []
+        for item in _csv(s):
+            try:
+                ipaddress.ip_network(item, strict=False)
+            except ValueError:
+                bad.append(item)
+        return (not bad, bad)
+
+    def _validate_ips(s: str) -> Tuple[bool, List[str]]:
+        bad: List[str] = []
+        for item in _csv(s):
+            try:
+                ipaddress.ip_address(item)
+            except ValueError:
+                bad.append(item)
+        return (not bad, bad)
+
+    def _editor_required():
+        """Return a redirect+flash if config can't be saved; else None."""
+        if editor is None:
+            flash("Settings editor disabled (no config path).", "error")
+            return redirect(url_for("settings_page"))
+        if not editor.writable():
+            flash("Config file is not writable by the agent. "
+                  "Fix permissions and retry.", "error")
+            return redirect(url_for("settings_page"))
+        return None
+
+    # ── Switch credentials ────────────────────────────────────────────────
+
+    @app.get("/settings/credentials")
+    @require_login
+    def settings_credentials():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        c = live["credentials"] if live.has_section("credentials") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "username":      c.get("username", ""),
+            "password_set":  bool(c.get("password", "").strip()),
+            "errors":        get_flashed_messages(category_filter=["error"]),
+            "messages":      get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_credentials.html", **ctx)
+
+    @app.post("/settings/credentials")
+    @require_login
+    def settings_credentials_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        username = (request.form.get("username") or "").strip()
+        new_pw   = request.form.get("password") or ""
+        if not username:
+            flash("Username is required.", "error")
+            return redirect(url_for("settings_credentials"))
+
+        live = editor.read()
+        existing = (live["credentials"]["password"]
+                    if live.has_section("credentials") and
+                       live.has_option("credentials", "password")
+                    else "")
+        editor.update_section("credentials", {
+            "username": username,
+            "password": new_pw if new_pw else existing,
+        })
+        log.info("Web UI: switch credentials updated by user=%s",
+                 session.get("user"))
+        flash("Switch credentials saved. Restart the agent to apply.", "success")
+        return redirect(url_for("settings_credentials"))
+
+    # ── Network scanner ───────────────────────────────────────────────────
+
+    @app.get("/settings/scanner")
+    @require_login
+    def settings_scanner():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        s = live["scanner"] if live.has_section("scanner") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "enabled":          s.get("enabled",          "true").lower() == "true",
+            "schedule":         s.get("schedule",         "00:00"),
+            "subnets":          s.get("subnets",          ""),
+            "exclude_suffixes": s.get("exclude_suffixes", "1,2,3,255"),
+            "filter_keywords":  s.get("filter_keywords",  "6100,6300,Aruba"),
+            "device_file":      s.get("device_file",
+                                      "/var/lib/aruba-agent/network_devices.csv"),
+            "ip_list_output":   s.get("ip_list_output",
+                                      "/var/lib/aruba-agent/ip_list.txt"),
+            "icmp_timeout":     s.get("icmp_timeout",     "8"),
+            "verify_via_api":   s.get("verify_via_api",   "true").lower() == "true",
+            "api_workers":      s.get("api_workers",      "16"),
+            "errors":           get_flashed_messages(category_filter=["error"]),
+            "messages":         get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_scanner.html", **ctx)
+
+    @app.post("/settings/scanner")
+    @require_login
+    def settings_scanner_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        f = request.form
+        sched = _validate_hhmm(f.get("schedule") or "")
+        if sched is None:
+            flash("Schedule must be HH:MM (24-hour).", "error")
+            return redirect(url_for("settings_scanner"))
+
+        ok, bad = _validate_cidrs(f.get("subnets") or "")
+        if not ok:
+            flash(f"Invalid subnet(s): {', '.join(bad)}", "error")
+            return redirect(url_for("settings_scanner"))
+
+        try:
+            timeout = int(f.get("icmp_timeout") or "8")
+            workers = int(f.get("api_workers")  or "16")
+            if timeout < 1 or workers < 1:
+                raise ValueError
+        except ValueError:
+            flash("ICMP timeout and API workers must be positive integers.",
+                  "error")
+            return redirect(url_for("settings_scanner"))
+
+        editor.update_section("scanner", {
+            "enabled":          "true" if f.get("enabled") == "on" else "false",
+            "schedule":         sched,
+            "subnets":          ",".join(_csv(f.get("subnets") or "")),
+            "exclude_suffixes": ",".join(_csv(f.get("exclude_suffixes") or "")),
+            "filter_keywords":  ",".join(_csv(f.get("filter_keywords") or "")),
+            "device_file":      (f.get("device_file") or "").strip(),
+            "ip_list_output":   (f.get("ip_list_output") or "").strip(),
+            "icmp_timeout":     str(timeout),
+            "verify_via_api":   "true" if f.get("verify_via_api") == "on" else "false",
+            "api_workers":      str(workers),
+        })
+        log.info("Web UI: scanner settings updated by user=%s", session.get("user"))
+        flash("Scanner settings saved. Restart the agent to apply.", "success")
+        return redirect(url_for("settings_scanner"))
+
+    # ── Config Backup ─────────────────────────────────────────────────────
+
+    @app.get("/settings/backup")
+    @require_login
+    def settings_backup():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        b = live["backup"] if live.has_section("backup") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "enabled":        b.get("enabled",        "true").lower() == "true",
+            "schedule":       b.get("schedule",       "02:00"),
+            "ip_list":        b.get("ip_list",
+                                    "/var/lib/aruba-agent/ip_list.txt"),
+            "backup_path":    b.get("backup_path",
+                                    "/var/lib/aruba-agent/backups"),
+            "retention_days": b.get("retention_days", "7"),
+            "api_version":    b.get("api_version",    ""),
+            "errors":         get_flashed_messages(category_filter=["error"]),
+            "messages":       get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_backup.html", **ctx)
+
+    @app.post("/settings/backup")
+    @require_login
+    def settings_backup_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        f = request.form
+        sched = _validate_hhmm(f.get("schedule") or "")
+        if sched is None:
+            flash("Schedule must be HH:MM (24-hour).", "error")
+            return redirect(url_for("settings_backup"))
+        try:
+            retention = int(f.get("retention_days") or "7")
+            if retention < 1:
+                raise ValueError
+        except ValueError:
+            flash("Retention days must be a positive integer.", "error")
+            return redirect(url_for("settings_backup"))
+
+        values = {
+            "enabled":        "true" if f.get("enabled") == "on" else "false",
+            "schedule":       sched,
+            "ip_list":        (f.get("ip_list") or "").strip(),
+            "backup_path":    (f.get("backup_path") or "").strip(),
+            "retention_days": str(retention),
+        }
+        api_v = (f.get("api_version") or "").strip()
+        remove: List[str] = []
+        if api_v:
+            values["api_version"] = api_v
+        else:
+            remove.append("api_version")
+
+        editor.update_section("backup", values, remove_keys=remove)
+        log.info("Web UI: backup settings updated by user=%s", session.get("user"))
+        flash("Backup settings saved. Restart the agent to apply.", "success")
+        return redirect(url_for("settings_backup"))
+
+    # ── Firmware ──────────────────────────────────────────────────────────
+
+    @app.get("/settings/firmware")
+    @require_login
+    def settings_firmware():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        fw = live["firmware"] if live.has_section("firmware") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "ip_list":        fw.get("ip_list",
+                                     "/var/lib/aruba-agent/ip_list.txt"),
+            "target_version": fw.get("target_version", ""),
+            "image_path":     fw.get("image_path",     ""),
+            "max_workers":    fw.get("max_workers",    "2"),
+            "errors":         get_flashed_messages(category_filter=["error"]),
+            "messages":       get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_firmware.html", **ctx)
+
+    @app.post("/settings/firmware")
+    @require_login
+    def settings_firmware_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        f = request.form
+        try:
+            workers = int(f.get("max_workers") or "2")
+            if workers < 1:
+                raise ValueError
+        except ValueError:
+            flash("Max workers must be a positive integer.", "error")
+            return redirect(url_for("settings_firmware"))
+
+        editor.update_section("firmware", {
+            "ip_list":        (f.get("ip_list") or "").strip(),
+            "target_version": (f.get("target_version") or "").strip(),
+            "image_path":     (f.get("image_path") or "").strip(),
+            "max_workers":    str(workers),
+        })
+        log.info("Web UI: firmware settings updated by user=%s",
+                 session.get("user"))
+        flash("Firmware settings saved. Restart the agent to apply.", "success")
+        return redirect(url_for("settings_firmware"))
+
+    # ── Web Server ────────────────────────────────────────────────────────
+
+    @app.get("/settings/web")
+    @require_login
+    def settings_web():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        w = live["web"]   if live.has_section("web")   else {}
+        a = live["agent"] if live.has_section("agent") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "host":                  w.get("host",                  "127.0.0.1"),
+            "port":                  w.get("port",                  "8080"),
+            "threads":               w.get("threads",               "8"),
+            "session_timeout_hours": w.get("session_timeout_hours", "8"),
+            "secure_cookies":        w.get("secure_cookies",        "true").lower() == "true",
+            "trust_proxy_headers":   w.get("trust_proxy_headers",   "true").lower() == "true",
+            "secret_key_set":        bool(w.get("secret_key", "").strip()),
+            "state_file":            a.get("state_file",
+                                           "/var/lib/aruba-agent/state.json"),
+            "errors":                get_flashed_messages(category_filter=["error"]),
+            "messages":              get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_web.html", **ctx)
+
+    @app.post("/settings/web")
+    @require_login
+    def settings_web_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        f = request.form
+        try:
+            port    = int(f.get("port")                  or "8080")
+            threads = int(f.get("threads")               or "8")
+            timeout = int(f.get("session_timeout_hours") or "8")
+            if not (1 <= port <= 65535) or threads < 1 or timeout < 1:
+                raise ValueError
+        except ValueError:
+            flash("Port, threads, and session timeout must be positive integers; "
+                  "port in 1–65535.", "error")
+            return redirect(url_for("settings_web"))
+
+        live = editor.read()
+        existing_secret = (live["web"]["secret_key"]
+                           if live.has_section("web") and
+                              live.has_option("web", "secret_key")
+                           else "")
+
+        regen = f.get("regenerate_secret") == "on"
+        if regen:
+            new_secret = secrets.token_urlsafe(48)
+        else:
+            new_secret = existing_secret
+
+        editor.update_section("web", {
+            "host":                  (f.get("host") or "127.0.0.1").strip(),
+            "port":                  str(port),
+            "threads":               str(threads),
+            "secret_key":            new_secret,
+            "session_timeout_hours": str(timeout),
+            "secure_cookies":        "true" if f.get("secure_cookies")      == "on" else "false",
+            "trust_proxy_headers":   "true" if f.get("trust_proxy_headers") == "on" else "false",
+        })
+        editor.update_section("agent", {
+            "state_file": (f.get("state_file") or
+                           "/var/lib/aruba-agent/state.json").strip(),
+        })
+
+        log.info("Web UI: web settings updated by user=%s (secret_regenerated=%s)",
+                 session.get("user"), regen)
+        if regen:
+            flash("Web settings saved AND a new secret_key was generated. "
+                  "Existing sessions will be invalidated when the agent restarts.",
+                  "success")
+        else:
+            flash("Web settings saved. Restart the agent to apply.", "success")
+        return redirect(url_for("settings_web"))
+
+    # ── ARP Discovery (multi-section: [arp.<location>]) ────────────────────
+
+    def _arp_locations(live_cfg: configparser.ConfigParser) -> List[dict]:
+        out = []
+        for sec in live_cfg.sections():
+            if not sec.startswith("arp."):
+                continue
+            name = sec[len("arp."):]
+            s    = live_cfg[sec]
+            out.append({
+                "name":       name,
+                "section":    sec,
+                "enabled":    s.get("enabled",  "true").lower() == "true",
+                "schedule":   s.get("schedule", "01:00"),
+                "routers":    s.get("routers",  ""),
+                "ip_list":    s.get("ip_list",  ""),
+                "output_dir": s.get("output_dir",
+                                    f"/var/lib/aruba-agent/arp/{name}"),
+            })
+        out.sort(key=lambda x: x["name"])
+        return out
+
+    @app.get("/settings/arp")
+    @require_login
+    def settings_arp():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        ctx  = _settings_context()
+        ctx.update({
+            "locations": _arp_locations(live),
+            "errors":    get_flashed_messages(category_filter=["error"]),
+            "messages":  get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_arp.html", **ctx)
+
+    @app.post("/settings/arp/<location>")
+    @require_login
+    def settings_arp_save(location: str):
+        guard = _editor_required()
+        if guard is not None: return guard
+        if not _LOCATION_NAME.match(location):
+            abort(400)
+
+        f = request.form
+        sched = _validate_hhmm(f.get("schedule") or "")
+        if sched is None:
+            flash("Schedule must be HH:MM (24-hour).", "error")
+            return redirect(url_for("settings_arp"))
+
+        ok, bad = _validate_ips(f.get("routers") or "")
+        if not ok:
+            flash(f"Invalid router IP(s): {', '.join(bad)}", "error")
+            return redirect(url_for("settings_arp"))
+
+        section = f"arp.{location}"
+        editor.update_section(section, {
+            "enabled":    "true" if f.get("enabled") == "on" else "false",
+            "schedule":   sched,
+            "routers":    ",".join(_csv(f.get("routers") or "")),
+            "ip_list":    (f.get("ip_list") or "").strip(),
+            "output_dir": (f.get("output_dir") or
+                           f"/var/lib/aruba-agent/arp/{location}").strip(),
+        })
+        log.info("Web UI: ARP location '%s' saved by user=%s",
+                 location, session.get("user"))
+        flash(f"Location '{location}' saved. Restart the agent to apply.",
+              "success")
+        return redirect(url_for("settings_arp"))
+
+    @app.post("/settings/arp/add")
+    @require_login
+    def settings_arp_add():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        name = (request.form.get("location_name") or "").strip().lower()
+        if not name or not _LOCATION_NAME.match(name):
+            flash("Location name must be alphanumeric "
+                  "(plus . _ -). Try 'main-campus'.", "error")
+            return redirect(url_for("settings_arp"))
+
+        live = editor.read()
+        if live.has_section(f"arp.{name}"):
+            flash(f"Location '{name}' already exists.", "error")
+            return redirect(url_for("settings_arp"))
+
+        editor.update_section(f"arp.{name}", {
+            "enabled":    "true",
+            "schedule":   "01:00",
+            "routers":    "",
+            "ip_list":    f"/etc/aruba-agent/subnets/{name}_ip_list.txt",
+            "output_dir": f"/var/lib/aruba-agent/arp/{name}",
+        })
+        log.info("Web UI: ARP location '%s' added by user=%s",
+                 name, session.get("user"))
+        flash(f"Location '{name}' added. Fill in routers and "
+              "subnet list, then save.", "success")
+        return redirect(url_for("settings_arp"))
+
+    @app.post("/settings/arp/<location>/remove")
+    @require_login
+    def settings_arp_remove(location: str):
+        guard = _editor_required()
+        if guard is not None: return guard
+        if not _LOCATION_NAME.match(location):
+            abort(400)
+
+        live   = editor.read()
+        header = editor.read_header()
+        section = f"arp.{location}"
+        if not live.has_section(section):
+            flash(f"Location '{location}' does not exist.", "error")
+        else:
+            live.remove_section(section)
+            editor.save(live, header=header)
+            log.info("Web UI: ARP location '%s' removed by user=%s",
+                     location, session.get("user"))
+            flash(f"Location '{location}' removed. Restart the agent to apply.",
+                  "success")
+        return redirect(url_for("settings_arp"))
 
     # --------------------------------------------------------------- dashboard
 

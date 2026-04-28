@@ -1,0 +1,89 @@
+{# ────────────────────────────────────────────────────────────────────────
+   Shared chrome for every settings sub-page. Pages should:
+
+       {% extends "_settings_chrome.html" %}
+       {% block title %}Page Title{% endblock %}
+       {% block icon %}bi-broadcast-pin{% endblock %}
+       {% block heading %}Network Scanner{% endblock %}
+       {% block content %} ... form ... {% endblock %}
+
+   The chrome handles navbar, flash messages, the writable warning,
+   and consistent styling so individual pages stay focused on their
+   own form fields.
+   ──────────────────────────────────────────────────────────────────── #}
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Settings{% endblock %} — Aruba Network Agent</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body  { background:#0d1117; color:#c9d1d9; }
+        .card { background:#161b22; border:1px solid #30363d; }
+        .form-control, .form-select { background:#0d1117; border-color:#30363d; color:#c9d1d9; }
+        .form-control:focus, .form-select:focus {
+            background:#0d1117; border-color:#58a6ff; color:#c9d1d9;
+            box-shadow:0 0 0 0.2rem rgba(88,166,255,0.25);
+        }
+        .form-text { color:#8b949e; }
+        .form-control:disabled, .form-control[readonly] { background:#161b22; }
+        code.path { color:#79c0ff; }
+        .table { color:#c9d1d9; --bs-table-bg: transparent; }
+        .table thead { color:#8b949e; }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+<nav class="navbar navbar-dark" style="background:#161b22; border-bottom:1px solid #21262d;">
+  <div class="container-fluid">
+    <span class="navbar-brand">
+      <i class="bi bi-router me-2 text-primary"></i>Aruba Network Agent
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings_page') }}">
+        <i class="bi bi-arrow-left"></i> Settings
+      </a>
+      {% if current_user %}
+      <span class="text-muted small ms-3 d-none d-md-inline">
+        <i class="bi bi-person-circle me-1"></i>{{ current_user }}
+      </span>
+      <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}">
+        <i class="bi bi-box-arrow-right"></i> Logout
+      </a>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid py-4 px-4">
+
+  <h2 class="mb-4">
+    <i class="bi {% block icon %}bi-gear-fill{% endblock %} me-2 text-primary"></i>
+    {% block heading %}Settings{% endblock %}
+  </h2>
+
+  {% for err in errors %}
+  <div class="alert alert-danger py-2"><i class="bi bi-x-circle me-2"></i>{{ err }}</div>
+  {% endfor %}
+  {% for msg in messages %}
+  <div class="alert alert-success py-2"><i class="bi bi-check-circle me-2"></i>{{ msg }}</div>
+  {% endfor %}
+
+  {% if not editor_writable %}
+  <div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    <code class="path">{{ config_path }}</code> is not writable by the agent.
+    Save buttons will fail until permissions are corrected.
+  </div>
+  {% endif %}
+
+  {% block content %}{% endblock %}
+
+</div>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

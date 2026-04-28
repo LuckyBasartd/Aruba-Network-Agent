@@ -1,0 +1,64 @@
+{% extends "_settings_chrome.html" %}
+{% block title %}Firmware{% endblock %}
+{% block icon %}bi-cpu{% endblock %}
+{% block heading %}Firmware{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-body">
+        <p class="text-muted small">
+          On-demand firmware updater. Run from the CLI:
+          <code>sudo -u aruba-agent python3 /opt/aruba-agent/main.py
+          /etc/aruba-agent/config.ini --firmware-update</code>.
+          Settings here just configure what that command will do.
+        </p>
+
+        <form method="POST" autocomplete="off">
+
+          <div class="mb-3">
+            <label class="form-label" for="ip_list">Source IP list</label>
+            <input type="text" class="form-control" id="ip_list"
+                   name="ip_list" value="{{ ip_list }}">
+            <div class="form-text">
+              Usually matches <code>[scanner].ip_list_output</code>.
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label" for="target_version">Target version</label>
+              <input type="text" class="form-control" id="target_version"
+                     name="target_version" value="{{ target_version }}"
+                     placeholder="10.13.1150">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label" for="max_workers">Max concurrent workers</label>
+              <input type="number" class="form-control" id="max_workers"
+                     name="max_workers" value="{{ max_workers }}" min="1">
+              <div class="form-text">2 is safe; bump cautiously.</div>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label" for="image_path">Firmware image path</label>
+            <input type="text" class="form-control" id="image_path"
+                   name="image_path" value="{{ image_path }}"
+                   placeholder="/var/lib/aruba-agent/firmware/ArubaOS-CX_6400-6300_10_13_1150.swi">
+            <div class="form-text">
+              Drop the .swi file here before running the updater
+              (<code>scp ...swi user@server:...</code>).
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary"
+                  {% if not editor_writable %}disabled{% endif %}>
+            <i class="bi bi-save me-1"></i>Save
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

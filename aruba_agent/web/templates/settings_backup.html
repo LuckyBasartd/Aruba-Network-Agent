@@ -1,0 +1,84 @@
+{% extends "_settings_chrome.html" %}
+{% block title %}Config Backup{% endblock %}
+{% block icon %}bi-archive{% endblock %}
+{% block heading %}Config Backup{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-body">
+        <p class="text-muted small">
+          Daily backup of running-config from every Aruba switch in
+          <code class="path">{{ ip_list }}</code>. Older backups beyond
+          the retention window are pruned automatically.
+        </p>
+
+        <form method="POST" autocomplete="off">
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="enabled" name="enabled"
+                       {% if enabled %}checked{% endif %}>
+                <label class="form-check-label" for="enabled">
+                  <strong>Run scheduled backups</strong>
+                </label>
+                <div class="form-text">
+                  <em>Run Now</em> on the dashboard works regardless.
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label" for="schedule">Schedule (HH:MM)</label>
+              <input type="text" class="form-control" id="schedule"
+                     name="schedule" value="{{ schedule }}"
+                     pattern="^\d{1,2}:\d{2}$" placeholder="02:00" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label" for="retention_days">Retention (days)</label>
+              <input type="number" class="form-control" id="retention_days"
+                     name="retention_days" value="{{ retention_days }}" min="1">
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="ip_list">Source IP list</label>
+            <input type="text" class="form-control" id="ip_list"
+                   name="ip_list" value="{{ ip_list }}">
+            <div class="form-text">
+              Usually matches <code>[scanner].ip_list_output</code>.
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="backup_path">Backup output directory</label>
+            <input type="text" class="form-control" id="backup_path"
+                   name="backup_path" value="{{ backup_path }}">
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label" for="api_version">AOS-CX API version (optional)</label>
+            <input type="text" class="form-control" id="api_version"
+                   name="api_version" value="{{ api_version }}"
+                   placeholder="auto-detect (try v10.13 → v10.10 → v10.04)">
+            <div class="form-text">
+              Pin a specific version (e.g. <code>v10.13</code>) only if
+              auto-detect is misbehaving on your fleet.
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary"
+                  {% if not editor_writable %}disabled{% endif %}>
+            <i class="bi bi-save me-1"></i>Save
+          </button>
+          <span class="text-muted small ms-2">
+            Restart the agent to apply.
+          </span>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

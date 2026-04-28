@@ -140,96 +140,108 @@ sudo chmod 640 {{ config_path or '/etc/aruba-agent/config.ini' }}</code></pre>
 
     <!-- Switch credentials -->
     <div class="col-md-6 col-lg-4">
-      <div class="card section-card h-100 disabled">
+      <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-key me-2"></i>Switch Credentials
-            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Default admin username/password used by the poller, backup,
             ARP, and firmware tasks.
           </p>
+          <a href="{{ url_for('settings_credentials') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
         </div>
       </div>
     </div>
 
     <!-- Network scanner -->
     <div class="col-md-6 col-lg-4">
-      <div class="card section-card h-100 disabled">
+      <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-broadcast-pin me-2"></i>Network Scanner
-            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Subnets, exclude suffixes, filter keywords, ICMP timeout,
             REST-probe verification.
           </p>
+          <a href="{{ url_for('settings_scanner') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
         </div>
       </div>
     </div>
 
     <!-- Backup -->
     <div class="col-md-6 col-lg-4">
-      <div class="card section-card h-100 disabled">
+      <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-archive me-2"></i>Config Backup
-            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Daily schedule, retention days, output path, optional API
             version pin.
           </p>
+          <a href="{{ url_for('settings_backup') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
         </div>
       </div>
     </div>
 
     <!-- ARP -->
     <div class="col-md-6 col-lg-4">
-      <div class="card section-card h-100 disabled">
+      <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-diagram-3 me-2"></i>ARP Discovery
-            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Add and remove campus locations, routers, subnet IP lists,
             schedules.
           </p>
+          <a href="{{ url_for('settings_arp') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
         </div>
       </div>
     </div>
 
     <!-- Firmware -->
     <div class="col-md-6 col-lg-4">
-      <div class="card section-card h-100 disabled">
+      <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-cpu me-2"></i>Firmware
-            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Target version, image path, max workers. On-demand updater
             controls.
           </p>
+          <a href="{{ url_for('settings_firmware') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
         </div>
       </div>
     </div>
 
     <!-- Web Server -->
     <div class="col-md-6 col-lg-4">
-      <div class="card section-card h-100 disabled">
+      <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
             <i class="bi bi-window me-2"></i>Web Server
-            <span class="badge badge-soon ms-2">Phase B2</span>
           </h5>
           <p class="card-text small text-muted">
             Bind host/port, waitress thread count, session timeout,
-            cookie security flags.
+            cookie security flags, state snapshot path.
           </p>
+          <a href="{{ url_for('settings_web') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
         </div>
       </div>
     </div>

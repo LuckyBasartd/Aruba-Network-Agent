@@ -1,0 +1,130 @@
+{% extends "_settings_chrome.html" %}
+{% block title %}Web Server{% endblock %}
+{% block icon %}bi-window{% endblock %}
+{% block heading %}Web Server{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card">
+      <div class="card-body">
+        <p class="text-muted small">
+          Bind address, waitress thread pool, session policy, and
+          state-snapshot path. Most installs sit behind Apache on
+          <code>:443</code> with the listener bound to
+          <code>127.0.0.1:8080</code>.
+        </p>
+
+        <div class="alert alert-warning">
+          <i class="bi bi-exclamation-triangle me-2"></i>
+          Changes here can break access — if you set <code>host</code> to
+          something Apache can't reach, or invalidate the session secret,
+          you may need to fix things from a shell.
+        </div>
+
+        <form method="POST" autocomplete="off">
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label" for="host">Bind host</label>
+              <input type="text" class="form-control" id="host"
+                     name="host" value="{{ host }}"
+                     placeholder="127.0.0.1">
+              <div class="form-text">
+                <code>127.0.0.1</code> behind Apache, <code>0.0.0.0</code>
+                for direct access.
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label" for="port">Port</label>
+              <input type="number" class="form-control" id="port"
+                     name="port" value="{{ port }}" min="1" max="65535">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label" for="threads">Waitress threads</label>
+              <input type="number" class="form-control" id="threads"
+                     name="threads" value="{{ threads }}" min="1">
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <label class="form-label" for="session_timeout_hours">Session timeout (hours)</label>
+              <input type="number" class="form-control" id="session_timeout_hours"
+                     name="session_timeout_hours"
+                     value="{{ session_timeout_hours }}" min="1">
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="secure_cookies" name="secure_cookies"
+                       {% if secure_cookies %}checked{% endif %}>
+                <label class="form-check-label" for="secure_cookies">
+                  Secure cookies (HTTPS only)
+                </label>
+              </div>
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="trust_proxy_headers" name="trust_proxy_headers"
+                       {% if trust_proxy_headers %}checked{% endif %}>
+                <label class="form-check-label" for="trust_proxy_headers">
+                  Trust X-Forwarded-* (Apache proxy)
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <hr class="border-secondary my-4">
+
+          <h6>Session signing key</h6>
+          <p class="text-muted small mb-3">
+            {% if secret_key_set %}
+            A session signing key is configured. Sessions survive agent
+            restarts as long as this key stays the same.
+            {% else %}
+            <span class="text-warning">No signing key is set.</span>
+            The agent currently generates an ephemeral key at every
+            startup, so all sessions are invalidated on restart.
+            {% endif %}
+          </p>
+
+          <div class="form-check mb-4">
+            <input class="form-check-input" type="checkbox"
+                   id="regenerate_secret" name="regenerate_secret">
+            <label class="form-check-label" for="regenerate_secret">
+              {% if secret_key_set %}
+              Regenerate the secret_key (signs every session out on next restart)
+              {% else %}
+              Generate a new secret_key (recommended)
+              {% endif %}
+            </label>
+          </div>
+
+          <hr class="border-secondary my-4">
+
+          <h6>State snapshot</h6>
+          <div class="mb-4">
+            <label class="form-label" for="state_file">Path</label>
+            <input type="text" class="form-control" id="state_file"
+                   name="state_file" value="{{ state_file }}">
+            <div class="form-text">
+              JSON file the agent writes out so the dashboard
+              survives restarts. Must be writable by aruba-agent.
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary"
+                  {% if not editor_writable %}disabled{% endif %}>
+            <i class="bi bi-save me-1"></i>Save
+          </button>
+          <span class="text-muted small ms-2">
+            Restart the agent to apply.
+          </span>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
