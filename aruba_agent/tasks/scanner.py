@@ -32,9 +32,9 @@ import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-from aruba_agent.cx_session import ArubaCXSession
-from aruba_agent.notifier   import EmailNotifier
-from aruba_agent.state      import AgentState
+from aruba_agent.drivers   import driver_for
+from aruba_agent.notifier  import EmailNotifier
+from aruba_agent.state     import AgentState
 
 if TYPE_CHECKING:
     from aruba_agent.monitors.switch_poller import SwitchMonitorManager
@@ -151,9 +151,9 @@ class NetworkScannerTask:
         probe just means "not Aruba (or unreachable on REST)".
         """
         try:
-            with ArubaCXSession(ip, self._api_user, self._api_pass) as cx:
-                if cx.logged_in:
-                    name = cx.get_hostname() or ip
+            with driver_for(ip, self._api_user, self._api_pass) as drv:
+                if drv.logged_in:
+                    name = drv.get_hostname() or ip
                     return ip, name
         except Exception as exc:  # pragma: no cover
             log.debug("Scanner: REST probe failed for %s: %s", ip, exc)

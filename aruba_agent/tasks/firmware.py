@@ -18,7 +18,8 @@ from typing import Dict, List, Optional
 
 import requests
 
-from aruba_agent.cx_session import ArubaCXSession
+from aruba_agent.drivers           import driver_for
+from aruba_agent.drivers.aruba_cx  import ArubaCXDriver
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +82,16 @@ class FirmwareUpdater:
 
     def _check_status(self, ip: str) -> dict:
         row: dict = {"ip": ip, "status": None, "error": None, "version": "v10.13"}
-        with ArubaCXSession(ip, self.username, self.password) as cx:
+        # Firmware updater is AOS-CX-only today — call the driver but
+        # reach into its underlying ArubaCXSession for vendor-specific
+        # operations (firmware status JSON, raw image upload).
+        # When Cisco/Arista firmware support arrives, this will branch
+        # on driver type.
+        with driver_for(ip, self.username, self.password) as drv:
+            if not isinstance(drv, ArubaCXDriver):
+                row["error"] = f"firmware updater requires AOS-CX (got {drv.vendor})"
+                return row
+            cx = drv.session
             if cx.logged_in:
                 row["version"] = cx.version
                 row["status"]  = cx.get_firmware_status()
@@ -113,10 +123,16 @@ class FirmwareUpdater:
         partition = "secondary" if booted == "primary" else "primary"
         log.info("FW[%s] uploading %s → partition '%s'", ip, self.target_version, partition)
 
-        with ArubaCXSession(
+        with driver_for(
             ip, self.username, self.password,
             preferred_version=item.get("version"),
-        ) as cx:
+        ) as drv:
+            if not isinstance(drv, ArubaCXDriver):
+                result["msg"] = (
+                    f"firmware upload requires AOS-CX (got {drv.vendor})"
+                )
+                return result
+            cx = drv.session
             if not cx.logged_in:
                 result["msg"] = f"Login failed: {cx.error}"
                 return result

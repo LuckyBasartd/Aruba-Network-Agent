@@ -20,8 +20,8 @@ import subprocess
 from datetime import datetime
 from typing import Dict, List
 
-from aruba_agent.cx_session import ArubaCXSession
-from aruba_agent.state      import AgentState
+from aruba_agent.drivers   import driver_for
+from aruba_agent.state     import AgentState
 
 log = logging.getLogger(__name__)
 
@@ -77,11 +77,12 @@ class ArpDiscoveryTask:
         return ip_to_dns
 
     def _fetch_arp(self, router_ip: str) -> List[dict]:
-        with ArubaCXSession(router_ip, self.username, self.password) as cx:
-            if not cx.logged_in:
-                log.error("ARP[%s]: login failed for %s: %s", self.name, router_ip, cx.error)
+        with driver_for(router_ip, self.username, self.password) as drv:
+            if not drv.logged_in:
+                log.error("ARP[%s]: login failed for %s: %s",
+                          self.name, router_ip, drv.error)
                 return []
-            text = cx.cli("show arp")
+            text = drv.cli("show arp")
         if not text:
             log.error("ARP[%s]: no output from %s", self.name, router_ip)
             return []

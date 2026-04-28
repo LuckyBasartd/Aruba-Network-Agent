@@ -15,9 +15,9 @@ import os
 from datetime import datetime
 from typing import List
 
-from aruba_agent.cx_session import ArubaCXSession
-from aruba_agent.notifier   import EmailNotifier
-from aruba_agent.state      import AgentState
+from aruba_agent.drivers   import driver_for
+from aruba_agent.notifier  import EmailNotifier
+from aruba_agent.state     import AgentState
 
 log = logging.getLogger(__name__)
 
@@ -72,21 +72,21 @@ class BackupTask:
         for ip in ips:
             hostname = "N/A"
             try:
-                with ArubaCXSession(ip, self.username, self.password,
-                                    preferred_version=self.api_version) as cx:
-                    if not cx.logged_in:
+                with driver_for(ip, self.username, self.password,
+                                preferred_version=self.api_version) as drv:
+                    if not drv.logged_in:
                         failed.append({"ip": ip, "hostname": hostname,
-                                       "issue": f"Login failed: {cx.error}"})
+                                       "issue": f"Login failed: {drv.error}"})
                         continue
 
-                    hostname = cx.get_hostname() or "unknown"
+                    hostname = drv.get_hostname() or "unknown"
 
-                    if not cx.save_running_to_startup():
+                    if not drv.save_running_to_startup():
                         failed.append({"ip": ip, "hostname": hostname,
                                        "issue": "Save running→startup failed"})
                         continue
 
-                    data = cx.get_startup_config()
+                    data = drv.get_running_config()
                     if not data:
                         failed.append({"ip": ip, "hostname": hostname,
                                        "issue": "Config download failed"})

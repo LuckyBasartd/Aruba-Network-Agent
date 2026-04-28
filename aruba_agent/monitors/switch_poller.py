@@ -19,9 +19,9 @@ import threading
 from datetime import datetime
 from typing import Dict, List
 
-from aruba_agent.cx_session import ArubaCXSession
-from aruba_agent.notifier   import EmailNotifier
-from aruba_agent.state      import AgentState
+from aruba_agent.drivers   import driver_for
+from aruba_agent.notifier  import EmailNotifier
+from aruba_agent.state     import AgentState
 
 log = logging.getLogger(__name__)
 
@@ -54,12 +54,12 @@ class SwitchMonitor:
 
     def _poll(self) -> None:
         try:
-            with ArubaCXSession(self.host, self._username, self._password,
-                                verify_ssl=self._verify) as cx:
-                ok = cx.logged_in and cx.is_reachable()
+            with driver_for(self.host, self._username, self._password,
+                            verify_ssl=self._verify) as drv:
+                ok = drv.logged_in and drv.is_reachable()
                 # Grab the real hostname from the switch on first reachable poll
-                if ok and cx.logged_in:
-                    hostname = cx.get_hostname()
+                if ok and drv.logged_in:
+                    hostname = drv.get_hostname()
                     if hostname and hostname != self.name:
                         self.state.update_switch(self.name, hostname=hostname)
         except Exception:
