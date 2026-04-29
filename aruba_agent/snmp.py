@@ -252,7 +252,7 @@ class SnmpAgent:
         )
 
         try:
-            iterator = getCmd(
+            result = getCmd(
                 SnmpEngine(),
                 user_data,
                 UdpTransportTarget(
@@ -263,7 +263,15 @@ class SnmpAgent:
                 context_data,
                 ObjectType(ObjectIdentity(oid)),
             )
-            error_indication, error_status, _err_idx, var_binds = next(iterator)
+            # API shape varies across pysnmp versions:
+            #   * pysnmp 5.x:  getCmd returns a generator that yields
+            #                  exactly one tuple — caller does next(...)
+            #   * pysnmp 6.1.x: getCmd returns the tuple directly
+            # Detect at runtime so we work on either.
+            if isinstance(result, tuple):
+                error_indication, error_status, _err_idx, var_binds = result
+            else:
+                error_indication, error_status, _err_idx, var_binds = next(result)
         except Exception as exc:
             self.last_error  = "engine_error"
             self.last_detail = f"{type(exc).__name__}: {exc}"
