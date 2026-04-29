@@ -173,14 +173,17 @@ class SnmpAgent:
                 )
             else:
                 # pysnmp is importable but the synchronous getCmd is gone.
-                # The fix is to downgrade to a version that still exposes it.
+                # The legacy sync API was actually removed in 6.2 (not
+                # 7.0 as we first thought) — pin must be < 6.2 to land
+                # on a version that still exposes it.
                 self.last_error  = "pysnmp_incompatible_version"
                 self.last_detail = (
-                    f"pysnmp {installed_version} is installed but its "
-                    f"synchronous hlapi (getCmd) was removed in 7.x. "
-                    f"This agent requires pysnmp 5.x or 6.x. Fix:\n"
+                    f"pysnmp {installed_version} is installed but the "
+                    f"synchronous hlapi (getCmd) was removed in 6.2 "
+                    f"and later. This agent currently requires pysnmp "
+                    f"5.x or 6.0/6.1. Fix:\n"
                     f"  sudo pip3 uninstall -y pysnmp\n"
-                    f"  sudo pip3 install 'pysnmp<7'\n"
+                    f"  sudo pip3 install 'pysnmp<6.2'\n"
                     f"  sudo systemctl restart aruba-agent"
                 )
             log.warning("%s (%s)", self.last_detail, exc)

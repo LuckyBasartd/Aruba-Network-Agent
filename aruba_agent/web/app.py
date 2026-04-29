@@ -785,9 +785,9 @@ def create_app(
                 "Install pysnmp on the agent host: "
                 "sudo pip3 install -r /opt/aruba-agent/requirements.txt",
             "pysnmp_incompatible_version":
-                "pysnmp 7.x is installed but its synchronous API was "
-                "removed. Downgrade with: "
-                "sudo pip3 uninstall -y pysnmp && sudo pip3 install 'pysnmp<7' "
+                "pysnmp 6.2+ removed the synchronous API the agent needs. "
+                "Downgrade with: "
+                "sudo pip3 uninstall -y pysnmp && sudo pip3 install 'pysnmp<6.2' "
                 "&& sudo systemctl restart aruba-agent",
             "timeout":
                 f"No reply from {target}. Check L3 reachability, "
