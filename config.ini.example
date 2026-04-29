@@ -45,25 +45,32 @@ state_file = /var/lib/aruba-agent/state.json
 # Recommended security level: authPriv (auth+encryption).
 # Acceptable: authNoPriv. Avoid: noAuthNoPriv.
 #
-# username       — SNMPv3 user name configured on every switch
-# auth_protocol  — NONE | MD5 | SHA | SHA224 | SHA256 | SHA384 | SHA512
-# auth_password  — auth pass-phrase (>= 8 chars per RFC 3414)
-# priv_protocol  — NONE | DES | AES128 | AES192 | AES256
-# priv_password  — privacy pass-phrase
-# port           — UDP port (161 standard)
-# timeout        — per-request timeout in seconds
-# retries        — retry count before declaring the host down
+# username           — SNMPv3 USM user (a.k.a. Security Name)
+# context_name       — SNMPv3 context (default '' — Cisco IOS-XE
+#                      sometimes scopes views to a non-default context
+#                      such as 'vrf-default')
+# context_engine_id  — hex string, blank = auto-discover. Set only if
+#                      your switch refuses the standard handshake.
+# auth_protocol      — NONE | MD5 | SHA | SHA224 | SHA256 | SHA384 | SHA512
+# auth_password      — auth pass-phrase (>= 8 chars per RFC 3414)
+# priv_protocol      — NONE | DES | AES128 | AES192 | AES256
+# priv_password      — privacy pass-phrase
+# port               — UDP port (161 standard)
+# timeout            — per-request timeout in seconds
+# retries            — retry count before declaring the host down
 # ------------------------------------------------------------
 [snmp]
-enabled        = false
-username       = aruba_monitoring
-auth_protocol  = SHA
-auth_password  = ChangeMeAuthPassphrase
-priv_protocol  = AES128
-priv_password  = ChangeMePrivPassphrase
-port           = 161
-timeout        = 2
-retries        = 1
+enabled           = false
+username          = aruba_monitoring
+context_name      =
+context_engine_id =
+auth_protocol     = SHA
+auth_password     = ChangeMeAuthPassphrase
+priv_protocol     = AES128
+priv_password     = ChangeMePrivPassphrase
+port              = 161
+timeout           = 2
+retries           = 1
 
 
 # ------------------------------------------------------------

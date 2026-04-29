@@ -682,6 +682,8 @@ def create_app(
         ctx.update({
             "enabled":            s.get("enabled", "false").lower() == "true",
             "username":           s.get("username", ""),
+            "context_name":       s.get("context_name", ""),
+            "context_engine_id":  s.get("context_engine_id", ""),
             "auth_protocol":      s.get("auth_protocol", "SHA"),
             "priv_protocol":      s.get("priv_protocol", "AES128"),
             "port":               s.get("port", "161"),
@@ -723,16 +725,26 @@ def create_app(
         new_auth = f.get("auth_password") or ""
         new_priv = f.get("priv_password") or ""
 
+        # Context engine ID: hex only — strip separators, validate.
+        cei = (f.get("context_engine_id") or "").strip().replace(":", "")
+        if cei:
+            if not re.fullmatch(r"[0-9a-fA-F]+", cei) or len(cei) % 2:
+                flash("Context engine ID must be an even-length hex string "
+                      "(e.g. 80000009030001a2b3c4d5e6).", "error")
+                return redirect(url_for("settings_snmp"))
+
         values = {
-            "enabled":       "true" if f.get("enabled") == "on" else "false",
-            "username":      (f.get("username") or "").strip(),
-            "auth_protocol": (f.get("auth_protocol") or "SHA").strip().upper(),
-            "auth_password": new_auth if new_auth else existing_auth,
-            "priv_protocol": (f.get("priv_protocol") or "AES128").strip().upper(),
-            "priv_password": new_priv if new_priv else existing_priv,
-            "port":          str(port),
-            "timeout":       str(timeout),
-            "retries":       str(retries),
+            "enabled":           "true" if f.get("enabled") == "on" else "false",
+            "username":          (f.get("username") or "").strip(),
+            "context_name":      (f.get("context_name") or "").strip(),
+            "context_engine_id": cei,
+            "auth_protocol":     (f.get("auth_protocol") or "SHA").strip().upper(),
+            "auth_password":     new_auth if new_auth else existing_auth,
+            "priv_protocol":     (f.get("priv_protocol") or "AES128").strip().upper(),
+            "priv_password":     new_priv if new_priv else existing_priv,
+            "port":              str(port),
+            "timeout":           str(timeout),
+            "retries":           str(retries),
         }
 
         if values["enabled"] == "true":

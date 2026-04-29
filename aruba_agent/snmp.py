@@ -65,12 +65,29 @@ class SnmpV3Credentials:
       * both auth + priv  →  authPriv          (recommended)
       *      auth         →  authNoPriv        (auth only, no encryption)
       * neither           →  noAuthNoPriv      (debug / lab only — discouraged)
+
+    Context fields
+    --------------
+    `username` is the USM Security Name — the thing both ends of the
+    conversation agree on as "this user".
+
+    `context_name` is the SNMPv3 logical context to query. Default is
+    the empty string, which is what most installations need. Cisco
+    IOS-XE in particular sometimes requires a non-default context
+    (e.g. when SNMP views are scoped to a VRF).
+
+    `context_engine_id` is normally left blank — pysnmp discovers the
+    remote engine ID for you. Provide a hex string only if your switch
+    rejects the auto-discovery handshake. Format: hex without
+    separators, e.g. "80000009030001a2b3c4d5e6".
     """
-    username:      str
-    auth_protocol: str = "SHA"
-    auth_password: str = ""
-    priv_protocol: str = "AES128"
-    priv_password: str = ""
+    username:          str
+    auth_protocol:     str = "SHA"
+    auth_password:     str = ""
+    priv_protocol:     str = "AES128"
+    priv_password:     str = ""
+    context_name:      str = ""
+    context_engine_id: str = ""
 
     @property
     def security_level(self) -> str:
@@ -126,6 +143,7 @@ class SnmpAgent:
                 usmAesCfb192Protocol, usmAesCfb256Protocol,
                 usmNoAuthProtocol, usmNoPrivProtocol,
             )
+            from pyasn1.type.univ import OctetString
         except ImportError:
             log.warning(
                 "pysnmp not installed — SNMP unavailable. "
@@ -177,6 +195,23 @@ class SnmpAgent:
                 privProtocol=usmNoPrivProtocol,
             )
 
+        # Build ContextData. Empty contextName / blank engine ID =
+        # pysnmp defaults (auto-discover engine ID, default context).
+        context_engine_id = None
+        if self._creds.context_engine_id:
+            try:
+                context_engine_id = OctetString(
+                    hexValue=self._creds.context_engine_id.replace(":", "").strip()
+                )
+            except Exception as exc:
+                log.warning("SNMP: invalid context_engine_id %r — %s",
+                            self._creds.context_engine_id, exc)
+                return None
+        context_data = ContextData(
+            contextEngineId=context_engine_id,
+            contextName=self._creds.context_name,
+        )
+
         try:
             iterator = getCmd(
                 SnmpEngine(),
@@ -186,7 +221,7 @@ class SnmpAgent:
                     timeout=self._timeout,
                     retries=self._retries,
                 ),
-                ContextData(),
+                context_data,
                 ObjectType(ObjectIdentity(oid)),
             )
             error_indication, error_status, _err_idx, var_binds = next(iterator)
@@ -263,11 +298,13 @@ def from_config(cfg: ConfigParser) -> Optional[SnmpAgent]:
         return None
 
     creds = SnmpV3Credentials(
-        username      = username,
-        auth_protocol = s.get("auth_protocol", "SHA").strip(),
-        auth_password = s.get("auth_password", ""),
-        priv_protocol = s.get("priv_protocol", "AES128").strip(),
-        priv_password = s.get("priv_password", ""),
+        username          = username,
+        auth_protocol     = s.get("auth_protocol", "SHA").strip(),
+        auth_password     = s.get("auth_password", ""),
+        priv_protocol     = s.get("priv_protocol", "AES128").strip(),
+        priv_password     = s.get("priv_password", ""),
+        context_name      = s.get("context_name", "").strip(),
+        context_engine_id = s.get("context_engine_id", "").strip(),
     )
     return SnmpAgent(
         creds   = creds,

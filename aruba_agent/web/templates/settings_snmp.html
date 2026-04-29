@@ -29,12 +29,44 @@
           </div>
 
           <div class="mb-3">
-            <label class="form-label" for="username">SNMPv3 user</label>
+            <label class="form-label" for="username">User <span class="text-muted">(USM Security Name)</span></label>
             <input type="text" class="form-control" id="username"
                    name="username" value="{{ username }}"
                    placeholder="aruba_monitoring">
             <div class="form-text">
-              Must be configured on every switch the agent monitors.
+              The SNMPv3 user configured on every switch the agent monitors.
+              Some vendors call this the <em>Security Name</em>.
+            </div>
+          </div>
+
+          <hr class="border-secondary my-4">
+          <h6>Context</h6>
+
+          <div class="row g-3 mb-4">
+            <div class="col-md-5">
+              <label class="form-label" for="context_name">Context name</label>
+              <input type="text" class="form-control" id="context_name"
+                     name="context_name" value="{{ context_name }}"
+                     placeholder="(empty = default)">
+              <div class="form-text">
+                Leave blank for the default context. Cisco IOS-XE
+                sometimes scopes SNMP views to a non-default context
+                (e.g. <code>vrf-default</code>).
+              </div>
+            </div>
+            <div class="col-md-7">
+              <label class="form-label" for="context_engine_id">
+                Context engine ID <span class="text-muted">(advanced)</span>
+              </label>
+              <input type="text" class="form-control" id="context_engine_id"
+                     name="context_engine_id" value="{{ context_engine_id }}"
+                     placeholder="(blank = auto-discover)">
+              <div class="form-text">
+                Hex string, no separators (e.g.
+                <code>80000009030001a2b3c4d5e6</code>). Leave blank
+                unless your switch rejects the standard discovery
+                handshake.
+              </div>
             </div>
           </div>
 
