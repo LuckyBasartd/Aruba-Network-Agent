@@ -26,6 +26,7 @@ log = logging.getLogger("aruba-agent")
 
 # ── imports ─────────────────────────────────────────────────────────────────
 from aruba_agent.notifier               import EmailNotifier
+from aruba_agent.snmp                   import from_config as build_snmp_agent
 from aruba_agent.state                  import AgentState
 from aruba_agent.scheduler              import Scheduler
 from aruba_agent.monitors               import switch_poller
@@ -95,9 +96,14 @@ def main() -> None:
         run_firmware_update(cfg)
         return
 
+    # SNMPv3 agent — None when [snmp] is missing or disabled.
+    # When present, the switch poller uses it for reachability instead
+    # of opening a REST session every 30s.
+    snmp_agent = build_snmp_agent(cfg)
+
     # ── continuous monitors ──────────────────────────────────────────────────
     # Returns a manager — scanner will call manager.sync() after each discovery run
-    manager = switch_poller.start_all(cfg, notifier, state)
+    manager = switch_poller.start_all(cfg, notifier, state, snmp=snmp_agent)
 
     # Pre-seed the manager from the existing ip_list.txt so all previously
     # discovered switches are monitored immediately on startup without waiting

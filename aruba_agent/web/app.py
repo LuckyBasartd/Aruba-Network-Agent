@@ -669,6 +669,123 @@ def create_app(
             return redirect(url_for("settings_page"))
         return None
 
+    # ── SNMPv3 ────────────────────────────────────────────────────────────
+
+    @app.get("/settings/snmp")
+    @require_login
+    def settings_snmp():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        s = live["snmp"] if live.has_section("snmp") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "enabled":            s.get("enabled", "false").lower() == "true",
+            "username":           s.get("username", ""),
+            "auth_protocol":      s.get("auth_protocol", "SHA"),
+            "priv_protocol":      s.get("priv_protocol", "AES128"),
+            "port":               s.get("port", "161"),
+            "timeout":            s.get("timeout", "2"),
+            "retries":            s.get("retries", "1"),
+            "auth_password_set":  bool(s.get("auth_password", "").strip()),
+            "priv_password_set":  bool(s.get("priv_password", "").strip()),
+            "errors":             get_flashed_messages(category_filter=["error"]),
+            "messages":           get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_snmp.html", **ctx)
+
+    @app.post("/settings/snmp")
+    @require_login
+    def settings_snmp_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        f = request.form
+        try:
+            port    = int(f.get("port")    or "161")
+            timeout = int(f.get("timeout") or "2")
+            retries = int(f.get("retries") or "1")
+            if not (1 <= port <= 65535) or timeout < 1 or retries < 0:
+                raise ValueError
+        except ValueError:
+            flash("Port (1-65535), timeout (>=1), retries (>=0) must be valid "
+                  "integers.", "error")
+            return redirect(url_for("settings_snmp"))
+
+        live = editor.read()
+        existing_auth = (live["snmp"]["auth_password"]
+                         if live.has_section("snmp") and
+                            live.has_option("snmp", "auth_password") else "")
+        existing_priv = (live["snmp"]["priv_password"]
+                         if live.has_section("snmp") and
+                            live.has_option("snmp", "priv_password") else "")
+
+        new_auth = f.get("auth_password") or ""
+        new_priv = f.get("priv_password") or ""
+
+        values = {
+            "enabled":       "true" if f.get("enabled") == "on" else "false",
+            "username":      (f.get("username") or "").strip(),
+            "auth_protocol": (f.get("auth_protocol") or "SHA").strip().upper(),
+            "auth_password": new_auth if new_auth else existing_auth,
+            "priv_protocol": (f.get("priv_protocol") or "AES128").strip().upper(),
+            "priv_password": new_priv if new_priv else existing_priv,
+            "port":          str(port),
+            "timeout":       str(timeout),
+            "retries":       str(retries),
+        }
+
+        if values["enabled"] == "true":
+            if not values["username"]:
+                flash("Username is required when SNMPv3 is enabled.", "error")
+                return redirect(url_for("settings_snmp"))
+            if not values["auth_password"]:
+                flash("Auth password is required when SNMPv3 is enabled.", "error")
+                return redirect(url_for("settings_snmp"))
+
+        editor.update_section("snmp", values)
+        log.info("Web UI: SNMP settings updated by user=%s", session.get("user"))
+        flash("SNMP settings saved. Restart the agent to apply.", "success")
+        return redirect(url_for("settings_snmp"))
+
+    @app.post("/api/settings/snmp/test")
+    @require_login
+    def settings_snmp_test():
+        """Send a single sysUpTime.0 GET to a target host using the
+        on-disk [snmp] credentials. Operator can validate the auth /
+        priv passwords before restarting the agent."""
+        if editor is None:
+            return jsonify({"error": "settings editor disabled"}), 503
+        target = (request.args.get("host") or "").strip()
+        if not target:
+            return jsonify({"error": "host query parameter is required"}), 400
+
+        from aruba_agent.snmp import from_config as build_snmp
+        live = editor.read()
+        agent = build_snmp(live)
+        if agent is None:
+            return jsonify({"error": "[snmp] is not enabled or username is blank"}), 400
+
+        uptime = agent.get_uptime_centiseconds(target)
+        if uptime is None:
+            sys_descr = agent.get_sys_descr(target)
+            return jsonify({
+                "error": f"No response from {target}. Check connectivity, "
+                         "credentials, and that the SNMP user is allowed to "
+                         "read MIB-2 system OIDs.",
+                "sys_descr_attempt": sys_descr,
+            }), 502
+
+        sys_name  = agent.get_sys_name(target)
+        sys_descr = agent.get_sys_descr(target)
+        return jsonify({
+            "status":    "ok",
+            "host":      target,
+            "uptime_centiseconds": uptime,
+            "sys_name":  sys_name,
+            "sys_descr": sys_descr,
+        })
+
     # ── Switch credentials ────────────────────────────────────────────────
 
     @app.get("/settings/credentials")

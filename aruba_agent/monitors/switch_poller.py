@@ -21,7 +21,10 @@ from typing import Dict, List
 
 from aruba_agent.drivers   import driver_for
 from aruba_agent.notifier  import EmailNotifier
+from aruba_agent.snmp      import SnmpAgent
 from aruba_agent.state     import AgentState
+
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ class SwitchMonitor:
         verify_ssl: bool       = False,
         poll_interval: int     = 30,
         failure_threshold: int = 3,
+        snmp:    Optional[SnmpAgent] = None,
     ) -> None:
         self.name              = name
         self.host              = host
@@ -49,21 +53,49 @@ class SwitchMonitor:
         self._password         = password
         self._verify           = verify_ssl
         self._stop             = threading.Event()
+        self._snmp             = snmp     # None => use driver-based REST poll
 
         state.register_switch(name, host)
 
-    def _poll(self) -> None:
+    # ─── reachability paths ─────────────────────────────────────────────────
+
+    def _poll_snmp(self) -> bool:
+        """
+        Single SNMPv3 GET on sysUpTime.0. No session, no logout, no
+        leak. If the agent has never resolved this switch's hostname
+        we also fetch sysName.0 — same protocol, same packet style.
+        """
+        ok = self._snmp.is_reachable(self.host)
+        if ok:
+            sw = self.state.switches.get(self.name)
+            # sysName resolution: only on first successful poll, or
+            # when the agent's stored hostname is still the IP.
+            if sw is not None and (not sw.hostname or sw.hostname == self.name):
+                hostname = self._snmp.get_sys_name(self.host)
+                if hostname and hostname != self.name:
+                    self.state.update_switch(self.name, hostname=hostname)
+        return ok
+
+    def _poll_rest(self) -> bool:
+        """
+        Legacy REST-based reachability — opens a vendor driver session,
+        calls is_reachable + get_hostname, closes the session. Kept as
+        the fallback path for installs that haven't moved to SNMPv3 yet.
+        """
         try:
             with driver_for(self.host, self._username, self._password,
                             verify_ssl=self._verify) as drv:
                 ok = drv.logged_in and drv.is_reachable()
-                # Grab the real hostname from the switch on first reachable poll
                 if ok and drv.logged_in:
                     hostname = drv.get_hostname()
                     if hostname and hostname != self.name:
                         self.state.update_switch(self.name, hostname=hostname)
+                return ok
         except Exception:
-            ok = False
+            return False
+
+    def _poll(self) -> None:
+        ok = self._poll_snmp() if self._snmp is not None else self._poll_rest()
 
         sw = self.state.switches.get(self.name)
         if sw is None:
@@ -145,6 +177,7 @@ class SwitchMonitorManager:
         verify_ssl: bool       = False,
         poll_interval: int     = 30,
         failure_threshold: int = 3,
+        snmp:    Optional[SnmpAgent] = None,
     ) -> None:
         self._username         = username
         self._password         = password
@@ -153,6 +186,7 @@ class SwitchMonitorManager:
         self._verify           = verify_ssl
         self._poll_interval    = poll_interval
         self._failure_threshold = failure_threshold
+        self._snmp             = snmp
         self._monitors: Dict[str, SwitchMonitor] = {}   # keyed by host IP
         self._lock = threading.Lock()
 
@@ -180,6 +214,7 @@ class SwitchMonitorManager:
                 verify_ssl        = verify_ssl or self._verify,
                 poll_interval     = poll_interval or self._poll_interval,
                 failure_threshold = failure_threshold or self._failure_threshold,
+                snmp              = self._snmp,
             )
             m.start()
             self._monitors[host] = m
@@ -205,12 +240,25 @@ def start_all(
     cfg: configparser.ConfigParser,
     notifier: EmailNotifier,
     state: AgentState,
+    snmp:    Optional[SnmpAgent] = None,
 ) -> SwitchMonitorManager:
     """
     Create a SwitchMonitorManager seeded from [credentials] defaults,
     then add any static [switch.*] entries from config.ini.
     Returns the manager so the scanner can call manager.sync() later.
+
+    When `snmp` is provided every monitor uses SNMPv3 for the 30s
+    reachability poll instead of opening a vendor REST session — no
+    session state on the switch, no AOS-CX session-limit risk, and
+    the same code path works for Cisco / Arista / Aruba alike.
     """
+    if snmp is not None:
+        log.info("Switch poller: SNMPv3 reachability ENABLED — "
+                 "REST sessions used only for hostname / config tasks")
+    else:
+        log.info("Switch poller: SNMPv3 not configured — "
+                 "falling back to REST-based reachability per poll")
+
     # Global defaults come from [credentials] only — per-switch overrides are applied
     # inside manager.add() via the individual [switch.*] sections below.
     # There is no global [monitoring] section; per-switch values default to the
@@ -223,6 +271,7 @@ def start_all(
         verify_ssl        = False,
         poll_interval     = 30,
         failure_threshold = 3,
+        snmp              = snmp,
     )
 
     # Seed with any manually configured switches

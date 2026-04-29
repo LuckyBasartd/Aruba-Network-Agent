@@ -1,0 +1,169 @@
+{% extends "_settings_chrome.html" %}
+{% block title %}SNMPv3{% endblock %}
+{% block icon %}bi-broadcast{% endblock %}
+{% block heading %}SNMPv3 Reachability{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card">
+      <div class="card-body">
+        <p class="text-muted small">
+          When enabled, the 30-second switch reachability poll uses a
+          single SNMPv3 GET on <code>sysUpTime.0</code> instead of
+          opening a vendor REST/SSH session every cycle. Eliminates
+          AOS-CX session churn entirely (no session = no leak), works
+          identically across Aruba / Cisco / Arista, and cuts the
+          agent's management-plane chattiness by an order of magnitude.
+        </p>
+
+        <form method="POST" autocomplete="off">
+
+          <div class="form-check form-switch mb-4">
+            <input class="form-check-input" type="checkbox" role="switch"
+                   id="enabled" name="enabled"
+                   {% if enabled %}checked{% endif %}>
+            <label class="form-check-label" for="enabled">
+              <strong>Use SNMPv3 for reachability polling</strong>
+            </label>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="username">SNMPv3 user</label>
+            <input type="text" class="form-control" id="username"
+                   name="username" value="{{ username }}"
+                   placeholder="aruba_monitoring">
+            <div class="form-text">
+              Must be configured on every switch the agent monitors.
+            </div>
+          </div>
+
+          <hr class="border-secondary my-4">
+          <h6>Authentication</h6>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <label class="form-label" for="auth_protocol">Auth protocol</label>
+              <select class="form-select" id="auth_protocol" name="auth_protocol">
+                {% for p in ['NONE','MD5','SHA','SHA224','SHA256','SHA384','SHA512'] %}
+                <option value="{{ p }}" {% if auth_protocol == p %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-8">
+              <label class="form-label" for="auth_password">Auth password</label>
+              <input type="password" class="form-control" id="auth_password"
+                     name="auth_password" autocomplete="new-password"
+                     placeholder="{% if auth_password_set %}•••••••• (leave blank to keep){% else %}not configured{% endif %}">
+              <div class="form-text">≥ 8 characters. Required unless protocol is NONE.</div>
+            </div>
+          </div>
+
+          <hr class="border-secondary my-4">
+          <h6>Privacy (encryption)</h6>
+
+          <div class="row g-3 mb-4">
+            <div class="col-md-4">
+              <label class="form-label" for="priv_protocol">Priv protocol</label>
+              <select class="form-select" id="priv_protocol" name="priv_protocol">
+                {% for p in ['NONE','DES','AES128','AES192','AES256'] %}
+                <option value="{{ p }}" {% if priv_protocol == p %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-8">
+              <label class="form-label" for="priv_password">Priv password</label>
+              <input type="password" class="form-control" id="priv_password"
+                     name="priv_password" autocomplete="new-password"
+                     placeholder="{% if priv_password_set %}•••••••• (leave blank to keep){% else %}not configured{% endif %}">
+              <div class="form-text">Required for authPriv. Leave blank for authNoPriv.</div>
+            </div>
+          </div>
+
+          <hr class="border-secondary my-4">
+          <h6>Transport</h6>
+
+          <div class="row g-3 mb-4">
+            <div class="col-md-3">
+              <label class="form-label" for="port">UDP port</label>
+              <input type="number" class="form-control" id="port"
+                     name="port" value="{{ port }}" min="1" max="65535">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label" for="timeout">Timeout (s)</label>
+              <input type="number" class="form-control" id="timeout"
+                     name="timeout" value="{{ timeout }}" min="1">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label" for="retries">Retries</label>
+              <input type="number" class="form-control" id="retries"
+                     name="retries" value="{{ retries }}" min="0">
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary"
+                  {% if not editor_writable %}disabled{% endif %}>
+            <i class="bi bi-save me-1"></i>Save
+          </button>
+          <span class="text-muted small ms-2">
+            Restart the agent to apply.
+          </span>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card">
+      <div class="card-body">
+        <h6 class="text-muted text-uppercase small mb-3">Test against a switch</h6>
+        <p class="small text-muted">
+          Sends one <code>sysUpTime.0</code> GET to the host below
+          using the values currently <strong>saved</strong> in
+          <code>config.ini</code>. Save first if you've just changed
+          anything.
+        </p>
+        <div class="input-group input-group-sm mb-2">
+          <input type="text" class="form-control" id="test-host"
+                 placeholder="10.0.0.1" autocomplete="off">
+          <button class="btn btn-outline-info" type="button" onclick="snmpTest()">
+            <i class="bi bi-broadcast me-1"></i>Test
+          </button>
+        </div>
+        <pre class="small text-muted mt-3" id="test-result" style="white-space:pre-wrap;"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function snmpTest() {
+    const host    = document.getElementById('test-host').value.trim();
+    const out     = document.getElementById('test-result');
+    if (!host) { out.textContent = 'Enter a host first.'; return; }
+    out.textContent = `Testing ${host}…`;
+    out.className   = 'small text-muted mt-3';
+    try {
+        const r = await fetch(`/api/settings/snmp/test?host=${encodeURIComponent(host)}`,
+                              { method: 'POST' });
+        const j = await r.json();
+        if (r.ok) {
+            out.textContent =
+                `OK\n` +
+                `  uptime: ${j.uptime_centiseconds} centiseconds\n` +
+                `  sysName : ${j.sys_name || '(none)'}\n` +
+                `  sysDescr: ${j.sys_descr || '(none)'}`;
+            out.className = 'small text-success mt-3';
+        } else {
+            out.textContent = `FAILED\n  ${j.error || 'unknown error'}`;
+            out.className   = 'small text-danger mt-3';
+        }
+    } catch (e) {
+        out.textContent = `ERROR\n  ${e.message}`;
+        out.className   = 'small text-danger mt-3';
+    }
+}
+</script>
+{% endblock %}

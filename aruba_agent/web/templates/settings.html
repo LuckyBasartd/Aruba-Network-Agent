@@ -138,6 +138,24 @@ sudo chmod 640 {{ config_path or '/etc/aruba-agent/config.ini' }}</code></pre>
       </div>
     </div>
 
+    <!-- SNMPv3 -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-broadcast me-2"></i>SNMPv3 Reachability
+          </h5>
+          <p class="card-text small text-muted">
+            Use SNMPv3 instead of REST sessions for the 30s reachability
+            poll. Vendor-neutral and stateless — no session leaks.
+          </p>
+          <a href="{{ url_for('settings_snmp') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
+        </div>
+      </div>
+    </div>
+
     <!-- Switch credentials -->
     <div class="col-md-6 col-lg-4">
       <div class="card section-card h-100">

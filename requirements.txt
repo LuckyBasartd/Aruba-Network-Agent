@@ -4,3 +4,4 @@ flask>=3.0
 waitress>=3.0
 scapy>=2.5
 pyrad>=2.4
+pysnmp>=5.0
