@@ -115,10 +115,16 @@ class SnmpAgent:
         timeout: int = 2,
         retries: int = 1,
     ) -> None:
-        self._creds   = creds
-        self._port    = port
-        self._timeout = timeout
-        self._retries = retries
+        self._creds     = creds
+        self._port      = port
+        self._timeout   = timeout
+        self._retries   = retries
+        # Diagnostic tracking. Last reason a .get() returned None.
+        # Surfaced by the Settings → SNMPv3 → Test button so the
+        # operator can tell pysnmp-missing from auth-failure from
+        # timeout from no-such-object.
+        self.last_error:  str = ""
+        self.last_detail: str = ""
 
     # ─── low-level GET ───────────────────────────────────────────────────────
 
@@ -132,6 +138,8 @@ class SnmpAgent:
         treat a None as "device unreachable" without exception
         handling.
         """
+        self.last_error  = ""
+        self.last_detail = ""
         try:
             from pysnmp.hlapi import (
                 getCmd, SnmpEngine, UsmUserData, UdpTransportTarget,
@@ -144,11 +152,13 @@ class SnmpAgent:
                 usmNoAuthProtocol, usmNoPrivProtocol,
             )
             from pyasn1.type.univ import OctetString
-        except ImportError:
-            log.warning(
-                "pysnmp not installed — SNMP unavailable. "
-                "Install with: pip3 install pysnmp"
+        except ImportError as exc:
+            self.last_error  = "pysnmp_not_installed"
+            self.last_detail = (
+                "pysnmp is not installed. On the agent host run: "
+                "sudo pip3 install -r /opt/aruba-agent/requirements.txt"
             )
+            log.warning("%s (%s)", self.last_detail, exc)
             return None
 
         auth_map = {
@@ -204,8 +214,9 @@ class SnmpAgent:
                     hexValue=self._creds.context_engine_id.replace(":", "").strip()
                 )
             except Exception as exc:
-                log.warning("SNMP: invalid context_engine_id %r — %s",
-                            self._creds.context_engine_id, exc)
+                self.last_error  = "bad_context_engine_id"
+                self.last_detail = f"context_engine_id is not valid hex: {exc}"
+                log.warning(self.last_detail)
                 return None
         context_data = ContextData(
             contextEngineId=context_engine_id,
@@ -226,18 +237,42 @@ class SnmpAgent:
             )
             error_indication, error_status, _err_idx, var_binds = next(iterator)
         except Exception as exc:
-            log.debug("SNMP GET %s on %s raised: %s", oid, host, exc)
+            self.last_error  = "engine_error"
+            self.last_detail = f"{type(exc).__name__}: {exc}"
+            log.debug("SNMP GET %s on %s raised: %s", oid, host, self.last_detail)
             return None
 
         if error_indication:
-            log.debug("SNMP GET %s on %s: %s", oid, host, error_indication)
+            txt = str(error_indication)
+            # Map common indications to actionable categories so the UI
+            # can show a useful hint rather than a raw pysnmp string.
+            if "timeout" in txt.lower() or "no SNMP response" in txt:
+                self.last_error = "timeout"
+            elif "authentication" in txt.lower():
+                self.last_error = "auth_failure"
+            elif "engineID" in txt or "Unknown SNMP engine" in txt:
+                self.last_error = "engine_id_mismatch"
+            elif "Unknown USM user" in txt or "user name" in txt.lower():
+                self.last_error = "unknown_user"
+            elif "decryption" in txt.lower() or "privacy" in txt.lower():
+                self.last_error = "privacy_failure"
+            else:
+                self.last_error = "snmp_error"
+            self.last_detail = txt
+            log.debug("SNMP GET %s on %s: %s (%s)",
+                      oid, host, self.last_error, txt)
             return None
         if error_status:
+            self.last_error  = "pdu_error"
+            self.last_detail = error_status.prettyPrint()
             log.debug("SNMP GET %s on %s: PDU error %s",
-                      oid, host, error_status.prettyPrint())
+                      oid, host, self.last_detail)
             return None
         for _name, val in var_binds:
             return val.prettyPrint()
+
+        self.last_error  = "no_var_binds"
+        self.last_detail = "PDU returned no variable bindings"
         return None
 
     # ─── high-level helpers ──────────────────────────────────────────────────

@@ -172,8 +172,8 @@
 {% block scripts %}
 <script>
 async function snmpTest() {
-    const host    = document.getElementById('test-host').value.trim();
-    const out     = document.getElementById('test-result');
+    const host = document.getElementById('test-host').value.trim();
+    const out  = document.getElementById('test-result');
     if (!host) { out.textContent = 'Enter a host first.'; return; }
     out.textContent = `Testing ${host}…`;
     out.className   = 'small text-muted mt-3';
@@ -184,12 +184,14 @@ async function snmpTest() {
         if (r.ok) {
             out.textContent =
                 `OK\n` +
-                `  uptime: ${j.uptime_centiseconds} centiseconds\n` +
-                `  sysName : ${j.sys_name || '(none)'}\n` +
+                `  uptime  : ${j.uptime_centiseconds} centiseconds\n` +
+                `  sysName : ${j.sys_name  || '(none)'}\n` +
                 `  sysDescr: ${j.sys_descr || '(none)'}`;
             out.className = 'small text-success mt-3';
         } else {
-            out.textContent = `FAILED\n  ${j.error || 'unknown error'}`;
+            const code   = j.code   ? `[${j.code}]\n` : '';
+            const detail = j.detail ? `\n  pysnmp: ${j.detail}` : '';
+            out.textContent = `FAILED ${code}  ${j.error || 'unknown error'}${detail}`;
             out.className   = 'small text-danger mt-3';
         }
     } catch (e) {

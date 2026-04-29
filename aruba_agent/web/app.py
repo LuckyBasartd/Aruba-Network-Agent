@@ -778,24 +778,51 @@ def create_app(
         if agent is None:
             return jsonify({"error": "[snmp] is not enabled or username is blank"}), 400
 
+        # Surface the specific failure mode so the UI can show a
+        # useful hint instead of "no response, ¯\_(ツ)_/¯".
+        hints = {
+            "pysnmp_not_installed":
+                "Install pysnmp on the agent host: "
+                "sudo pip3 install -r /opt/aruba-agent/requirements.txt",
+            "timeout":
+                f"No reply from {target}. Check L3 reachability, "
+                "the switch's management ACL, and that UDP/161 is "
+                "open from the agent host.",
+            "auth_failure":
+                "Authentication digest mismatch. The auth password or "
+                "auth protocol on the agent doesn't match the switch.",
+            "engine_id_mismatch":
+                "Context engine ID mismatch. Try clearing the "
+                "Context engine ID field so pysnmp auto-discovers it.",
+            "unknown_user":
+                "The switch doesn't have an SNMPv3 user with that name. "
+                "Check the User (Security Name) field.",
+            "privacy_failure":
+                "Privacy decryption failed. The priv password or priv "
+                "protocol on the agent doesn't match the switch.",
+            "bad_context_engine_id":
+                "Context engine ID is not valid hex. Use even-length "
+                "hex characters only, no separators.",
+        }
+
         uptime = agent.get_uptime_centiseconds(target)
         if uptime is None:
-            sys_descr = agent.get_sys_descr(target)
+            err_code = agent.last_error or "unknown"
             return jsonify({
-                "error": f"No response from {target}. Check connectivity, "
-                         "credentials, and that the SNMP user is allowed to "
-                         "read MIB-2 system OIDs.",
-                "sys_descr_attempt": sys_descr,
+                "error":  hints.get(err_code,
+                                    f"SNMP request failed ({err_code})."),
+                "code":   err_code,
+                "detail": agent.last_detail,
             }), 502
 
         sys_name  = agent.get_sys_name(target)
         sys_descr = agent.get_sys_descr(target)
         return jsonify({
-            "status":    "ok",
-            "host":      target,
+            "status":              "ok",
+            "host":                target,
             "uptime_centiseconds": uptime,
-            "sys_name":  sys_name,
-            "sys_descr": sys_descr,
+            "sys_name":            sys_name,
+            "sys_descr":           sys_descr,
         })
 
     # ── Switch credentials ────────────────────────────────────────────────
