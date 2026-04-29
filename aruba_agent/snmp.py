@@ -33,13 +33,39 @@ warning when SNMP is requested but pysnmp is missing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from configparser import ConfigParser
 from dataclasses  import dataclass
 from typing       import Optional
 
 
 log = logging.getLogger(__name__)
+
+
+def _ensure_thread_event_loop() -> None:
+    """
+    pysnmp's synchronous hlapi (getCmd in 5.x and 6.x) is implemented
+    on top of asyncio. It needs an event loop in the current thread.
+
+    On the main thread Python 3.12 still gives you one for free. In a
+    worker thread (ThreadPoolExecutor, the one-thread-per-switch
+    SwitchMonitor model in this project, etc.) there isn't a default
+    event loop, and asyncio.get_event_loop() raises RuntimeError. That
+    surfaces as engine_error with TypeError or RuntimeError detail.
+
+    Call this at the top of any code path that touches pysnmp from a
+    thread other than __main__.
+    """
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        # No loop in this thread yet — create one and bind it.
+        # We deliberately don't close it: pysnmp may reuse it across
+        # successive .get() calls from the same thread, and Python's
+        # event loop machinery copes with idle loops.
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
 
 # ─── standard MIB-2 OIDs ─────────────────────────────────────────────────────
@@ -123,8 +149,27 @@ class SnmpAgent:
         # Surfaced by the Settings → SNMPv3 → Test button so the
         # operator can tell pysnmp-missing from auth-failure from
         # timeout from no-such-object.
-        self.last_error:  str = ""
-        self.last_detail: str = ""
+        #
+        # Held in threading.local so concurrent SwitchMonitor threads
+        # (one per switch) don't stomp on each other's diagnostic
+        # state. The .last_error / .last_detail @properties unwrap it.
+        self._tl = threading.local()
+
+    @property
+    def last_error(self) -> str:
+        return getattr(self._tl, "last_error", "")
+
+    @last_error.setter
+    def last_error(self, value: str) -> None:
+        self._tl.last_error = value
+
+    @property
+    def last_detail(self) -> str:
+        return getattr(self._tl, "last_detail", "")
+
+    @last_detail.setter
+    def last_detail(self, value: str) -> None:
+        self._tl.last_detail = value
 
     # ─── low-level GET ───────────────────────────────────────────────────────
 
@@ -140,6 +185,13 @@ class SnmpAgent:
         """
         self.last_error  = ""
         self.last_detail = ""
+
+        # pysnmp's synchronous hlapi runs an asyncio call under the hood.
+        # On Python 3.12 worker threads have no default event loop, which
+        # causes pysnmp's internal asyncio.get_event_loop() to raise. Make
+        # sure this thread has a loop before we hand off to pysnmp.
+        _ensure_thread_event_loop()
+
         try:
             from pysnmp.hlapi import (
                 getCmd, SnmpEngine, UsmUserData, UdpTransportTarget,
