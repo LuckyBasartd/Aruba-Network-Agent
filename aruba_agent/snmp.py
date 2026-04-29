@@ -171,6 +171,29 @@ class SnmpAgent:
     def last_detail(self, value: str) -> None:
         self._tl.last_detail = value
 
+    def _get_engine(self):
+        """
+        Return a per-thread cached SnmpEngine. Constructing one per
+        call works but spins up a fresh asyncio dispatcher every
+        time, leaving timeout tasks pending when the engine goes out
+        of scope:
+
+            Task was destroyed but it is pending!
+            task: <Task pending name='Task-N' coro=
+                  <AsyncioDispatcher.handle_timeout()...>>
+
+        Caching one engine per thread cuts those warnings down to
+        at most one per thread (when the thread itself exits) and
+        is also faster — pysnmp builds up USM/discovery state on
+        each engine that's helpful to keep around.
+        """
+        engine = getattr(self._tl, "engine", None)
+        if engine is None:
+            from pysnmp.hlapi import SnmpEngine
+            engine = SnmpEngine()
+            self._tl.engine = engine
+        return engine
+
     # ─── low-level GET ───────────────────────────────────────────────────────
 
     def get(self, host: str, oid: str) -> Optional[str]:
@@ -305,7 +328,7 @@ class SnmpAgent:
 
         try:
             result = getCmd(
-                SnmpEngine(),
+                self._get_engine(),
                 user_data,
                 UdpTransportTarget(
                     (host, self._port),
