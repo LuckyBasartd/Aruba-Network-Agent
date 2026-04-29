@@ -4,4 +4,6 @@ flask>=3.0
 waitress>=3.0
 scapy>=2.5
 pyrad>=2.4
-pysnmp>=5.0
+# pysnmp 7.x removed the synchronous getCmd import — pin to 5.x/6.x
+# until we migrate to the asyncio API.
+pysnmp>=5.0,<7.0

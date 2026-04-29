@@ -153,11 +153,36 @@ class SnmpAgent:
             )
             from pyasn1.type.univ import OctetString
         except ImportError as exc:
-            self.last_error  = "pysnmp_not_installed"
-            self.last_detail = (
-                "pysnmp is not installed. On the agent host run: "
-                "sudo pip3 install -r /opt/aruba-agent/requirements.txt"
-            )
+            # Distinguish "pysnmp not installed" from "pysnmp 7.x is
+            # installed but its synchronous hlapi was removed". Both
+            # raise ImportError on the line above; only one of them
+            # has a fix that involves "uninstall and reinstall a
+            # specific version range."
+            try:
+                import pysnmp as _pysnmp_pkg     # type: ignore[import]
+                installed_version = getattr(_pysnmp_pkg, "__version__",
+                                            "unknown")
+            except ImportError:
+                installed_version = None
+
+            if installed_version is None:
+                self.last_error  = "pysnmp_not_installed"
+                self.last_detail = (
+                    "pysnmp is not installed. On the agent host run: "
+                    "sudo pip3 install -r /opt/aruba-agent/requirements.txt"
+                )
+            else:
+                # pysnmp is importable but the synchronous getCmd is gone.
+                # The fix is to downgrade to a version that still exposes it.
+                self.last_error  = "pysnmp_incompatible_version"
+                self.last_detail = (
+                    f"pysnmp {installed_version} is installed but its "
+                    f"synchronous hlapi (getCmd) was removed in 7.x. "
+                    f"This agent requires pysnmp 5.x or 6.x. Fix:\n"
+                    f"  sudo pip3 uninstall -y pysnmp\n"
+                    f"  sudo pip3 install 'pysnmp<7'\n"
+                    f"  sudo systemctl restart aruba-agent"
+                )
             log.warning("%s (%s)", self.last_detail, exc)
             return None
 
