@@ -54,6 +54,13 @@ def driver_for(
     cisco_password: str = "",
     cisco_enable:   str = "",
     cisco_napalm_driver: str = "ios",
+    # Arista-specific overrides; ignored when the resolved vendor
+    # isn't arista_eos. If empty, fall back to username / password.
+    arista_username:        str = "",
+    arista_password:        str = "",
+    arista_enable_password: str = "",
+    arista_transport:       str = "https",
+    arista_port:            Optional[int] = None,
 ) -> SwitchDriver:
     """
     Return a SwitchDriver instance ready for `with driver_for(...) as drv`.
@@ -90,11 +97,15 @@ def driver_for(
         )
 
     if vendor_hint == VENDOR_ARISTA:
-        # C5 will land arista_eos.py. Until then, fall through with a
-        # warning rather than crash — at worst we hand back an Aruba
-        # driver that will fail-open on auth.
-        log.warning("driver_for: %s detected as Arista — driver not yet "
-                    "implemented, falling back to AOS-CX", host)
+        from aruba_agent.drivers.arista_eos import AristaEOSDriver
+        return AristaEOSDriver(
+            host            = host,
+            username        = arista_username or username,
+            password        = arista_password or password,
+            enable_password = arista_enable_password,
+            transport       = arista_transport,
+            port            = arista_port,
+        )
 
     if vendor_hint == VENDOR_ARUBA_OS:
         log.warning("driver_for: %s detected as legacy Aruba — using "

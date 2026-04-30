@@ -105,6 +105,32 @@ napalm_driver = ios
 
 
 # ------------------------------------------------------------
+# Arista EOS credentials (NAPALM via eAPI / HTTPS)
+#
+# Used when the C3 vendor detector classifies a switch as arista_eos.
+# If username / password are blank here, the driver falls back to
+# the [credentials] block above.
+#
+# Requires eAPI enabled on the switch:
+#     management api http-commands
+#        no shutdown
+#        protocol https
+#
+# enable_password — privileged-exec password. Optional.
+# transport       — https (default) or http. https is strongly
+#                   recommended; http is mostly for lab use.
+# port            — eAPI port. Blank = NAPALM default (443 for
+#                   https, 80 for http).
+# ------------------------------------------------------------
+[credentials.arista]
+username        =
+password        =
+enable_password =
+transport       = https
+port            =
+
+
+# ------------------------------------------------------------
 # SMTP — email alert settings
 # ------------------------------------------------------------
 [smtp]

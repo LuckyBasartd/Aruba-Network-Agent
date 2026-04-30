@@ -38,15 +38,24 @@ class BackupTask:
         self.password     = cr.get("password", "")
         self.api_version  = b.get("api_version") or None   # None → auto-detect
 
-        # Per-vendor overrides — only Cisco needs separate creds today.
-        # Blank values fall through to the default username/password
-        # above, so a single-credential shop doesn't need to fill them
-        # in twice.
-        cc = cfg["credentials.cisco"] if "credentials.cisco" in cfg else {}
+        # Per-vendor overrides. Blank values fall through to the
+        # default username / password above so a single-credential
+        # shop doesn't need to fill them in twice.
+        cc = cfg["credentials.cisco"]  if "credentials.cisco"  in cfg else {}
         self.cisco_username = (cc.get("username", "") or "").strip()
         self.cisco_password = cc.get("password", "")
         self.cisco_enable   = cc.get("enable_secret", "")
         self.cisco_napalm   = (cc.get("napalm_driver", "ios") or "ios").strip()
+
+        ac = cfg["credentials.arista"] if "credentials.arista" in cfg else {}
+        self.arista_username = (ac.get("username", "") or "").strip()
+        self.arista_password = ac.get("password", "")
+        self.arista_enable   = ac.get("enable_password", "")
+        self.arista_transport = (ac.get("transport", "https") or "https").strip()
+        try:
+            self.arista_port = int(ac.get("port", "")) if (ac.get("port", "") or "").strip() else None
+        except ValueError:
+            self.arista_port = None
 
         self.notifier     = notifier
         self.state        = state
@@ -93,12 +102,17 @@ class BackupTask:
             try:
                 with driver_for(
                     ip, self.username, self.password,
-                    preferred_version  = self.api_version,
-                    vendor_hint        = vendor,
-                    cisco_username     = self.cisco_username,
-                    cisco_password     = self.cisco_password,
-                    cisco_enable       = self.cisco_enable,
-                    cisco_napalm_driver= self.cisco_napalm,
+                    preferred_version       = self.api_version,
+                    vendor_hint             = vendor,
+                    cisco_username          = self.cisco_username,
+                    cisco_password          = self.cisco_password,
+                    cisco_enable            = self.cisco_enable,
+                    cisco_napalm_driver     = self.cisco_napalm,
+                    arista_username         = self.arista_username,
+                    arista_password         = self.arista_password,
+                    arista_enable_password  = self.arista_enable,
+                    arista_transport        = self.arista_transport,
+                    arista_port             = self.arista_port,
                 ) as drv:
                     if not drv.logged_in:
                         failed.append({"ip": ip, "hostname": hostname,

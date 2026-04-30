@@ -158,7 +158,8 @@ def main() -> None:
             name, cfg[sec],
             cfg["credentials"]       if "credentials"       in cfg else {},
             state,
-            cisco_creds = cfg["credentials.cisco"] if "credentials.cisco" in cfg else None,
+            cisco_creds  = cfg["credentials.cisco"]  if "credentials.cisco"  in cfg else None,
+            arista_creds = cfg["credentials.arista"] if "credentials.arista" in cfg else None,
         )
         scheduler.add(cfg.get(sec, "schedule", fallback="01:00"), arp_task.run)
 

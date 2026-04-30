@@ -35,7 +35,8 @@ class ArpDiscoveryTask:
         sec: configparser.SectionProxy,
         creds: configparser.SectionProxy,
         state: AgentState,
-        cisco_creds: "Optional[configparser.SectionProxy]" = None,
+        cisco_creds:  "Optional[configparser.SectionProxy]" = None,
+        arista_creds: "Optional[configparser.SectionProxy]" = None,
     ) -> None:
         self.name       = name
         self.router_ips = [r.strip() for r in sec.get("routers", "").split(",") if r.strip()]
@@ -45,14 +46,23 @@ class ArpDiscoveryTask:
         self.password   = creds.get("password", "")
         self.state      = state
 
-        # Cisco-specific credentials for routers classified as
-        # cisco_ios. Blank values fall through to the default
-        # username/password above.
+        # Per-vendor credentials. Blank values fall through to the
+        # default username/password above.
         cc = cisco_creds or {}
         self.cisco_username = (cc.get("username", "") or "").strip()
         self.cisco_password = cc.get("password", "")
         self.cisco_enable   = cc.get("enable_secret", "")
         self.cisco_napalm   = (cc.get("napalm_driver", "ios") or "ios").strip()
+
+        ac = arista_creds or {}
+        self.arista_username = (ac.get("username", "") or "").strip()
+        self.arista_password = ac.get("password", "")
+        self.arista_enable   = ac.get("enable_password", "")
+        self.arista_transport = (ac.get("transport", "https") or "https").strip()
+        try:
+            self.arista_port = int(ac.get("port", "")) if (ac.get("port", "") or "").strip() else None
+        except ValueError:
+            self.arista_port = None
 
     def _load_subnets(self) -> List[str]:
         if not self.ip_list or not os.path.exists(self.ip_list):
@@ -93,11 +103,16 @@ class ArpDiscoveryTask:
         vendor = self.state.get_vendor_for_host(router_ip) or None
         with driver_for(
             router_ip, self.username, self.password,
-            vendor_hint        = vendor,
-            cisco_username     = self.cisco_username,
-            cisco_password     = self.cisco_password,
-            cisco_enable       = self.cisco_enable,
-            cisco_napalm_driver= self.cisco_napalm,
+            vendor_hint             = vendor,
+            cisco_username          = self.cisco_username,
+            cisco_password          = self.cisco_password,
+            cisco_enable            = self.cisco_enable,
+            cisco_napalm_driver     = self.cisco_napalm,
+            arista_username         = self.arista_username,
+            arista_password         = self.arista_password,
+            arista_enable_password  = self.arista_enable,
+            arista_transport        = self.arista_transport,
+            arista_port             = self.arista_port,
         ) as drv:
             if not drv.logged_in:
                 log.error("ARP[%s]: login failed for %s (%s): %s",

@@ -935,6 +935,82 @@ def create_app(
         flash("Cisco credentials saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_cisco_credentials"))
 
+    # ── Arista EOS credentials ────────────────────────────────────────────
+
+    _ARISTA_TRANSPORTS = ("https", "http")
+
+    @app.get("/settings/credentials/arista")
+    @require_login
+    def settings_arista_credentials():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        a = live["credentials.arista"] if live.has_section("credentials.arista") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "username":               a.get("username", ""),
+            "password_set":           bool(a.get("password", "").strip()),
+            "enable_password_set":    bool(a.get("enable_password", "").strip()),
+            "transport":              a.get("transport", "https"),
+            "transports":             _ARISTA_TRANSPORTS,
+            "port":                   a.get("port", ""),
+            "errors":                 get_flashed_messages(category_filter=["error"]),
+            "messages":               get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_arista_credentials.html", **ctx)
+
+    @app.post("/settings/credentials/arista")
+    @require_login
+    def settings_arista_credentials_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        f = request.form
+        username   = (f.get("username") or "").strip()
+        new_pw     = f.get("password") or ""
+        new_enable = f.get("enable_password") or ""
+        transport  = (f.get("transport") or "https").strip().lower()
+        port_raw   = (f.get("port") or "").strip()
+
+        if transport not in _ARISTA_TRANSPORTS:
+            flash(f"Transport must be one of {', '.join(_ARISTA_TRANSPORTS)}.",
+                  "error")
+            return redirect(url_for("settings_arista_credentials"))
+
+        if port_raw:
+            try:
+                port = int(port_raw)
+                if not (1 <= port <= 65535):
+                    raise ValueError
+            except ValueError:
+                flash("Port must be an integer 1-65535 (or blank for "
+                      "NAPALM default).", "error")
+                return redirect(url_for("settings_arista_credentials"))
+        else:
+            port = ""
+
+        live = editor.read()
+        existing_pw = (live["credentials.arista"]["password"]
+                       if live.has_section("credentials.arista") and
+                          live.has_option("credentials.arista", "password")
+                       else "")
+        existing_enable = (live["credentials.arista"]["enable_password"]
+                           if live.has_section("credentials.arista") and
+                              live.has_option("credentials.arista", "enable_password")
+                           else "")
+
+        editor.update_section("credentials.arista", {
+            "username":        username,
+            "password":        new_pw     if new_pw     else existing_pw,
+            "enable_password": new_enable if new_enable else existing_enable,
+            "transport":       transport,
+            "port":            str(port) if port != "" else "",
+        })
+        log.info("Web UI: Arista credentials updated by user=%s",
+                 session.get("user"))
+        flash("Arista credentials saved. Restart the agent to apply.", "success")
+        return redirect(url_for("settings_arista_credentials"))
+
     # ── Network scanner ───────────────────────────────────────────────────
 
     @app.get("/settings/scanner")
