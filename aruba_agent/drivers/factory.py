@@ -1,23 +1,43 @@
 """
 driver_for(host, ...) — pick a SwitchDriver implementation for a host.
 
-Phase C1: always returns ArubaCXDriver. The factory exists today so
-every consumer (poller, backup, ARP, firmware, scanner) can be
-refactored to call `driver_for(...)` instead of `ArubaCXSession(...)`.
-That refactor is mechanical; once it's in place, C3 will replace the
-body of this function with real SNMPv3 sysObjectID detection plus
-fallback REST/SSH probes — and no other code has to change.
+Routing
+-------
+Each call needs a way to know which vendor's driver to construct.
+Order of preference:
 
-Caching: not yet. C3 introduces a per-host detection cache so we
-don't re-detect every poll. For now each call is independent.
+    1. Explicit `vendor_hint=` from the caller — used when the
+       caller already classified the host (e.g. switch_poller has
+       SwitchState.vendor populated by the C3 detector).
+    2. Default: AOS-CX. This keeps the v2.x behavior intact for
+       installs that haven't yet enabled SNMPv3 + vendor detection.
+
+Cisco-specific arguments
+------------------------
+NAPALM's IOS driver wants different things than AOS-CX REST: an
+SSH username/password and an optional enable secret. We accept
+those as separate parameters rather than overloading the generic
+``username`` / ``password`` fields.
+
+The factory does NOT consult [credentials.cisco] from disk itself —
+the caller is expected to read config and pass the right values in.
+That keeps factory pure (no I/O) and makes per-call overrides easy.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from aruba_agent.drivers.aruba_cx import ArubaCXDriver
 from aruba_agent.drivers.base     import SwitchDriver
+from aruba_agent.drivers.detector import (
+    VENDOR_ARUBA_CX, VENDOR_ARUBA_OS,
+    VENDOR_CISCO_IOS, VENDOR_ARISTA,
+)
+
+
+log = logging.getLogger(__name__)
 
 
 def driver_for(
@@ -28,6 +48,12 @@ def driver_for(
     verify_ssl: bool = False,
     preferred_version: Optional[str] = None,
     vendor_hint: Optional[str] = None,
+    # Cisco-specific overrides; ignored when the resolved vendor
+    # isn't cisco_ios. If empty, fall back to username / password.
+    cisco_username: str = "",
+    cisco_password: str = "",
+    cisco_enable:   str = "",
+    cisco_napalm_driver: str = "ios",
 ) -> SwitchDriver:
     """
     Return a SwitchDriver instance ready for `with driver_for(...) as drv`.
@@ -37,21 +63,48 @@ def driver_for(
     host : str
         IP or hostname of the switch.
     username, password : str
-        Vendor-agnostic admin credentials. C4/C5 will accept per-vendor
-        credential bundles; for now this matches ArubaCXSession's API.
+        Default credentials. Used by AOS-CX. Used by Cisco only when
+        cisco_username / cisco_password are blank.
     verify_ssl : bool
-        TLS verification toggle. False on self-signed lab gear.
+        TLS verification toggle (AOS-CX only). False on self-signed
+        lab gear.
     preferred_version : str | None
         AOS-CX-specific API version pin (e.g. "v10.13"). Ignored by
         non-Aruba drivers.
     vendor_hint : str | None
-        Reserved for C3. When the detector has already classified
-        this host, the hint short-circuits re-detection. Currently
-        unused — every host gets ArubaCXDriver.
+        Vendor key from the C3 detector. When set to ``cisco_ios``
+        we route to the NAPALM-backed CiscoIOSDriver; otherwise
+        we fall through to ArubaCXDriver.
+    cisco_username, cisco_password, cisco_enable, cisco_napalm_driver
+        Cisco-specific credentials and NAPALM driver name. Ignored
+        unless vendor_hint resolves to cisco_ios.
     """
-    # C3 will replace this body with vendor detection. The signature
-    # stays stable so callers don't need to change again.
-    _ = vendor_hint  # silences unused-arg in C1; C3 wires it up
+    if vendor_hint == VENDOR_CISCO_IOS:
+        from aruba_agent.drivers.cisco_ios import CiscoIOSDriver
+        return CiscoIOSDriver(
+            host          = host,
+            username      = cisco_username or username,
+            password      = cisco_password or password,
+            enable_secret = cisco_enable,
+            napalm_driver = cisco_napalm_driver,
+        )
+
+    if vendor_hint == VENDOR_ARISTA:
+        # C5 will land arista_eos.py. Until then, fall through with a
+        # warning rather than crash — at worst we hand back an Aruba
+        # driver that will fail-open on auth.
+        log.warning("driver_for: %s detected as Arista — driver not yet "
+                    "implemented, falling back to AOS-CX", host)
+
+    if vendor_hint == VENDOR_ARUBA_OS:
+        log.warning("driver_for: %s detected as legacy Aruba — using "
+                    "AOS-CX driver as best-effort fallback", host)
+
+    # Default / AOS-CX path
+    _ = vendor_hint  # accepted but unused beyond the routing above
+    if vendor_hint not in (None, VENDOR_ARUBA_CX, VENDOR_ARUBA_OS, VENDOR_ARISTA):
+        log.warning("driver_for: unrecognized vendor_hint=%r for %s — "
+                    "defaulting to AOS-CX", vendor_hint, host)
     return ArubaCXDriver(
         host              = host,
         username          = username,

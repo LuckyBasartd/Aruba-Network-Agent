@@ -74,13 +74,34 @@ retries           = 1
 
 
 # ------------------------------------------------------------
-# Shared switch credentials
-# Used as defaults; individual [switch.*] / [arp.*] sections
-# can override username / password.
+# Shared switch credentials (Aruba AOS-CX REST)
+# Used by the AOS-CX driver as defaults. Individual
+# [switch.*] / [arp.*] sections can override username / password.
 # ------------------------------------------------------------
 [credentials]
 username = admin
 password = YourSwitchPassword
+
+
+# ------------------------------------------------------------
+# Cisco IOS / IOS-XE credentials (NAPALM via SSH)
+#
+# Used when the C3 vendor detector classifies a switch as cisco_ios.
+# If username / password are blank here, the driver falls back to
+# the [credentials] block above.
+#
+# enable_secret  — privileged-exec password. Optional but commonly
+#                  required on traditional IOS images.
+# napalm_driver  — which NAPALM Cisco driver to use:
+#                    ios       Catalyst / IOS / IOS-XE   (default)
+#                    iosxr     IOS-XR  (carrier-grade)
+#                    nxos_ssh  Nexus / NX-OS via SSH
+# ------------------------------------------------------------
+[credentials.cisco]
+username      =
+password      =
+enable_secret =
+napalm_driver = ios
 
 
 # ------------------------------------------------------------

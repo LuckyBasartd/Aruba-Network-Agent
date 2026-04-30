@@ -156,18 +156,37 @@ sudo chmod 640 {{ config_path or '/etc/aruba-agent/config.ini' }}</code></pre>
       </div>
     </div>
 
-    <!-- Switch credentials -->
+    <!-- Aruba AOS-CX credentials -->
     <div class="col-md-6 col-lg-4">
       <div class="card section-card h-100">
         <div class="card-body">
           <h5 class="card-title">
-            <i class="bi bi-key me-2"></i>Switch Credentials
+            <i class="bi bi-key me-2"></i>Aruba Credentials
           </h5>
           <p class="card-text small text-muted">
-            Default admin username/password used by the poller, backup,
-            ARP, and firmware tasks.
+            Admin username/password for AOS-CX REST API. Used by the
+            poller, backup, ARP, and firmware tasks against Aruba CX
+            switches.
           </p>
           <a href="{{ url_for('settings_credentials') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cisco IOS-XE credentials -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-key-fill me-2"></i>Cisco Credentials
+          </h5>
+          <p class="card-text small text-muted">
+            SSH username, password, optional enable secret. Used by the
+            NAPALM driver against Cisco IOS / IOS-XE switches.
+          </p>
+          <a href="{{ url_for('settings_cisco_credentials') }}" class="btn btn-primary btn-sm">
             <i class="bi bi-pencil me-1"></i>Configure
           </a>
         </div>

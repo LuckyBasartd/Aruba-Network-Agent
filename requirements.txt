@@ -8,3 +8,9 @@ pyrad>=2.4
 # getCmd from pysnmp.hlapi. Pin to 5.x or 6.0/6.1 until we migrate
 # the agent to pysnmp's asyncio API.
 pysnmp>=5.0,<6.2
+
+# napalm — multi-vendor abstraction used by the Cisco IOS / IOS-XE
+# driver (C4) and the Arista EOS driver (C5). Pulls in netmiko +
+# paramiko + ncclient. ~30 MB on disk; only required when you
+# actually have non-Aruba switches in the fleet.
+napalm>=4.0,<6.0

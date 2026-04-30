@@ -874,6 +874,67 @@ def create_app(
         flash("Switch credentials saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_credentials"))
 
+    # ── Cisco IOS / IOS-XE credentials ────────────────────────────────────
+
+    _NAPALM_CISCO_DRIVERS = ("ios", "iosxr", "nxos_ssh")
+
+    @app.get("/settings/credentials/cisco")
+    @require_login
+    def settings_cisco_credentials():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        c = live["credentials.cisco"] if live.has_section("credentials.cisco") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "username":            c.get("username", ""),
+            "password_set":        bool(c.get("password", "").strip()),
+            "enable_secret_set":   bool(c.get("enable_secret", "").strip()),
+            "napalm_driver":       c.get("napalm_driver", "ios"),
+            "napalm_drivers":      _NAPALM_CISCO_DRIVERS,
+            "errors":              get_flashed_messages(category_filter=["error"]),
+            "messages":            get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_cisco_credentials.html", **ctx)
+
+    @app.post("/settings/credentials/cisco")
+    @require_login
+    def settings_cisco_credentials_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        f = request.form
+        username    = (f.get("username") or "").strip()
+        new_pw      = f.get("password") or ""
+        new_enable  = f.get("enable_secret") or ""
+        nap_driver  = (f.get("napalm_driver") or "ios").strip()
+
+        if nap_driver not in _NAPALM_CISCO_DRIVERS:
+            flash(f"Unknown NAPALM driver {nap_driver!r}. Pick one of "
+                  f"{', '.join(_NAPALM_CISCO_DRIVERS)}.", "error")
+            return redirect(url_for("settings_cisco_credentials"))
+
+        live = editor.read()
+        existing_pw = (live["credentials.cisco"]["password"]
+                       if live.has_section("credentials.cisco") and
+                          live.has_option("credentials.cisco", "password")
+                       else "")
+        existing_enable = (live["credentials.cisco"]["enable_secret"]
+                           if live.has_section("credentials.cisco") and
+                              live.has_option("credentials.cisco", "enable_secret")
+                           else "")
+
+        editor.update_section("credentials.cisco", {
+            "username":      username,
+            "password":      new_pw     if new_pw     else existing_pw,
+            "enable_secret": new_enable if new_enable else existing_enable,
+            "napalm_driver": nap_driver,
+        })
+        log.info("Web UI: Cisco credentials updated by user=%s",
+                 session.get("user"))
+        flash("Cisco credentials saved. Restart the agent to apply.", "success")
+        return redirect(url_for("settings_cisco_credentials"))
+
     # ── Network scanner ───────────────────────────────────────────────────
 
     @app.get("/settings/scanner")
