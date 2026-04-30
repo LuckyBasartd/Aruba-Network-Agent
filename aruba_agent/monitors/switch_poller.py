@@ -19,10 +19,11 @@ import threading
 from datetime import datetime
 from typing import Dict, List
 
-from aruba_agent.drivers   import driver_for
-from aruba_agent.notifier  import EmailNotifier
-from aruba_agent.snmp      import SnmpAgent
-from aruba_agent.state     import AgentState
+from aruba_agent.drivers          import driver_for
+from aruba_agent.drivers.detector import VendorDetector
+from aruba_agent.notifier         import EmailNotifier
+from aruba_agent.snmp             import SnmpAgent
+from aruba_agent.state            import AgentState
 
 from typing import Optional
 
@@ -41,7 +42,8 @@ class SwitchMonitor:
         verify_ssl: bool       = False,
         poll_interval: int     = 30,
         failure_threshold: int = 3,
-        snmp:    Optional[SnmpAgent] = None,
+        snmp:     Optional[SnmpAgent]      = None,
+        detector: Optional[VendorDetector] = None,
     ) -> None:
         self.name              = name
         self.host              = host
@@ -53,7 +55,8 @@ class SwitchMonitor:
         self._password         = password
         self._verify           = verify_ssl
         self._stop             = threading.Event()
-        self._snmp             = snmp     # None => use driver-based REST poll
+        self._snmp             = snmp       # None => use driver-based REST poll
+        self._detector         = detector   # None => skip vendor detection
 
         state.register_switch(name, host)
 
@@ -64,6 +67,11 @@ class SwitchMonitor:
         Single SNMPv3 GET on sysUpTime.0. No session, no logout, no
         leak. If the agent has never resolved this switch's hostname
         we also fetch sysName.0 — same protocol, same packet style.
+
+        On first reachable poll we additionally run the vendor
+        detector (sysObjectID.0). Result is cached on SwitchState so
+        subsequent polls don't re-probe; it survives agent restarts
+        via state.json.
         """
         ok = self._snmp.is_reachable(self.host)
         if ok:
@@ -74,6 +82,12 @@ class SwitchMonitor:
                 hostname = self._snmp.get_sys_name(self.host)
                 if hostname and hostname != self.name:
                     self.state.update_switch(self.name, hostname=hostname)
+            # Vendor detection — once per switch.
+            if (sw is not None and not sw.vendor and
+                    self._detector is not None):
+                vendor = self._detector.detect(self.host)
+                if vendor:
+                    self.state.update_switch(self.name, vendor=vendor)
         return ok
 
     def _poll_rest(self) -> bool:
@@ -177,7 +191,8 @@ class SwitchMonitorManager:
         verify_ssl: bool       = False,
         poll_interval: int     = 30,
         failure_threshold: int = 3,
-        snmp:    Optional[SnmpAgent] = None,
+        snmp:     Optional[SnmpAgent]      = None,
+        detector: Optional[VendorDetector] = None,
     ) -> None:
         self._username         = username
         self._password         = password
@@ -187,6 +202,7 @@ class SwitchMonitorManager:
         self._poll_interval    = poll_interval
         self._failure_threshold = failure_threshold
         self._snmp             = snmp
+        self._detector         = detector
         self._monitors: Dict[str, SwitchMonitor] = {}   # keyed by host IP
         self._lock = threading.Lock()
 
@@ -215,6 +231,7 @@ class SwitchMonitorManager:
                 poll_interval     = poll_interval or self._poll_interval,
                 failure_threshold = failure_threshold or self._failure_threshold,
                 snmp              = self._snmp,
+                detector          = self._detector,
             )
             m.start()
             self._monitors[host] = m
@@ -240,7 +257,8 @@ def start_all(
     cfg: configparser.ConfigParser,
     notifier: EmailNotifier,
     state: AgentState,
-    snmp:    Optional[SnmpAgent] = None,
+    snmp:     Optional[SnmpAgent]      = None,
+    detector: Optional[VendorDetector] = None,
 ) -> SwitchMonitorManager:
     """
     Create a SwitchMonitorManager seeded from [credentials] defaults,
@@ -272,6 +290,7 @@ def start_all(
         poll_interval     = 30,
         failure_threshold = 3,
         snmp              = snmp,
+        detector          = detector,
     )
 
     # Seed with any manually configured switches

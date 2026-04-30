@@ -101,9 +101,21 @@ def main() -> None:
     # of opening a REST session every 30s.
     snmp_agent = build_snmp_agent(cfg)
 
+    # Vendor detector — only useful when SNMP is configured. Identifies
+    # each switch's vendor by sysObjectID on first reachable poll and
+    # caches the result on SwitchState.
+    detector = None
+    if snmp_agent is not None:
+        from aruba_agent.drivers.detector import VendorDetector
+        detector = VendorDetector(snmp_agent)
+
     # ── continuous monitors ──────────────────────────────────────────────────
     # Returns a manager — scanner will call manager.sync() after each discovery run
-    manager = switch_poller.start_all(cfg, notifier, state, snmp=snmp_agent)
+    manager = switch_poller.start_all(
+        cfg, notifier, state,
+        snmp     = snmp_agent,
+        detector = detector,
+    )
 
     # Pre-seed the manager from the existing ip_list.txt so all previously
     # discovered switches are monitored immediately on startup without waiting

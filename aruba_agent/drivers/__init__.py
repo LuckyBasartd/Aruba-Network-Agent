@@ -12,7 +12,12 @@ Public surface:
             cfg = drv.get_running_config()
 """
 
-from aruba_agent.drivers.base    import ArpEntry, Facts, SwitchDriver
-from aruba_agent.drivers.factory import driver_for
+from aruba_agent.drivers.base     import ArpEntry, Facts, SwitchDriver
+from aruba_agent.drivers.detector import VendorDetector, vendor_for_oid
+from aruba_agent.drivers.factory  import driver_for
 
-__all__ = ["ArpEntry", "Facts", "SwitchDriver", "driver_for"]
+__all__ = [
+    "ArpEntry", "Facts", "SwitchDriver",
+    "VendorDetector", "vendor_for_oid",
+    "driver_for",
+]

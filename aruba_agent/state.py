@@ -65,6 +65,7 @@ class SwitchState:
     name:       str
     host:       str
     hostname:   str               = ""   # resolved from switch API, may differ from name/IP
+    vendor:     str               = ""   # "aruba_cx" / "cisco_ios" / "arista_eos" / ...
     is_down:    bool              = False
     failures:   int               = 0
     last_seen:  Optional[datetime] = None
@@ -147,6 +148,7 @@ class AgentState:
                     name       = name,
                     host       = host,
                     hostname   = entry.get("hostname", "") or "",
+                    vendor     = entry.get("vendor",   "") or "",
                     is_down    = bool(entry.get("is_down", False)),
                     failures   = int(entry.get("failures", 0)),
                     last_seen  = _parse_iso(entry.get("last_seen")),
@@ -200,6 +202,7 @@ class AgentState:
                     "name":       s.name,
                     "host":       s.host,
                     "hostname":   s.hostname,
+                    "vendor":     s.vendor,
                     "is_down":    s.is_down,
                     "failures":   s.failures,
                     "last_seen":  _iso(s.last_seen),
@@ -308,6 +311,7 @@ class AgentState:
                         "name":       s.name,
                         "host":       s.host,
                         "hostname":   s.hostname or s.name,
+                        "vendor":     s.vendor or "",
                         "is_down":    s.is_down,
                         "failures":   s.failures,
                         "last_seen":  s.last_seen.isoformat() if s.last_seen else None,
