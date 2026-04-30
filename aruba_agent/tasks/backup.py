@@ -37,6 +37,17 @@ class BackupTask:
         self.username     = cr.get("username", "admin")
         self.password     = cr.get("password", "")
         self.api_version  = b.get("api_version") or None   # None → auto-detect
+
+        # Per-vendor overrides — only Cisco needs separate creds today.
+        # Blank values fall through to the default username/password
+        # above, so a single-credential shop doesn't need to fill them
+        # in twice.
+        cc = cfg["credentials.cisco"] if "credentials.cisco" in cfg else {}
+        self.cisco_username = (cc.get("username", "") or "").strip()
+        self.cisco_password = cc.get("password", "")
+        self.cisco_enable   = cc.get("enable_secret", "")
+        self.cisco_napalm   = (cc.get("napalm_driver", "ios") or "ios").strip()
+
         self.notifier     = notifier
         self.state        = state
 
@@ -71,25 +82,43 @@ class BackupTask:
 
         for ip in ips:
             hostname = "N/A"
+            # Per-host vendor lookup. The C3 detector populates
+            # SwitchState.vendor on the first reachable SNMPv3 poll;
+            # we use that here so Aruba switches go through the
+            # AOS-CX REST path (unchanged) and Cisco switches go
+            # through NAPALM via SSH automatically. Empty / unknown
+            # vendors default to the AOS-CX driver, preserving v2.x
+            # behavior.
+            vendor = self.state.get_vendor_for_host(ip) or None
             try:
-                with driver_for(ip, self.username, self.password,
-                                preferred_version=self.api_version) as drv:
+                with driver_for(
+                    ip, self.username, self.password,
+                    preferred_version  = self.api_version,
+                    vendor_hint        = vendor,
+                    cisco_username     = self.cisco_username,
+                    cisco_password     = self.cisco_password,
+                    cisco_enable       = self.cisco_enable,
+                    cisco_napalm_driver= self.cisco_napalm,
+                ) as drv:
                     if not drv.logged_in:
                         failed.append({"ip": ip, "hostname": hostname,
-                                       "issue": f"Login failed: {drv.error}"})
+                                       "issue": f"Login failed ({drv.vendor}): "
+                                                f"{drv.error}"})
                         continue
 
                     hostname = drv.get_hostname() or "unknown"
 
                     if not drv.save_running_to_startup():
                         failed.append({"ip": ip, "hostname": hostname,
-                                       "issue": "Save running→startup failed"})
+                                       "issue": f"Save running→startup failed "
+                                                f"({drv.vendor}): {drv.error}"})
                         continue
 
                     data = drv.get_running_config()
                     if not data:
                         failed.append({"ip": ip, "hostname": hostname,
-                                       "issue": "Config download failed"})
+                                       "issue": f"Config download failed "
+                                                f"({drv.vendor}): {drv.error}"})
                         continue
 
                 # Write outside the with-block so logout happens first

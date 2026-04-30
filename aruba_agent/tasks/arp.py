@@ -18,7 +18,7 @@ import os
 import re
 import subprocess
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from aruba_agent.drivers   import driver_for
 from aruba_agent.state     import AgentState
@@ -35,6 +35,7 @@ class ArpDiscoveryTask:
         sec: configparser.SectionProxy,
         creds: configparser.SectionProxy,
         state: AgentState,
+        cisco_creds: "Optional[configparser.SectionProxy]" = None,
     ) -> None:
         self.name       = name
         self.router_ips = [r.strip() for r in sec.get("routers", "").split(",") if r.strip()]
@@ -43,6 +44,15 @@ class ArpDiscoveryTask:
         self.username   = creds.get("username", "admin")
         self.password   = creds.get("password", "")
         self.state      = state
+
+        # Cisco-specific credentials for routers classified as
+        # cisco_ios. Blank values fall through to the default
+        # username/password above.
+        cc = cisco_creds or {}
+        self.cisco_username = (cc.get("username", "") or "").strip()
+        self.cisco_password = cc.get("password", "")
+        self.cisco_enable   = cc.get("enable_secret", "")
+        self.cisco_napalm   = (cc.get("napalm_driver", "ios") or "ios").strip()
 
     def _load_subnets(self) -> List[str]:
         if not self.ip_list or not os.path.exists(self.ip_list):
@@ -77,11 +87,28 @@ class ArpDiscoveryTask:
         return ip_to_dns
 
     def _fetch_arp(self, router_ip: str) -> List[dict]:
-        with driver_for(router_ip, self.username, self.password) as drv:
+        # Per-host vendor lookup so a Cisco router goes through NAPALM/SSH
+        # while Aruba routers keep using AOS-CX REST. Empty / unknown
+        # vendor → AOS-CX driver (the v2.x default).
+        vendor = self.state.get_vendor_for_host(router_ip) or None
+        with driver_for(
+            router_ip, self.username, self.password,
+            vendor_hint        = vendor,
+            cisco_username     = self.cisco_username,
+            cisco_password     = self.cisco_password,
+            cisco_enable       = self.cisco_enable,
+            cisco_napalm_driver= self.cisco_napalm,
+        ) as drv:
             if not drv.logged_in:
-                log.error("ARP[%s]: login failed for %s: %s",
-                          self.name, router_ip, drv.error)
+                log.error("ARP[%s]: login failed for %s (%s): %s",
+                          self.name, router_ip, drv.vendor, drv.error)
                 return []
+            # Aruba `show arp` and Cisco `show arp` both produce
+            # textual output that the existing parser handles. If we
+            # ever need true vendor-neutral parsing, drv.get_arp_table()
+            # is available on every driver — but the CSV downstream
+            # expects (ip, mac, type, port) and the current parser
+            # produces exactly that on both vendors.
             text = drv.cli("show arp")
         if not text:
             log.error("ARP[%s]: no output from %s", self.name, router_ip)

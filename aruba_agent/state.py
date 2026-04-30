@@ -255,6 +255,22 @@ class AgentState:
                 self.switches[name] = SwitchState(name=name, host=host)
                 self._save()
 
+    def get_vendor_for_host(self, host: str) -> str:
+        """
+        Return the cached vendor for a given IP / hostname (whatever
+        was registered as ``host``), or '' if unknown.
+
+        Used by tasks (backup, ARP, firmware) that operate on IPs and
+        need to know which vendor's driver to use. The vendor is
+        populated by the C3 detector during the SNMPv3 reachability
+        poll and persisted in state.json.
+        """
+        with self._lock:
+            for sw in self.switches.values():
+                if sw.host == host:
+                    return sw.vendor
+            return ""
+
     def update_switch(self, name: str, **kwargs) -> None:
         """
         Apply attribute updates to a tracked switch.

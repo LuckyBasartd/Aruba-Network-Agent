@@ -154,7 +154,12 @@ def main() -> None:
         if not cfg.getboolean(sec, "enabled", fallback=True):
             continue
         name     = sec[len("arp."):]
-        arp_task = ArpDiscoveryTask(name, cfg[sec], cfg["credentials"] if "credentials" in cfg else {}, state)
+        arp_task = ArpDiscoveryTask(
+            name, cfg[sec],
+            cfg["credentials"]       if "credentials"       in cfg else {},
+            state,
+            cisco_creds = cfg["credentials.cisco"] if "credentials.cisco" in cfg else None,
+        )
         scheduler.add(cfg.get(sec, "schedule", fallback="01:00"), arp_task.run)
 
     scheduler.start()
