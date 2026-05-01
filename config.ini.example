@@ -46,9 +46,9 @@ state_file = /var/lib/aruba-agent/state.json
 # Acceptable: authNoPriv. Avoid: noAuthNoPriv.
 #
 # username           — SNMPv3 USM user (a.k.a. Security Name)
-# context_name       — SNMPv3 context (default '' — Cisco IOS-XE
-#                      sometimes scopes views to a non-default context
-#                      such as 'vrf-default')
+# context_name       — Default SNMPv3 context (used when vendor is
+#                      not yet known, and as the fallback for
+#                      vendors not listed below).
 # context_engine_id  — hex string, blank = auto-discover. Set only if
 #                      your switch refuses the standard handshake.
 # auth_protocol      — NONE | MD5 | SHA | SHA224 | SHA256 | SHA384 | SHA512
@@ -58,19 +58,38 @@ state_file = /var/lib/aruba-agent/state.json
 # port               — UDP port (161 standard)
 # timeout            — per-request timeout in seconds
 # retries            — retry count before declaring the host down
+#
+# Per-vendor context overrides
+# ----------------------------
+# Real fleets often need different SNMPv3 contexts per vendor.
+# Aruba CX commonly scopes its monitoring user under a named
+# context (e.g. 'network'), while Cisco IOS-XE and Arista EOS
+# leave the user in the default empty context.
+#
+# Each key is optional. Set to an explicit empty value to force
+# the empty default context for that vendor.
+#
+# context_name_aruba_cx    — for Aruba CX switches
+# context_name_cisco_ios   — for Cisco IOS / IOS-XE
+# context_name_arista_eos  — for Arista EOS
+# context_name_aruba_os    — for legacy AOS-S / AOS-W
 # ------------------------------------------------------------
 [snmp]
-enabled           = false
-username          = aruba_monitoring
-context_name      =
-context_engine_id =
-auth_protocol     = SHA
-auth_password     = ChangeMeAuthPassphrase
-priv_protocol     = AES128
-priv_password     = ChangeMePrivPassphrase
-port              = 161
-timeout           = 2
-retries           = 1
+enabled                 = false
+username                = aruba_monitoring
+context_name            =
+context_engine_id       =
+auth_protocol           = SHA
+auth_password           = ChangeMeAuthPassphrase
+priv_protocol           = AES128
+priv_password           = ChangeMePrivPassphrase
+port                    = 161
+timeout                 = 2
+retries                 = 1
+# Per-vendor context overrides (uncomment + adjust as needed):
+#context_name_aruba_cx   = network
+#context_name_cisco_ios  =
+#context_name_arista_eos =
 
 
 # ------------------------------------------------------------

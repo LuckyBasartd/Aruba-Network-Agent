@@ -72,17 +72,33 @@ class SwitchMonitor:
         detector (sysObjectID.0). Result is cached on SwitchState so
         subsequent polls don't re-probe; it survives agent restarts
         via state.json.
+
+        Context selection
+        -----------------
+        Real-world fleets often need different SNMPv3 contexts per
+        vendor — Aruba CX commonly under a named context, Cisco /
+        Arista under the empty default. Once we know the vendor for
+        a host, we pass the right context override on every poll.
+        On the very first poll (vendor still unknown) we use the
+        credentials' default, which is whatever the operator picked
+        as the most-common case.
         """
-        ok = self._snmp.is_reachable(self.host)
+        sw = self.state.switches.get(self.name)
+        ctx_override = self._snmp.context_for_vendor(sw.vendor) if sw else None
+
+        ok = self._snmp.is_reachable(self.host, context_override=ctx_override)
         if ok:
-            sw = self.state.switches.get(self.name)
             # sysName resolution: only on first successful poll, or
             # when the agent's stored hostname is still the IP.
             if sw is not None and (not sw.hostname or sw.hostname == self.name):
-                hostname = self._snmp.get_sys_name(self.host)
+                hostname = self._snmp.get_sys_name(
+                    self.host, context_override=ctx_override,
+                )
                 if hostname and hostname != self.name:
                     self.state.update_switch(self.name, hostname=hostname)
-            # Vendor detection — once per switch.
+            # Vendor detection — once per switch. The detector pulls
+            # sysObjectID via the same SnmpAgent so the context
+            # override flows through.
             if (sw is not None and not sw.vendor and
                     self._detector is not None):
                 vendor = self._detector.detect(self.host)

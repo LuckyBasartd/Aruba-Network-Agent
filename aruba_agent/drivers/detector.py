@@ -133,26 +133,48 @@ class VendorDetector:
     # ─── internals ───────────────────────────────────────────────────────────
 
     def _classify(self, host: str) -> Optional[str]:
-        # Primary: enterprise OID lookup
-        sys_obj = self._snmp.get_sys_object_id(host)
-        if sys_obj:
-            normalized = sys_obj.strip().lstrip(".")
-            for prefix, vendor in _PREFIX_TO_VENDOR:
-                if normalized == prefix or normalized.startswith(prefix + "."):
-                    return vendor
-            log.debug("sysObjectID %s on %s did not match any known prefix",
-                      normalized, host)
+        """
+        Try detection with the credentials' default context first
+        (which is whatever the operator picked as the most-common
+        vendor). On no response, retry with the empty default
+        context — which catches Cisco / Arista in a fleet where
+        the SNMPv3 default context is set for Aruba.
+
+        Once classified, the poller will use the per-vendor
+        context_override on every subsequent call.
+        """
+        for context_override in (None, ""):
+            sys_obj = self._snmp.get_sys_object_id(
+                host, context_override=context_override,
+            )
+            if sys_obj:
+                normalized = sys_obj.strip().lstrip(".")
+                for prefix, vendor in _PREFIX_TO_VENDOR:
+                    if normalized == prefix or normalized.startswith(prefix + "."):
+                        return vendor
+                log.debug("sysObjectID %s on %s did not match any known prefix",
+                          normalized, host)
+                break  # got a response, just didn't match — don't keep retrying
+            # Don't retry the empty context if it's already what we used
+            if context_override == self._snmp._creds.context_name:
+                break
 
         # Fallback: sysDescr keyword sniff. Cheap (one extra GET per
         # newly-seen host) and saves us from "we got a response but
         # don't know the vendor."
-        sys_descr = self._snmp.get_sys_descr(host)
-        if sys_descr:
-            for kw, vendor in _DESCR_KEYWORDS:
-                if kw.lower() in sys_descr.lower():
-                    return vendor
-            log.debug("sysDescr on %s had no recognized vendor keyword: %s",
-                      host, sys_descr[:120])
+        for context_override in (None, ""):
+            sys_descr = self._snmp.get_sys_descr(
+                host, context_override=context_override,
+            )
+            if sys_descr:
+                for kw, vendor in _DESCR_KEYWORDS:
+                    if kw.lower() in sys_descr.lower():
+                        return vendor
+                log.debug("sysDescr on %s had no recognized vendor keyword: %s",
+                          host, sys_descr[:120])
+                break
+            if context_override == self._snmp._creds.context_name:
+                break
 
         return None
 

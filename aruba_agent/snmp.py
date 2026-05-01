@@ -140,11 +140,18 @@ class SnmpAgent:
         port:    int = 161,
         timeout: int = 2,
         retries: int = 1,
+        per_vendor_context: Optional[dict] = None,
     ) -> None:
         self._creds     = creds
         self._port      = port
         self._timeout   = timeout
         self._retries   = retries
+        # Per-vendor SNMPv3 context overrides. Keyed by vendor string
+        # (matches drivers.detector constants):
+        #     {'aruba_cx': 'network', 'cisco_ios': '', 'arista_eos': ''}
+        # An empty-string value forces the default empty context;
+        # absence of a key means "use credentials' default".
+        self._per_vendor_context: dict = dict(per_vendor_context or {})
         # Diagnostic tracking. Last reason a .get() returned None.
         # Surfaced by the Settings → SNMPv3 → Test button so the
         # operator can tell pysnmp-missing from auth-failure from
@@ -171,32 +178,63 @@ class SnmpAgent:
     def last_detail(self, value: str) -> None:
         self._tl.last_detail = value
 
+    # Hard cap on calls per cached engine. Even when every call
+    # succeeds, pysnmp's asyncio dispatcher accumulates a small
+    # amount of state per call. Resetting periodically keeps
+    # long-running daemons (200 SwitchMonitor threads × multi-day
+    # uptime) from bloating into GB of pending-task garbage.
+    _ENGINE_MAX_CALLS = 200
+
     def _get_engine(self):
         """
-        Return a per-thread cached SnmpEngine. Constructing one per
-        call works but spins up a fresh asyncio dispatcher every
-        time, leaving timeout tasks pending when the engine goes out
-        of scope:
-
-            Task was destroyed but it is pending!
-            task: <Task pending name='Task-N' coro=
-                  <AsyncioDispatcher.handle_timeout()...>>
-
-        Caching one engine per thread cuts those warnings down to
-        at most one per thread (when the thread itself exits) and
-        is also faster — pysnmp builds up USM/discovery state on
-        each engine that's helpful to keep around.
+        Return a per-thread cached SnmpEngine. Caching cuts down
+        engine churn (and the resulting "Task was destroyed but it
+        is pending!" warnings) but a long-lived engine in a worker
+        thread accumulates asyncio dispatcher state, so we rebuild
+        every _ENGINE_MAX_CALLS or whenever ``_reset_engine()``
+        is called explicitly.
         """
         engine = getattr(self._tl, "engine", None)
-        if engine is None:
+        used   = getattr(self._tl, "engine_calls", 0)
+        if engine is None or used >= self._ENGINE_MAX_CALLS:
+            if engine is not None:
+                self._close_engine(engine)
             from pysnmp.hlapi import SnmpEngine
             engine = SnmpEngine()
             self._tl.engine = engine
+            used = 0          # we just built a fresh engine — restart counter
+        self._tl.engine_calls = used + 1
         return engine
+
+    def _close_engine(self, engine) -> None:
+        """Best-effort teardown of an SnmpEngine's transport
+        dispatcher so its pending asyncio tasks get a chance to
+        cancel cleanly."""
+        try:
+            engine.transportDispatcher.closeDispatcher()
+        except Exception as exc:
+            log.debug("SNMP: closeDispatcher raised on teardown: %s", exc)
+
+    def _reset_engine(self) -> None:
+        """Discard the current thread's cached engine. Used after a
+        failed call, since failures are the primary source of
+        pending timeout tasks. Successful calls reuse the engine
+        cleanly until the call-count cap above."""
+        engine = getattr(self._tl, "engine", None)
+        if engine is not None:
+            self._close_engine(engine)
+            self._tl.engine       = None
+            self._tl.engine_calls = 0
 
     # ─── low-level GET ───────────────────────────────────────────────────────
 
-    def get(self, host: str, oid: str) -> Optional[str]:
+    def get(
+        self,
+        host: str,
+        oid: str,
+        *,
+        context_override: Optional[str] = None,
+    ) -> Optional[str]:
         """
         SNMPv3 GET. Returns the variable value as a string (whatever
         pysnmp's prettyPrint produces) or None on any failure —
@@ -205,6 +243,20 @@ class SnmpAgent:
         Designed to never raise: callers can wrap a poll in this and
         treat a None as "device unreachable" without exception
         handling.
+
+        Per-call context override
+        -------------------------
+        ``context_override`` lets a caller use a different SNMPv3
+        context than the credentials' default for this one call.
+        Pass an explicit empty string to force the default context;
+        leave as None to use the credentials' configured value.
+
+        Why: real fleets mix vendors with different context
+        conventions — Aruba CX commonly scopes a user under a named
+        context like "network", while Cisco IOS-XE and Arista EOS
+        leave the user in the default empty context. The
+        SwitchMonitor selects the right context based on the
+        previously-detected vendor for each host.
         """
         self.last_error  = ""
         self.last_detail = ""
@@ -321,9 +373,15 @@ class SnmpAgent:
                 self.last_detail = f"context_engine_id is not valid hex: {exc}"
                 log.warning(self.last_detail)
                 return None
+        # Pick the context: per-call override wins (including empty
+        # string), otherwise fall back to the credentials' default.
+        effective_context = (
+            context_override if context_override is not None
+            else self._creds.context_name
+        )
         context_data = ContextData(
             contextEngineId=context_engine_id,
-            contextName=self._creds.context_name,
+            contextName=effective_context,
         )
 
         try:
@@ -351,6 +409,7 @@ class SnmpAgent:
             self.last_error  = "engine_error"
             self.last_detail = f"{type(exc).__name__}: {exc}"
             log.debug("SNMP GET %s on %s raised: %s", oid, host, self.last_detail)
+            self._reset_engine()
             return None
 
         if error_indication:
@@ -372,30 +431,38 @@ class SnmpAgent:
             self.last_detail = txt
             log.debug("SNMP GET %s on %s: %s (%s)",
                       oid, host, self.last_error, txt)
+            self._reset_engine()
             return None
         if error_status:
             self.last_error  = "pdu_error"
             self.last_detail = error_status.prettyPrint()
             log.debug("SNMP GET %s on %s: PDU error %s",
                       oid, host, self.last_detail)
+            self._reset_engine()
             return None
         for _name, val in var_binds:
             return val.prettyPrint()
 
         self.last_error  = "no_var_binds"
         self.last_detail = "PDU returned no variable bindings"
+        self._reset_engine()
         return None
 
     # ─── high-level helpers ──────────────────────────────────────────────────
 
-    def is_reachable(self, host: str) -> bool:
+    def is_reachable(
+        self, host: str, *, context_override: Optional[str] = None,
+    ) -> bool:
         """True if sysUpTime.0 came back. The actual value is irrelevant
         for reachability — receiving any response means the SNMP engine
         on the switch is alive and authenticated us successfully."""
-        return self.get(host, OID_SYS_UPTIME) is not None
+        return self.get(host, OID_SYS_UPTIME,
+                        context_override=context_override) is not None
 
-    def get_uptime_centiseconds(self, host: str) -> Optional[int]:
-        v = self.get(host, OID_SYS_UPTIME)
+    def get_uptime_centiseconds(
+        self, host: str, *, context_override: Optional[str] = None,
+    ) -> Optional[int]:
+        v = self.get(host, OID_SYS_UPTIME, context_override=context_override)
         if v is None:
             return None
         try:
@@ -403,20 +470,45 @@ class SnmpAgent:
         except ValueError:
             return None
 
-    def get_sys_name(self, host: str) -> Optional[str]:
+    def get_sys_name(
+        self, host: str, *, context_override: Optional[str] = None,
+    ) -> Optional[str]:
         """Configured hostname. Equivalent to AOS-CX /system.hostname,
         Cisco IOS `hostname`, Arista EOS `hostname` config line."""
-        return self.get(host, OID_SYS_NAME)
+        return self.get(host, OID_SYS_NAME, context_override=context_override)
 
-    def get_sys_descr(self, host: str) -> Optional[str]:
+    def get_sys_descr(
+        self, host: str, *, context_override: Optional[str] = None,
+    ) -> Optional[str]:
         """Free-form vendor string — used as fallback when sysObjectID
         doesn't match our known-vendor table."""
-        return self.get(host, OID_SYS_DESCR)
+        return self.get(host, OID_SYS_DESCR, context_override=context_override)
 
-    def get_sys_object_id(self, host: str) -> Optional[str]:
+    def get_sys_object_id(
+        self, host: str, *, context_override: Optional[str] = None,
+    ) -> Optional[str]:
         """Vendor's enterprise OID under 1.3.6.1.4.1.<n>. C3's vendor
         detector keys off this."""
-        return self.get(host, OID_SYS_OBJECT_ID)
+        return self.get(host, OID_SYS_OBJECT_ID,
+                        context_override=context_override)
+
+    # ─── per-vendor context selection ────────────────────────────────────────
+
+    def context_for_vendor(self, vendor: Optional[str]) -> Optional[str]:
+        """
+        Return the right context_override to pass to .get() for a
+        host of the given detected vendor.
+
+        * Vendor string maps to a configured override → return it.
+          (Empty string is a valid value — it forces the empty
+          default context.)
+        * Vendor unknown / blank → return None, which means "use
+          the credentials' default context_name" — usually right
+          for the Aruba-heavy first-poll case.
+        """
+        if not vendor:
+            return None
+        return self._per_vendor_context.get(vendor)
 
 
 # ─── config helper ───────────────────────────────────────────────────────────
@@ -452,9 +544,29 @@ def from_config(cfg: ConfigParser) -> Optional[SnmpAgent]:
         context_name      = s.get("context_name", "").strip(),
         context_engine_id = s.get("context_engine_id", "").strip(),
     )
+
+    # Per-vendor context overrides. Operators with a mixed Aruba +
+    # Cisco + Arista fleet typically need different contexts per
+    # vendor — Aruba CX often uses a named context like 'network'
+    # while Cisco IOS-XE / Arista EOS leave the user in the default
+    # empty context. Each key is optional; missing keys mean
+    # "use the credentials' default context_name".
+    per_vendor_ctx: dict = {}
+    for vendor_key, cfg_key in (
+        ("aruba_cx",    "context_name_aruba_cx"),
+        ("cisco_ios",   "context_name_cisco_ios"),
+        ("arista_eos",  "context_name_arista_eos"),
+        ("aruba_os",    "context_name_aruba_os"),
+    ):
+        if cfg_key in s:
+            # Note: we DO want to honor an explicit empty value here,
+            # because '' is the SNMPv3 default context and meaningful.
+            per_vendor_ctx[vendor_key] = s.get(cfg_key, "").strip()
+
     return SnmpAgent(
-        creds   = creds,
-        port    = int(s.get("port",    "161")),
-        timeout = int(s.get("timeout", "2")),
-        retries = int(s.get("retries", "1")),
+        creds              = creds,
+        port               = int(s.get("port",    "161")),
+        timeout            = int(s.get("timeout", "2")),
+        retries            = int(s.get("retries", "1")),
+        per_vendor_context = per_vendor_ctx,
     )
