@@ -178,12 +178,13 @@ class SnmpAgent:
     def last_detail(self, value: str) -> None:
         self._tl.last_detail = value
 
-    # Hard cap on calls per cached engine. Even when every call
-    # succeeds, pysnmp's asyncio dispatcher accumulates a small
-    # amount of state per call. Resetting periodically keeps
-    # long-running daemons (200 SwitchMonitor threads × multi-day
-    # uptime) from bloating into GB of pending-task garbage.
-    _ENGINE_MAX_CALLS = 200
+    # Hard cap on calls per cached engine. pysnmp's asyncio
+    # dispatcher accumulates a small amount of state per call; even
+    # when every call succeeds, a long-lived engine eventually
+    # bloats. Cap small enough that no engine outlives ~25 minutes
+    # of polling (50 × 30s) — but large enough that we're not
+    # constantly rebuilding on the success path.
+    _ENGINE_MAX_CALLS = 50
 
     def _get_engine(self):
         """
@@ -409,7 +410,11 @@ class SnmpAgent:
             self.last_error  = "engine_error"
             self.last_detail = f"{type(exc).__name__}: {exc}"
             log.debug("SNMP GET %s on %s raised: %s", oid, host, self.last_detail)
-            self._reset_engine()
+            # NOTE: do NOT _reset_engine() here. Doing so amplifies the
+            # asyncio leak when many polls fail in a row — every failure
+            # builds a fresh engine, each carrying dispatcher state that
+            # outlives the call. The periodic call cap (every
+            # _ENGINE_MAX_CALLS) is sufficient and bounded.
             return None
 
         if error_indication:
@@ -431,21 +436,18 @@ class SnmpAgent:
             self.last_detail = txt
             log.debug("SNMP GET %s on %s: %s (%s)",
                       oid, host, self.last_error, txt)
-            self._reset_engine()
             return None
         if error_status:
             self.last_error  = "pdu_error"
             self.last_detail = error_status.prettyPrint()
             log.debug("SNMP GET %s on %s: PDU error %s",
                       oid, host, self.last_detail)
-            self._reset_engine()
             return None
         for _name, val in var_binds:
             return val.prettyPrint()
 
         self.last_error  = "no_var_binds"
         self.last_detail = "PDU returned no variable bindings"
-        self._reset_engine()
         return None
 
     # ─── high-level helpers ──────────────────────────────────────────────────
