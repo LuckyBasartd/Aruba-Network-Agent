@@ -1,203 +1,180 @@
 {% extends "_settings_chrome.html" %}
 {% block title %}SNMPv3{% endblock %}
 {% block icon %}bi-broadcast{% endblock %}
-{% block heading %}SNMPv3 Reachability{% endblock %}
+{% block heading %}SNMPv3{% endblock %}
 
 {% block content %}
+<p class="text-muted small mb-4">
+  Define one or more SNMPv3 <strong>profiles</strong> for the agent
+  to use. Each profile carries its own credentials and context.
+  When a switch is first seen, the C6 detector tries profiles in
+  order until one authenticates, then pins the winning profile to
+  that switch — no more retry storms across mismatched contexts.
+</p>
+
 <div class="row g-4">
-  <div class="col-lg-8">
+
+  <!-- ── Global config ──────────────────────────────────────────── -->
+  <div class="col-lg-6">
     <div class="card">
       <div class="card-body">
-        <p class="text-muted small">
-          When enabled, the 30-second switch reachability poll uses a
-          single SNMPv3 GET on <code>sysUpTime.0</code> instead of
-          opening a vendor REST/SSH session every cycle. Eliminates
-          AOS-CX session churn entirely (no session = no leak), works
-          identically across Aruba / Cisco / Arista, and cuts the
-          agent's management-plane chattiness by an order of magnitude.
-        </p>
+        <h5 class="card-title mb-3">Global</h5>
 
         <form method="POST" autocomplete="off">
 
-          <div class="form-check form-switch mb-4">
+          <div class="form-check form-switch mb-3">
             <input class="form-check-input" type="checkbox" role="switch"
                    id="enabled" name="enabled"
                    {% if enabled %}checked{% endif %}>
             <label class="form-check-label" for="enabled">
               <strong>Use SNMPv3 for reachability polling</strong>
             </label>
+            <div class="form-text">
+              When off, the agent falls back to per-vendor REST sessions.
+            </div>
           </div>
 
           <div class="mb-3">
-            <label class="form-label" for="username">User <span class="text-muted">(USM Security Name)</span></label>
-            <input type="text" class="form-control" id="username"
-                   name="username" value="{{ username }}"
-                   placeholder="aruba_monitoring">
+            <label class="form-label" for="default_profile">Default profile</label>
+            <select class="form-select" id="default_profile" name="default_profile">
+              {% for p in profiles %}
+              <option value="{{ p.name }}"
+                      {% if p.name == default_profile %}selected{% endif %}>{{ p.name }}</option>
+              {% endfor %}
+            </select>
             <div class="form-text">
-              The SNMPv3 user configured on every switch the agent monitors.
-              Some vendors call this the <em>Security Name</em>.
-            </div>
-          </div>
-
-          <hr class="border-secondary my-4">
-          <h6>Context</h6>
-
-          <div class="row g-3 mb-4">
-            <div class="col-md-5">
-              <label class="form-label" for="context_name">Context name</label>
-              <input type="text" class="form-control" id="context_name"
-                     name="context_name" value="{{ context_name }}"
-                     placeholder="(empty = default)">
-              <div class="form-text">
-                Leave blank for the default context. Cisco IOS-XE
-                sometimes scopes SNMP views to a non-default context
-                (e.g. <code>vrf-default</code>).
-              </div>
-            </div>
-            <div class="col-md-7">
-              <label class="form-label" for="context_engine_id">
-                Context engine ID <span class="text-muted">(advanced)</span>
-              </label>
-              <input type="text" class="form-control" id="context_engine_id"
-                     name="context_engine_id" value="{{ context_engine_id }}"
-                     placeholder="(blank = auto-discover)">
-              <div class="form-text">
-                Hex string, no separators (e.g.
-                <code>80000009030001a2b3c4d5e6</code>). Leave blank
-                unless your switch rejects the standard discovery
-                handshake.
-              </div>
-            </div>
-          </div>
-
-          <hr class="border-secondary my-4">
-          <h6>Authentication</h6>
-
-          <div class="row g-3 mb-3">
-            <div class="col-md-4">
-              <label class="form-label" for="auth_protocol">Auth protocol</label>
-              <select class="form-select" id="auth_protocol" name="auth_protocol">
-                {% for p in ['NONE','MD5','SHA','SHA224','SHA256','SHA384','SHA512'] %}
-                <option value="{{ p }}" {% if auth_protocol == p %}selected{% endif %}>{{ p }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-8">
-              <label class="form-label" for="auth_password">Auth password</label>
-              <input type="password" class="form-control" id="auth_password"
-                     name="auth_password" autocomplete="new-password"
-                     placeholder="{% if auth_password_set %}•••••••• (leave blank to keep){% else %}not configured{% endif %}">
-              <div class="form-text">≥ 8 characters. Required unless protocol is NONE.</div>
-            </div>
-          </div>
-
-          <hr class="border-secondary my-4">
-          <h6>Privacy (encryption)</h6>
-
-          <div class="row g-3 mb-4">
-            <div class="col-md-4">
-              <label class="form-label" for="priv_protocol">Priv protocol</label>
-              <select class="form-select" id="priv_protocol" name="priv_protocol">
-                {% for p in ['NONE','DES','AES128','AES192','AES256'] %}
-                <option value="{{ p }}" {% if priv_protocol == p %}selected{% endif %}>{{ p }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-8">
-              <label class="form-label" for="priv_password">Priv password</label>
-              <input type="password" class="form-control" id="priv_password"
-                     name="priv_password" autocomplete="new-password"
-                     placeholder="{% if priv_password_set %}•••••••• (leave blank to keep){% else %}not configured{% endif %}">
-              <div class="form-text">Required for authPriv. Leave blank for authNoPriv.</div>
-            </div>
-          </div>
-
-          <hr class="border-secondary my-4">
-          <h6>Transport</h6>
-
-          <div class="row g-3 mb-4">
-            <div class="col-md-3">
-              <label class="form-label" for="port">UDP port</label>
-              <input type="number" class="form-control" id="port"
-                     name="port" value="{{ port }}" min="1" max="65535">
-            </div>
-            <div class="col-md-3">
-              <label class="form-label" for="timeout">Timeout (s)</label>
-              <input type="number" class="form-control" id="timeout"
-                     name="timeout" value="{{ timeout }}" min="1">
-            </div>
-            <div class="col-md-3">
-              <label class="form-label" for="retries">Retries</label>
-              <input type="number" class="form-control" id="retries"
-                     name="retries" value="{{ retries }}" min="0">
+              Tried first when the agent encounters a never-classified host.
+              Pick the profile that matches the majority of your fleet.
             </div>
           </div>
 
           <button type="submit" class="btn btn-primary"
-                  {% if not editor_writable %}disabled{% endif %}>
+                  {% if not editor_writable or not profiles %}disabled{% endif %}>
             <i class="bi bi-save me-1"></i>Save
           </button>
-          <span class="text-muted small ms-2">
-            Restart the agent to apply.
-          </span>
+          <span class="text-muted small ms-2">Restart the agent to apply.</span>
         </form>
       </div>
     </div>
   </div>
 
-  <div class="col-lg-4">
+  <!-- ── Add a new profile ──────────────────────────────────────── -->
+  <div class="col-lg-6">
     <div class="card">
       <div class="card-body">
-        <h6 class="text-muted text-uppercase small mb-3">Test against a switch</h6>
-        <p class="small text-muted">
-          Sends one <code>sysUpTime.0</code> GET to the host below
-          using the values currently <strong>saved</strong> in
-          <code>config.ini</code>. Save first if you've just changed
-          anything.
+        <h5 class="card-title mb-3">Add profile</h5>
+        <p class="text-muted small">
+          Common names: <code>aruba</code>, <code>cisco</code>,
+          <code>arista</code>. After creating, fill in credentials
+          on the editor page.
         </p>
-        <div class="input-group input-group-sm mb-2">
-          <input type="text" class="form-control" id="test-host"
-                 placeholder="10.0.0.1" autocomplete="off">
-          <button class="btn btn-outline-info" type="button" onclick="snmpTest()">
-            <i class="bi bi-broadcast me-1"></i>Test
-          </button>
-        </div>
-        <pre class="small text-muted mt-3" id="test-result" style="white-space:pre-wrap;"></pre>
+        <form method="POST" action="{{ url_for('settings_snmp_profile_add') }}"
+              class="row g-2 align-items-end" autocomplete="off">
+          <div class="col-md-8">
+            <label class="form-label" for="name">Profile name</label>
+            <input type="text" class="form-control" id="name" name="name"
+                   pattern="^[a-zA-Z0-9_-]+$" required
+                   placeholder="aruba">
+            <div class="form-text">Letters, digits, <code>_</code>, <code>-</code>.</div>
+          </div>
+          <div class="col-md-4">
+            <button type="submit" class="btn btn-outline-primary"
+                    {% if not editor_writable %}disabled{% endif %}>
+              <i class="bi bi-plus-lg me-1"></i>Add
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   </div>
-</div>
-{% endblock %}
 
-{% block scripts %}
-<script>
-async function snmpTest() {
-    const host = document.getElementById('test-host').value.trim();
-    const out  = document.getElementById('test-result');
-    if (!host) { out.textContent = 'Enter a host first.'; return; }
-    out.textContent = `Testing ${host}…`;
-    out.className   = 'small text-muted mt-3';
-    try {
-        const r = await fetch(`/api/settings/snmp/test?host=${encodeURIComponent(host)}`,
-                              { method: 'POST' });
-        const j = await r.json();
-        if (r.ok) {
-            out.textContent =
-                `OK\n` +
-                `  uptime  : ${j.uptime_centiseconds} centiseconds\n` +
-                `  sysName : ${j.sys_name  || '(none)'}\n` +
-                `  sysDescr: ${j.sys_descr || '(none)'}`;
-            out.className = 'small text-success mt-3';
-        } else {
-            const code   = j.code   ? `[${j.code}]\n` : '';
-            const detail = j.detail ? `\n  pysnmp: ${j.detail}` : '';
-            out.textContent = `FAILED ${code}  ${j.error || 'unknown error'}${detail}`;
-            out.className   = 'small text-danger mt-3';
-        }
-    } catch (e) {
-        out.textContent = `ERROR\n  ${e.message}`;
-        out.className   = 'small text-danger mt-3';
-    }
-}
-</script>
+  <!-- ── List existing profiles ─────────────────────────────────── -->
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <h5 class="card-title mb-3">Profiles</h5>
+
+        {% if not profiles %}
+          {% if legacy_creds_present %}
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            The legacy single-profile <code>[snmp]</code> block is in
+            place. Add a profile above (e.g. named
+            <code>default</code>) and copy your credentials over —
+            multi-profile mode requires explicit
+            <code>[snmp.&lt;name&gt;]</code> sections.
+          </div>
+          {% else %}
+          <p class="text-muted small mb-0">
+            No profiles defined yet. Add one above to get started.
+          </p>
+          {% endif %}
+        {% else %}
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>User</th>
+              <th class="d-none d-md-table-cell">Auth / Priv</th>
+              <th>Context</th>
+              <th>Status</th>
+              <th class="text-end"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in profiles %}
+            <tr>
+              <td class="fw-semibold">
+                <i class="bi bi-broadcast me-1 text-primary"></i>{{ p.name }}
+                {% if p.name == default_profile %}
+                <span class="badge bg-info ms-1">default</span>
+                {% endif %}
+              </td>
+              <td><code>{{ p.username or '(empty)' }}</code></td>
+              <td class="d-none d-md-table-cell text-muted small">
+                {{ p.auth_protocol }} / {{ p.priv_protocol }}
+              </td>
+              <td>
+                {% if p.context_name %}
+                <code>{{ p.context_name }}</code>
+                {% else %}
+                <span class="text-muted small">default (empty)</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if p.auth_set and p.priv_set %}
+                <span class="badge bg-success">authPriv</span>
+                {% elif p.auth_set %}
+                <span class="badge bg-warning text-dark">authNoPriv</span>
+                {% else %}
+                <span class="badge bg-danger">incomplete</span>
+                {% endif %}
+              </td>
+              <td class="text-end">
+                <a href="{{ url_for('settings_snmp_profile', name=p.name) }}"
+                   class="btn btn-outline-primary btn-sm">
+                  <i class="bi bi-pencil me-1"></i>Edit
+                </a>
+                <form method="POST"
+                      action="{{ url_for('settings_snmp_profile_remove', name=p.name) }}"
+                      onsubmit="return confirm('Remove SNMP profile {{ p.name }}? Switches pinned to it will fall back to discovery on the next poll.');"
+                      class="d-inline">
+                  <button type="submit" class="btn btn-outline-danger btn-sm"
+                          {% if p.name == default_profile %}disabled
+                            title="Change the default profile first"
+                          {% endif %}>
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+</div>
 {% endblock %}

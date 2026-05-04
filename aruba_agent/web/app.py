@@ -670,7 +670,30 @@ def create_app(
             return redirect(url_for("settings_page"))
         return None
 
-    # ── SNMPv3 ────────────────────────────────────────────────────────────
+    # ── SNMPv3 — multi-profile management (C6.4) ──────────────────────────
+
+    _PROFILE_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+    def _list_profiles_from_disk(live: configparser.ConfigParser):
+        """Find every [snmp.<name>] section in the live config and
+        return a summary list ordered by name. The summary intentionally
+        omits passwords — the per-profile editor reads them on demand."""
+        out = []
+        for section in live.sections():
+            if not section.startswith("snmp.") or section == "snmp.":
+                continue
+            name = section[len("snmp."):]
+            p = live[section]
+            out.append({
+                "name":          name,
+                "username":      p.get("username", "") or "",
+                "auth_protocol": p.get("auth_protocol", "SHA"),
+                "priv_protocol": p.get("priv_protocol", "AES128"),
+                "context_name":  p.get("context_name", "") or "",
+                "auth_set":      bool((p.get("auth_password", "") or "").strip()),
+                "priv_set":      bool((p.get("priv_password", "") or "").strip()),
+            })
+        return sorted(out, key=lambda x: x["name"])
 
     @app.get("/settings/snmp")
     @require_login
@@ -679,31 +702,100 @@ def create_app(
             abort(404)
         live = editor.read()
         s = live["snmp"] if live.has_section("snmp") else {}
+        profiles = _list_profiles_from_disk(live)
+
+        # Detect legacy single-profile config: [snmp] has credential
+        # keys but no [snmp.<name>] sections exist. We surface this in
+        # the UI so the operator can migrate explicitly.
+        legacy_creds_present = any(
+            k in s for k in
+            ("username", "auth_password", "priv_password", "context_name")
+        ) and not profiles
+
         ctx = _settings_context()
         ctx.update({
-            "enabled":            s.get("enabled", "false").lower() == "true",
-            "username":           s.get("username", ""),
-            "context_name":       s.get("context_name", ""),
-            "context_engine_id":  s.get("context_engine_id", ""),
-            "auth_protocol":      s.get("auth_protocol", "SHA"),
-            "priv_protocol":      s.get("priv_protocol", "AES128"),
-            "port":               s.get("port", "161"),
-            "timeout":            s.get("timeout", "2"),
-            "retries":            s.get("retries", "1"),
-            "auth_password_set":  bool(s.get("auth_password", "").strip()),
-            "priv_password_set":  bool(s.get("priv_password", "").strip()),
-            "errors":             get_flashed_messages(category_filter=["error"]),
-            "messages":           get_flashed_messages(category_filter=["success"]),
+            "enabled":              s.get("enabled", "false").lower() == "true",
+            "default_profile":      s.get("default_profile", "default"),
+            "profiles":             profiles,
+            "legacy_creds_present": legacy_creds_present,
+            "errors":               get_flashed_messages(category_filter=["error"]),
+            "messages":             get_flashed_messages(category_filter=["success"]),
         })
         return render_template("settings_snmp.html", **ctx)
 
     @app.post("/settings/snmp")
     @require_login
     def settings_snmp_post():
+        """Save the global [snmp] keys: enabled + default_profile.
+        Per-profile credentials are saved through the per-profile editor."""
         guard = _editor_required()
         if guard is not None: return guard
 
         f = request.form
+        default_profile = (f.get("default_profile") or "").strip()
+
+        # If a default_profile was named, validate it exists on disk.
+        if default_profile:
+            live = editor.read()
+            if not live.has_section(f"snmp.{default_profile}"):
+                flash(f"Default profile {default_profile!r} doesn't exist. "
+                      "Add it first, then come back to save.", "error")
+                return redirect(url_for("settings_snmp"))
+
+        editor.update_section("snmp", {
+            "enabled":         "true" if f.get("enabled") == "on" else "false",
+            "default_profile": default_profile,
+        })
+        log.info("Web UI: SNMP global settings updated by user=%s",
+                 session.get("user"))
+        flash("SNMP global settings saved. Restart the agent to apply.",
+              "success")
+        return redirect(url_for("settings_snmp"))
+
+    # ── Per-profile editor ────────────────────────────────────────────────
+
+    @app.get("/settings/snmp/profile/<name>")
+    @require_login
+    def settings_snmp_profile(name: str):
+        if editor is None:
+            abort(404)
+        if not _PROFILE_NAME.match(name):
+            abort(400)
+        live = editor.read()
+        section = f"snmp.{name}"
+        if not live.has_section(section):
+            flash(f"SNMP profile {name!r} not found.", "error")
+            return redirect(url_for("settings_snmp"))
+        p = live[section]
+        ctx = _settings_context()
+        ctx.update({
+            "name":              name,
+            "username":          p.get("username", ""),
+            "context_name":      p.get("context_name", ""),
+            "context_engine_id": p.get("context_engine_id", ""),
+            "auth_protocol":     p.get("auth_protocol", "SHA"),
+            "priv_protocol":     p.get("priv_protocol", "AES128"),
+            "port":              p.get("port", "161"),
+            "timeout":           p.get("timeout", "2"),
+            "retries":           p.get("retries", "1"),
+            "auth_password_set": bool((p.get("auth_password", "") or "").strip()),
+            "priv_password_set": bool((p.get("priv_password", "") or "").strip()),
+            "errors":            get_flashed_messages(category_filter=["error"]),
+            "messages":          get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_snmp_profile.html", **ctx)
+
+    @app.post("/settings/snmp/profile/<name>")
+    @require_login
+    def settings_snmp_profile_post(name: str):
+        guard = _editor_required()
+        if guard is not None: return guard
+        if not _PROFILE_NAME.match(name):
+            abort(400)
+
+        section = f"snmp.{name}"
+        f = request.form
+
         try:
             port    = int(f.get("port")    or "161")
             timeout = int(f.get("timeout") or "2")
@@ -711,31 +803,28 @@ def create_app(
             if not (1 <= port <= 65535) or timeout < 1 or retries < 0:
                 raise ValueError
         except ValueError:
-            flash("Port (1-65535), timeout (>=1), retries (>=0) must be valid "
+            flash("Port (1-65535), timeout (≥1), retries (≥0) must be valid "
                   "integers.", "error")
-            return redirect(url_for("settings_snmp"))
+            return redirect(url_for("settings_snmp_profile", name=name))
 
         live = editor.read()
-        existing_auth = (live["snmp"]["auth_password"]
-                         if live.has_section("snmp") and
-                            live.has_option("snmp", "auth_password") else "")
-        existing_priv = (live["snmp"]["priv_password"]
-                         if live.has_section("snmp") and
-                            live.has_option("snmp", "priv_password") else "")
-
+        existing_auth = (live[section]["auth_password"]
+                         if live.has_section(section) and
+                            live.has_option(section, "auth_password") else "")
+        existing_priv = (live[section]["priv_password"]
+                         if live.has_section(section) and
+                            live.has_option(section, "priv_password") else "")
         new_auth = f.get("auth_password") or ""
         new_priv = f.get("priv_password") or ""
 
-        # Context engine ID: hex only — strip separators, validate.
         cei = (f.get("context_engine_id") or "").strip().replace(":", "")
         if cei:
             if not re.fullmatch(r"[0-9a-fA-F]+", cei) or len(cei) % 2:
-                flash("Context engine ID must be an even-length hex string "
-                      "(e.g. 80000009030001a2b3c4d5e6).", "error")
-                return redirect(url_for("settings_snmp"))
+                flash("Context engine ID must be an even-length hex string.",
+                      "error")
+                return redirect(url_for("settings_snmp_profile", name=name))
 
         values = {
-            "enabled":           "true" if f.get("enabled") == "on" else "false",
             "username":          (f.get("username") or "").strip(),
             "context_name":      (f.get("context_name") or "").strip(),
             "context_engine_id": cei,
@@ -747,29 +836,106 @@ def create_app(
             "timeout":           str(timeout),
             "retries":           str(retries),
         }
+        if not values["username"]:
+            flash("Username is required for an SNMPv3 profile.", "error")
+            return redirect(url_for("settings_snmp_profile", name=name))
 
-        if values["enabled"] == "true":
-            if not values["username"]:
-                flash("Username is required when SNMPv3 is enabled.", "error")
-                return redirect(url_for("settings_snmp"))
-            if not values["auth_password"]:
-                flash("Auth password is required when SNMPv3 is enabled.", "error")
-                return redirect(url_for("settings_snmp"))
+        editor.update_section(section, values)
+        log.info("Web UI: SNMP profile %r saved by user=%s",
+                 name, session.get("user"))
+        flash(f"Profile {name!r} saved. Restart the agent to apply.",
+              "success")
+        return redirect(url_for("settings_snmp_profile", name=name))
 
-        editor.update_section("snmp", values)
-        log.info("Web UI: SNMP settings updated by user=%s", session.get("user"))
-        flash("SNMP settings saved. Restart the agent to apply.", "success")
+    # ── Add a new profile ─────────────────────────────────────────────────
+
+    @app.post("/settings/snmp/profile/add")
+    @require_login
+    def settings_snmp_profile_add():
+        guard = _editor_required()
+        if guard is not None: return guard
+
+        name = (request.form.get("name") or "").strip()
+        if not name or not _PROFILE_NAME.match(name):
+            flash("Profile name must be alphanumeric (plus _ and -). "
+                  "Try 'aruba', 'cisco', etc.", "error")
+            return redirect(url_for("settings_snmp"))
+
+        live = editor.read()
+        section = f"snmp.{name}"
+        if live.has_section(section):
+            flash(f"Profile {name!r} already exists.", "error")
+            return redirect(url_for("settings_snmp"))
+
+        editor.update_section(section, {
+            "username":          "",
+            "context_name":      "",
+            "context_engine_id": "",
+            "auth_protocol":     "SHA",
+            "auth_password":     "",
+            "priv_protocol":     "AES128",
+            "priv_password":     "",
+            "port":              "161",
+            "timeout":           "2",
+            "retries":           "1",
+        })
+        log.info("Web UI: SNMP profile %r created by user=%s",
+                 name, session.get("user"))
+        flash(f"Profile {name!r} created. Fill in credentials and save.",
+              "success")
+        return redirect(url_for("settings_snmp_profile", name=name))
+
+    # ── Remove a profile ──────────────────────────────────────────────────
+
+    @app.post("/settings/snmp/profile/<name>/remove")
+    @require_login
+    def settings_snmp_profile_remove(name: str):
+        guard = _editor_required()
+        if guard is not None: return guard
+        if not _PROFILE_NAME.match(name):
+            abort(400)
+
+        live   = editor.read()
+        header = editor.read_header()
+        section = f"snmp.{name}"
+        if not live.has_section(section):
+            flash(f"Profile {name!r} doesn't exist.", "error")
+            return redirect(url_for("settings_snmp"))
+
+        # Don't let the operator delete the profile listed as
+        # default_profile — they'd be left with no fallback. Make
+        # them flip default_profile first.
+        if (live.has_section("snmp") and
+                live.has_option("snmp", "default_profile") and
+                live["snmp"]["default_profile"].strip() == name):
+            flash(f"Profile {name!r} is set as the default. Change "
+                  "default_profile first, then come back to remove this.",
+                  "error")
+            return redirect(url_for("settings_snmp"))
+
+        live.remove_section(section)
+        editor.save(live, header=header)
+        log.info("Web UI: SNMP profile %r removed by user=%s",
+                 name, session.get("user"))
+        flash(f"Profile {name!r} removed. Restart the agent to apply.",
+              "success")
         return redirect(url_for("settings_snmp"))
 
     @app.post("/api/settings/snmp/test")
     @require_login
     def settings_snmp_test():
-        """Send a single sysUpTime.0 GET to a target host using the
-        on-disk [snmp] credentials. Operator can validate the auth /
-        priv passwords before restarting the agent."""
+        """Send a single sysUpTime.0 GET to a target host using one of
+        the on-disk SNMP profiles. Operator can validate credentials
+        per-profile before restarting the agent.
+
+        Query string:
+            host    — required, target switch IP
+            profile — optional profile name; defaults to the
+                      registry's configured default."""
         if editor is None:
             return jsonify({"error": "settings editor disabled"}), 503
-        target = (request.args.get("host") or "").strip()
+        target  = (request.args.get("host") or "").strip()
+        profile = (request.args.get("profile") or "").strip() or None
         if not target:
             return jsonify({"error": "host query parameter is required"}), 400
 
@@ -777,7 +943,14 @@ def create_app(
         live = editor.read()
         agent = build_snmp(live)
         if agent is None:
-            return jsonify({"error": "[snmp] is not enabled or username is blank"}), 400
+            return jsonify({"error":
+                "SNMP is not enabled or no profile is configured. "
+                "Add at least one profile under [snmp.<name>]."}), 400
+
+        if profile and profile not in agent.registry:
+            return jsonify({"error":
+                f"Unknown profile {profile!r}. "
+                f"Available: {agent.registry.names()}"}), 400
 
         # Surface the specific failure mode so the UI can show a
         # useful hint instead of "no response, ¯\_(ツ)_/¯".
@@ -811,21 +984,23 @@ def create_app(
                 "hex characters only, no separators.",
         }
 
-        uptime = agent.get_uptime_centiseconds(target)
+        uptime = agent.get_uptime_centiseconds(target, profile_name=profile)
         if uptime is None:
             err_code = agent.last_error or "unknown"
             return jsonify({
-                "error":  hints.get(err_code,
-                                    f"SNMP request failed ({err_code})."),
-                "code":   err_code,
-                "detail": agent.last_detail,
+                "error":   hints.get(err_code,
+                                     f"SNMP request failed ({err_code})."),
+                "code":    err_code,
+                "detail":  agent.last_detail,
+                "profile": profile or agent.registry.default_name,
             }), 502
 
-        sys_name  = agent.get_sys_name(target)
-        sys_descr = agent.get_sys_descr(target)
+        sys_name  = agent.get_sys_name (target, profile_name=profile)
+        sys_descr = agent.get_sys_descr(target, profile_name=profile)
         return jsonify({
             "status":              "ok",
             "host":                target,
+            "profile":             profile or agent.registry.default_name,
             "uptime_centiseconds": uptime,
             "sys_name":            sys_name,
             "sys_descr":           sys_descr,
