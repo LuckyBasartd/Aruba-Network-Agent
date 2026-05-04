@@ -169,7 +169,10 @@ def main() -> None:
     web_cfg     = cfg["web"] if "web" in cfg else {}
     web_host    = web_cfg.get("host", "0.0.0.0")
     web_port    = int(web_cfg.get("port", "8080"))
-    web_threads = int(web_cfg.get("threads", "8"))
+    # Default 16 — comfortable headroom on a 200-switch fleet. The C6.x
+    # SwitchMonitor pool can keep the GIL busy under load; waitress
+    # needs enough workers to slip dashboard requests through.
+    web_threads = int(web_cfg.get("threads", "16"))
     flask_app = create_app(
         state,
         backup_fn  = backup_task.run  if backup_task  else None,

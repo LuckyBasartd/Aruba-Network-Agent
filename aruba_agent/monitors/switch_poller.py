@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import configparser
 import logging
+import random
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, List
@@ -210,11 +211,22 @@ class SwitchMonitor:
 
     def start(self) -> None:
         def _run() -> None:
-            log.info("Switch monitor started: %s (%s)", self.name, self.host)
+            log.debug("Switch monitor started: %s (%s)", self.name, self.host)
+
+            # Stagger the first poll over the full cycle window so the
+            # entire fleet doesn't hammer pysnmp + the GIL in lockstep.
+            # Without this, 200 SwitchMonitor threads spawned within
+            # milliseconds of each other all wake every 30s at the
+            # same instant — the waitress thread pool gets starved
+            # and the dashboard stops responding.
+            initial_delay = random.uniform(0, self.poll_interval)
+            if self._stop.wait(initial_delay):
+                return                              # stopped during initial delay
+
             while not self._stop.is_set():
                 self._poll()
                 self._stop.wait(self.poll_interval)
-            log.info("Switch monitor stopped: %s", self.name)
+            log.debug("Switch monitor stopped: %s", self.name)
 
         threading.Thread(target=_run, name=f"sw-{self.name}", daemon=True).start()
 

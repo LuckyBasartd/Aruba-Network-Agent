@@ -262,7 +262,11 @@ to       = noc@example.com, admin@example.com
 [web]
 host                  = 127.0.0.1
 port                  = 8080
-threads               = 8
+# threads — waitress worker pool. 16 gives the dashboard enough
+# headroom on a 200-switch fleet where 200 SwitchMonitor threads
+# compete for the GIL. Bump to 32 if /api/state still queues under
+# load.
+threads               = 16
 secret_key            =
 session_timeout_hours = 8
 secure_cookies        = true
