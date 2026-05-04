@@ -93,6 +93,65 @@ retries                 = 1
 
 
 # ------------------------------------------------------------
+# SNMPv3 profiles (multi-credential)
+#
+# When the legacy [snmp] block above has just one set of credentials,
+# the agent treats it as a single profile called 'default'. Real
+# fleets often need MULTIPLE profiles — different credentials,
+# different SNMPv3 contexts — for different vendors that share the
+# same monitoring user but bind it differently:
+#
+#   * Aruba CX user 'nets' bound to context 'network'
+#   * Cisco IOS user 'nets' in default empty context
+#   * Arista EOS user 'nets' in default empty context
+#
+# Define one [snmp.<name>] section per profile. The detector will
+# try them in order on a never-classified host and pin the winner
+# to that host (state.snmp_profile) so subsequent polls go straight
+# to the right one.
+#
+# Optional: [snmp] default_profile = <name>  picks which profile
+# the detector tries first. Defaults to 'default' if not set.
+#
+# Example mixed-fleet configuration:
+#
+#     [snmp]
+#     enabled         = true
+#     default_profile = aruba
+#
+#     [snmp.aruba]
+#     username      = nets
+#     auth_protocol = SHA
+#     auth_password = ChangeMeAuth
+#     priv_protocol = AES128
+#     priv_password = ChangeMePriv
+#     context_name  = network
+#
+#     [snmp.cisco]
+#     username      = nets
+#     auth_protocol = SHA
+#     auth_password = ChangeMeAuth
+#     priv_protocol = AES128
+#     priv_password = ChangeMePriv
+#     context_name  =
+#
+#     [snmp.arista]
+#     username      = nets
+#     auth_protocol = SHA
+#     auth_password = ChangeMeAuth
+#     priv_protocol = AES128
+#     priv_password = ChangeMePriv
+#     context_name  =
+#
+# When [snmp.<name>] sections exist, the credentials directly
+# in [snmp] above are IGNORED — only the [snmp]-level enabled /
+# default_profile keys still matter. Keep one profile shape or
+# the other in any single config; mixing causes the [snmp]-level
+# credentials to be silently overridden.
+# ------------------------------------------------------------
+
+
+# ------------------------------------------------------------
 # Shared switch credentials (Aruba AOS-CX REST)
 # Used by the AOS-CX driver as defaults. Individual
 # [switch.*] / [arp.*] sections can override username / password.

@@ -62,14 +62,15 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 @dataclass
 class SwitchState:
-    name:       str
-    host:       str
-    hostname:   str               = ""   # resolved from switch API, may differ from name/IP
-    vendor:     str               = ""   # "aruba_cx" / "cisco_ios" / "arista_eos" / ...
-    is_down:    bool              = False
-    failures:   int               = 0
-    last_seen:  Optional[datetime] = None
-    last_event: str               = "Initializing"
+    name:         str
+    host:         str
+    hostname:     str               = ""   # resolved from switch API, may differ from name/IP
+    vendor:       str               = ""   # "aruba_cx" / "cisco_ios" / "arista_eos" / ...
+    snmp_profile: str               = ""   # name of SNMPv3 profile that works for this host
+    is_down:      bool              = False
+    failures:     int               = 0
+    last_seen:    Optional[datetime] = None
+    last_event:   str               = "Initializing"
 
 
 @dataclass
@@ -145,14 +146,16 @@ class AgentState:
                 if not name or not host:
                     continue
                 self.switches[name] = SwitchState(
-                    name       = name,
-                    host       = host,
-                    hostname   = entry.get("hostname", "") or "",
-                    vendor     = entry.get("vendor",   "") or "",
-                    is_down    = bool(entry.get("is_down", False)),
-                    failures   = int(entry.get("failures", 0)),
-                    last_seen  = _parse_iso(entry.get("last_seen")),
-                    last_event = entry.get("last_event", "Restored from snapshot"),
+                    name         = name,
+                    host         = host,
+                    hostname     = entry.get("hostname",     "") or "",
+                    vendor       = entry.get("vendor",       "") or "",
+                    snmp_profile = entry.get("snmp_profile", "") or "",
+                    is_down      = bool(entry.get("is_down", False)),
+                    failures     = int(entry.get("failures", 0)),
+                    last_seen    = _parse_iso(entry.get("last_seen")),
+                    last_event   = entry.get("last_event",
+                                             "Restored from snapshot"),
                 )
 
             # backup
@@ -199,14 +202,15 @@ class AgentState:
         payload = {
             "switches": [
                 {
-                    "name":       s.name,
-                    "host":       s.host,
-                    "hostname":   s.hostname,
-                    "vendor":     s.vendor,
-                    "is_down":    s.is_down,
-                    "failures":   s.failures,
-                    "last_seen":  _iso(s.last_seen),
-                    "last_event": s.last_event,
+                    "name":         s.name,
+                    "host":         s.host,
+                    "hostname":     s.hostname,
+                    "vendor":       s.vendor,
+                    "snmp_profile": s.snmp_profile,
+                    "is_down":      s.is_down,
+                    "failures":     s.failures,
+                    "last_seen":    _iso(s.last_seen),
+                    "last_event":   s.last_event,
                 }
                 for s in self.switches.values()
             ],
@@ -271,6 +275,22 @@ class AgentState:
                     return sw.vendor
             return ""
 
+    def get_snmp_profile_for_host(self, host: str) -> str:
+        """
+        Return the cached SNMPv3 profile name for a given IP /
+        hostname, or '' if unknown.
+
+        Populated by the C6.2 detector once it finds a profile that
+        successfully authenticates against the host. Persisted in
+        state.json so the SwitchMonitor doesn't have to re-discover
+        across agent restarts.
+        """
+        with self._lock:
+            for sw in self.switches.values():
+                if sw.host == host:
+                    return sw.snmp_profile
+            return ""
+
     def update_switch(self, name: str, **kwargs) -> None:
         """
         Apply attribute updates to a tracked switch.
@@ -324,15 +344,16 @@ class AgentState:
             return {
                 "switches": [
                     {
-                        "name":       s.name,
-                        "host":       s.host,
-                        "hostname":   s.hostname or s.name,
-                        "vendor":     s.vendor or "",
-                        "is_down":    s.is_down,
-                        "failures":   s.failures,
-                        "last_seen":  s.last_seen.isoformat() if s.last_seen else None,
-                        "last_event": s.last_event,
-                        "status":     "DOWN" if s.is_down else "UP",
+                        "name":         s.name,
+                        "host":         s.host,
+                        "hostname":     s.hostname or s.name,
+                        "vendor":       s.vendor or "",
+                        "snmp_profile": s.snmp_profile or "",
+                        "is_down":      s.is_down,
+                        "failures":     s.failures,
+                        "last_seen":    s.last_seen.isoformat() if s.last_seen else None,
+                        "last_event":   s.last_event,
+                        "status":       "DOWN" if s.is_down else "UP",
                     }
                     for s in self.switches.values()
                 ],
