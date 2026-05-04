@@ -64,6 +64,7 @@ def create_app(
     scanner_fn:  Optional[Callable] = None,
     cfg: Optional[configparser.ConfigParser] = None,
     cfg_path: Optional[str] = None,
+    snmp_agent = None,    # Optional[SnmpAgent] — duck-typed via .registry
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.config["JSON_SORT_KEYS"] = False
@@ -1416,6 +1417,67 @@ def create_app(
     @require_login
     def api_whoami():
         return jsonify({"user": session.get("user")})
+
+    # ── SNMP profile management (C6.3) ───────────────────────────────────────
+
+    @app.get("/api/snmp/profiles")
+    @require_login
+    def api_snmp_profiles():
+        """List the SNMP profiles the registry currently knows about,
+        and which one is the default. Used by the dashboard's per-
+        switch profile-pinning dropdown."""
+        if snmp_agent is None:
+            return jsonify({
+                "enabled": False,
+                "profiles": [],
+                "default":  None,
+            })
+        return jsonify({
+            "enabled":  True,
+            "profiles": snmp_agent.registry.names(),
+            "default":  snmp_agent.registry.default_name or None,
+        })
+
+    @app.post("/api/switches/<switch_name>/profile")
+    @require_login
+    def api_set_switch_profile(switch_name: str):
+        """
+        Pin (or clear) the SNMP profile for a single switch.
+
+        JSON body:
+            { "profile": "aruba" }   — pin to the 'aruba' profile
+            { "profile": "" }        — clear; let detection re-run
+            { "profile": null }      — clear; let detection re-run
+
+        Returns the resulting profile field on success, 404 if the
+        switch isn't tracked, 400 if the profile name isn't in the
+        registry.
+        """
+        if switch_name not in state.switches:
+            abort(404)
+
+        payload = request.get_json(silent=True) or {}
+        profile = (payload.get("profile") or "").strip()
+
+        # Validate against the registry — except for the empty string
+        # which is a valid "clear pin" signal.
+        if profile and snmp_agent is not None:
+            if profile not in snmp_agent.registry:
+                return jsonify({
+                    "error": f"Unknown SNMP profile {profile!r}. "
+                             f"Available: {snmp_agent.registry.names()}",
+                }), 400
+
+        if not state.set_switch_profile(switch_name, profile):
+            abort(404)
+
+        log.info("Web UI: SNMP profile for %s set to %r by user=%s",
+                 switch_name, profile or "<auto-detect>", session.get("user"))
+        return jsonify({
+            "status":  "ok",
+            "switch":  switch_name,
+            "profile": profile,
+        })
 
     @app.post("/api/backup/trigger")
     @require_login

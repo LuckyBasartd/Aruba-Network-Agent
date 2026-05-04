@@ -275,6 +275,23 @@ class AgentState:
                     return sw.vendor
             return ""
 
+    def set_switch_profile(self, name: str, profile: str) -> bool:
+        """
+        Pin or unpin the SNMPv3 profile for a switch. Empty string
+        clears the pin so the next poll re-runs detection.
+
+        Persists immediately — unlike update_switch() which only
+        triggers a save on UP/DOWN transitions, profile changes
+        are operator-driven and worth their own snapshot write.
+        """
+        with self._lock:
+            sw = self.switches.get(name)
+            if sw is None:
+                return False
+            sw.snmp_profile = profile or ""
+            self._save()
+            return True
+
     def get_snmp_profile_for_host(self, host: str) -> str:
         """
         Return the cached SNMPv3 profile name for a given IP /

@@ -176,6 +176,7 @@ def main() -> None:
         scanner_fn = scanner_task.run if scanner_task else None,
         cfg        = cfg,
         cfg_path   = config_path,
+        snmp_agent = snmp_agent,
     )
     start_web(flask_app, host=web_host, port=web_port, threads=web_threads)
 
