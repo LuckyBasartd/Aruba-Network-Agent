@@ -134,24 +134,20 @@ class SnmpAgent:
     our 30s poll cadence and avoids cross-thread engine sharing.
     """
 
-    def __init__(
-        self,
-        creds:   SnmpV3Credentials,
-        port:    int = 161,
-        timeout: int = 2,
-        retries: int = 1,
-        per_vendor_context: Optional[dict] = None,
-    ) -> None:
-        self._creds     = creds
-        self._port      = port
-        self._timeout   = timeout
-        self._retries   = retries
-        # Per-vendor SNMPv3 context overrides. Keyed by vendor string
-        # (matches drivers.detector constants):
-        #     {'aruba_cx': 'network', 'cisco_ios': '', 'arista_eos': ''}
-        # An empty-string value forces the default empty context;
-        # absence of a key means "use credentials' default".
-        self._per_vendor_context: dict = dict(per_vendor_context or {})
+    def __init__(self, registry) -> None:
+        """
+        Build an SNMPv3 client backed by a SnmpProfileRegistry. Each
+        call to get() / is_reachable() / etc. resolves which profile
+        to use — by name when the caller knows it (post-detection),
+        falling back to the registry's default profile otherwise.
+
+        ``registry`` should be the result of
+        ``aruba_agent.snmp_profiles.from_config(cfg)``. Type isn't
+        annotated as SnmpProfileRegistry here to avoid a circular
+        import; it's effectively duck-typed via .get(), .default(),
+        and __iter__.
+        """
+        self._registry = registry
         # Diagnostic tracking. Last reason a .get() returned None.
         # Surfaced by the Settings → SNMPv3 → Test button so the
         # operator can tell pysnmp-missing from auth-failure from
@@ -234,6 +230,7 @@ class SnmpAgent:
         host: str,
         oid: str,
         *,
+        profile_name:     Optional[str] = None,
         context_override: Optional[str] = None,
     ) -> Optional[str]:
         """
@@ -245,22 +242,38 @@ class SnmpAgent:
         treat a None as "device unreachable" without exception
         handling.
 
+        Profile selection
+        -----------------
+        ``profile_name`` picks which SnmpProfile from the registry
+        to authenticate with. None means "use the registry's
+        default profile" — that's what the SwitchMonitor uses
+        for never-classified hosts and the legacy single-profile
+        deployments.
+
         Per-call context override
         -------------------------
-        ``context_override`` lets a caller use a different SNMPv3
-        context than the credentials' default for this one call.
-        Pass an explicit empty string to force the default context;
-        leave as None to use the credentials' configured value.
-
-        Why: real fleets mix vendors with different context
-        conventions — Aruba CX commonly scopes a user under a named
-        context like "network", while Cisco IOS-XE and Arista EOS
-        leave the user in the default empty context. The
-        SwitchMonitor selects the right context based on the
-        previously-detected vendor for each host.
+        ``context_override`` overrides the resolved profile's
+        context_name for this one call. Pass an explicit empty
+        string to force the default context; leave as None to use
+        the profile's configured value.
         """
         self.last_error  = ""
         self.last_detail = ""
+
+        # Resolve which profile to use.
+        if profile_name:
+            profile = self._registry.get(profile_name)
+        else:
+            profile = self._registry.default()
+        if profile is None:
+            self.last_error  = "no_profile"
+            self.last_detail = (
+                f"SNMP profile {profile_name!r} not found"
+                if profile_name else
+                "No SNMP profile available — registry is empty"
+            )
+            return None
+        creds = profile.creds
 
         # pysnmp's synchronous hlapi runs an asyncio call under the hood.
         # On Python 3.12 worker threads have no default event loop, which
@@ -333,30 +346,30 @@ class SnmpAgent:
             "AES192": usmAesCfb192Protocol,
             "AES256": usmAesCfb256Protocol,
         }
-        auth_proto = auth_map.get(self._creds.auth_protocol.upper(),
+        auth_proto = auth_map.get(creds.auth_protocol.upper(),
                                   usmHMACSHAAuthProtocol)
-        priv_proto = priv_map.get(self._creds.priv_protocol.upper(),
+        priv_proto = priv_map.get(creds.priv_protocol.upper(),
                                   usmAesCfb128Protocol)
 
         # Map the credential combination onto the right USM user_data shape.
-        if self._creds.auth_password and self._creds.priv_password:
+        if creds.auth_password and creds.priv_password:
             user_data = UsmUserData(
-                self._creds.username,
-                self._creds.auth_password,
-                self._creds.priv_password,
+                creds.username,
+                creds.auth_password,
+                creds.priv_password,
                 authProtocol=auth_proto,
                 privProtocol=priv_proto,
             )
-        elif self._creds.auth_password:
+        elif creds.auth_password:
             user_data = UsmUserData(
-                self._creds.username,
-                self._creds.auth_password,
+                creds.username,
+                creds.auth_password,
                 authProtocol=auth_proto,
                 privProtocol=usmNoPrivProtocol,
             )
         else:
             user_data = UsmUserData(
-                self._creds.username,
+                creds.username,
                 authProtocol=usmNoAuthProtocol,
                 privProtocol=usmNoPrivProtocol,
             )
@@ -364,10 +377,10 @@ class SnmpAgent:
         # Build ContextData. Empty contextName / blank engine ID =
         # pysnmp defaults (auto-discover engine ID, default context).
         context_engine_id = None
-        if self._creds.context_engine_id:
+        if creds.context_engine_id:
             try:
                 context_engine_id = OctetString(
-                    hexValue=self._creds.context_engine_id.replace(":", "").strip()
+                    hexValue=creds.context_engine_id.replace(":", "").strip()
                 )
             except Exception as exc:
                 self.last_error  = "bad_context_engine_id"
@@ -375,10 +388,10 @@ class SnmpAgent:
                 log.warning(self.last_detail)
                 return None
         # Pick the context: per-call override wins (including empty
-        # string), otherwise fall back to the credentials' default.
+        # string), otherwise fall back to the profile's context.
         effective_context = (
             context_override if context_override is not None
-            else self._creds.context_name
+            else creds.context_name
         )
         context_data = ContextData(
             contextEngineId=context_engine_id,
@@ -390,9 +403,9 @@ class SnmpAgent:
                 self._get_engine(),
                 user_data,
                 UdpTransportTarget(
-                    (host, self._port),
-                    timeout=self._timeout,
-                    retries=self._retries,
+                    (host, profile.port),
+                    timeout=profile.timeout,
+                    retries=profile.retries,
                 ),
                 context_data,
                 ObjectType(ObjectIdentity(oid)),
@@ -453,18 +466,25 @@ class SnmpAgent:
     # ─── high-level helpers ──────────────────────────────────────────────────
 
     def is_reachable(
-        self, host: str, *, context_override: Optional[str] = None,
+        self, host: str, *,
+        profile_name:     Optional[str] = None,
+        context_override: Optional[str] = None,
     ) -> bool:
         """True if sysUpTime.0 came back. The actual value is irrelevant
         for reachability — receiving any response means the SNMP engine
         on the switch is alive and authenticated us successfully."""
         return self.get(host, OID_SYS_UPTIME,
+                        profile_name=profile_name,
                         context_override=context_override) is not None
 
     def get_uptime_centiseconds(
-        self, host: str, *, context_override: Optional[str] = None,
+        self, host: str, *,
+        profile_name:     Optional[str] = None,
+        context_override: Optional[str] = None,
     ) -> Optional[int]:
-        v = self.get(host, OID_SYS_UPTIME, context_override=context_override)
+        v = self.get(host, OID_SYS_UPTIME,
+                     profile_name=profile_name,
+                     context_override=context_override)
         if v is None:
             return None
         try:
@@ -473,102 +493,68 @@ class SnmpAgent:
             return None
 
     def get_sys_name(
-        self, host: str, *, context_override: Optional[str] = None,
+        self, host: str, *,
+        profile_name:     Optional[str] = None,
+        context_override: Optional[str] = None,
     ) -> Optional[str]:
         """Configured hostname. Equivalent to AOS-CX /system.hostname,
         Cisco IOS `hostname`, Arista EOS `hostname` config line."""
-        return self.get(host, OID_SYS_NAME, context_override=context_override)
+        return self.get(host, OID_SYS_NAME,
+                        profile_name=profile_name,
+                        context_override=context_override)
 
     def get_sys_descr(
-        self, host: str, *, context_override: Optional[str] = None,
+        self, host: str, *,
+        profile_name:     Optional[str] = None,
+        context_override: Optional[str] = None,
     ) -> Optional[str]:
         """Free-form vendor string — used as fallback when sysObjectID
         doesn't match our known-vendor table."""
-        return self.get(host, OID_SYS_DESCR, context_override=context_override)
-
-    def get_sys_object_id(
-        self, host: str, *, context_override: Optional[str] = None,
-    ) -> Optional[str]:
-        """Vendor's enterprise OID under 1.3.6.1.4.1.<n>. C3's vendor
-        detector keys off this."""
-        return self.get(host, OID_SYS_OBJECT_ID,
+        return self.get(host, OID_SYS_DESCR,
+                        profile_name=profile_name,
                         context_override=context_override)
 
-    # ─── per-vendor context selection ────────────────────────────────────────
+    def get_sys_object_id(
+        self, host: str, *,
+        profile_name:     Optional[str] = None,
+        context_override: Optional[str] = None,
+    ) -> Optional[str]:
+        """Vendor's enterprise OID under 1.3.6.1.4.1.<n>. The C6.2
+        detector keys off this when iterating profiles."""
+        return self.get(host, OID_SYS_OBJECT_ID,
+                        profile_name=profile_name,
+                        context_override=context_override)
 
-    def context_for_vendor(self, vendor: Optional[str]) -> Optional[str]:
-        """
-        Return the right context_override to pass to .get() for a
-        host of the given detected vendor.
+    # ─── registry access ────────────────────────────────────────────────────
 
-        * Vendor string maps to a configured override → return it.
-          (Empty string is a valid value — it forces the empty
-          default context.)
-        * Vendor unknown / blank → return None, which means "use
-          the credentials' default context_name" — usually right
-          for the Aruba-heavy first-poll case.
-        """
-        if not vendor:
-            return None
-        return self._per_vendor_context.get(vendor)
+    @property
+    def registry(self):
+        """Expose the underlying SnmpProfileRegistry so the
+        VendorDetector can iterate the configured profiles."""
+        return self._registry
+
+    # ─── deprecated, kept for API compatibility ─────────────────────────────
+
+    def context_for_vendor(self, vendor: Optional[str]):
+        """Always returns None now — superseded by SNMP profiles in C6.
+        Each profile carries its own context. Kept on the class so old
+        callers don't crash; they just no-op pass None into get()."""
+        return None
 
 
 # ─── config helper ───────────────────────────────────────────────────────────
 
 def from_config(cfg: ConfigParser) -> Optional[SnmpAgent]:
     """
-    Build an SnmpAgent from the [snmp] section of config.ini.
-    Returns None when:
-      * the section is missing
-      * enabled = false
-      * username is blank (we'd never authenticate)
-
-    Callers that get None should fall back to whatever non-SNMP
-    polling they used before.
+    Build an SnmpAgent backed by a SnmpProfileRegistry parsed from
+    the same config. Returns None when SNMP is disabled or no usable
+    profile is defined — callers fall back to REST polling.
     """
-    if not cfg.has_section("snmp"):
+    # Local import to avoid circular dependency: snmp_profiles imports
+    # SnmpV3Credentials from this module.
+    from aruba_agent.snmp_profiles import from_config as _registry_from_config
+
+    registry = _registry_from_config(cfg)
+    if registry is None or len(registry) == 0:
         return None
-    s = cfg["snmp"]
-    if s.get("enabled", "false").strip().lower() not in ("true", "1", "yes", "on"):
-        return None
-
-    username = s.get("username", "").strip()
-    if not username:
-        log.warning("[snmp] enabled but username is empty — SNMP disabled")
-        return None
-
-    creds = SnmpV3Credentials(
-        username          = username,
-        auth_protocol     = s.get("auth_protocol", "SHA").strip(),
-        auth_password     = s.get("auth_password", ""),
-        priv_protocol     = s.get("priv_protocol", "AES128").strip(),
-        priv_password     = s.get("priv_password", ""),
-        context_name      = s.get("context_name", "").strip(),
-        context_engine_id = s.get("context_engine_id", "").strip(),
-    )
-
-    # Per-vendor context overrides. Operators with a mixed Aruba +
-    # Cisco + Arista fleet typically need different contexts per
-    # vendor — Aruba CX often uses a named context like 'network'
-    # while Cisco IOS-XE / Arista EOS leave the user in the default
-    # empty context. Each key is optional; missing keys mean
-    # "use the credentials' default context_name".
-    per_vendor_ctx: dict = {}
-    for vendor_key, cfg_key in (
-        ("aruba_cx",    "context_name_aruba_cx"),
-        ("cisco_ios",   "context_name_cisco_ios"),
-        ("arista_eos",  "context_name_arista_eos"),
-        ("aruba_os",    "context_name_aruba_os"),
-    ):
-        if cfg_key in s:
-            # Note: we DO want to honor an explicit empty value here,
-            # because '' is the SNMPv3 default context and meaningful.
-            per_vendor_ctx[vendor_key] = s.get(cfg_key, "").strip()
-
-    return SnmpAgent(
-        creds              = creds,
-        port               = int(s.get("port",    "161")),
-        timeout            = int(s.get("timeout", "2")),
-        retries            = int(s.get("retries", "1")),
-        per_vendor_context = per_vendor_ctx,
-    )
+    return SnmpAgent(registry)

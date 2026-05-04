@@ -94,7 +94,10 @@ class VendorDetector:
 
     def __init__(self, snmp_agent: SnmpAgent) -> None:
         self._snmp = snmp_agent
-        self._cache: Dict[str, str] = {}
+        # Cache: host -> (vendor, profile_name). The profile_name records
+        # which SNMPv3 profile authenticated successfully for the host
+        # so subsequent polls don't have to re-discover.
+        self._cache: Dict[str, Tuple[str, str]] = {}
         self._lock  = threading.Lock()
 
     # ─── public API ──────────────────────────────────────────────────────────
@@ -105,78 +108,80 @@ class VendorDetector:
         if the device didn't answer SNMP or sits outside the known
         prefix table.
 
-        Cached after the first successful classification — subsequent
-        calls return immediately.
+        Backwards-compatible single-return form. Use
+        ``detect_with_profile`` to get the SNMP profile name as well.
+        """
+        result = self.detect_with_profile(host)
+        return result[0] if result else None
+
+    def detect_with_profile(self, host: str) -> Optional[Tuple[str, str]]:
+        """
+        Try each SNMP profile in registry order until one returns a
+        sysObjectID we can classify (or a sysDescr we recognize).
+        Returns ``(vendor, profile_name)`` for the winning profile,
+        or None if no profile authenticated + classified.
+
+        Cached on first success per host. The caller (SwitchMonitor)
+        also persists the winner on SwitchState so this lookup
+        doesn't run on every poll.
         """
         with self._lock:
             cached = self._cache.get(host)
         if cached is not None:
             return cached
 
-        vendor = self._classify(host)
-        if vendor is not None:
-            with self._lock:
-                self._cache[host] = vendor
-            log.info("Vendor detected: %s → %s", host, vendor)
-        return vendor
-
-    def invalidate(self, host: str) -> None:
-        """Drop the cached vendor for *host*. Next ``detect()`` re-probes."""
-        with self._lock:
-            self._cache.pop(host, None)
-
-    def known(self) -> Dict[str, str]:
-        """Snapshot of all currently-cached classifications."""
-        with self._lock:
-            return dict(self._cache)
-
-    # ─── internals ───────────────────────────────────────────────────────────
-
-    def _classify(self, host: str) -> Optional[str]:
-        """
-        Try detection with the credentials' default context first
-        (which is whatever the operator picked as the most-common
-        vendor). On no response, retry with the empty default
-        context — which catches Cisco / Arista in a fleet where
-        the SNMPv3 default context is set for Aruba.
-
-        Once classified, the poller will use the per-vendor
-        context_override on every subsequent call.
-        """
-        for context_override in (None, ""):
+        # Iterate the registry's profiles. SnmpProfileRegistry yields
+        # the default profile first then the rest in config order.
+        for profile in self._snmp.registry:
             sys_obj = self._snmp.get_sys_object_id(
-                host, context_override=context_override,
+                host, profile_name=profile.name,
             )
             if sys_obj:
                 normalized = sys_obj.strip().lstrip(".")
                 for prefix, vendor in _PREFIX_TO_VENDOR:
                     if normalized == prefix or normalized.startswith(prefix + "."):
-                        return vendor
-                log.debug("sysObjectID %s on %s did not match any known prefix",
-                          normalized, host)
-                break  # got a response, just didn't match — don't keep retrying
-            # Don't retry the empty context if it's already what we used
-            if context_override == self._snmp._creds.context_name:
-                break
+                        result = (vendor, profile.name)
+                        with self._lock:
+                            self._cache[host] = result
+                        log.info("Vendor detected: %s → %s (profile=%s)",
+                                 host, vendor, profile.name)
+                        return result
+                log.debug("sysObjectID %s on %s via profile %s did not match "
+                          "any known prefix", normalized, host, profile.name)
 
-        # Fallback: sysDescr keyword sniff. Cheap (one extra GET per
-        # newly-seen host) and saves us from "we got a response but
-        # don't know the vendor."
-        for context_override in (None, ""):
+            # sysDescr fallback — also scoped to this profile
             sys_descr = self._snmp.get_sys_descr(
-                host, context_override=context_override,
+                host, profile_name=profile.name,
             )
             if sys_descr:
                 for kw, vendor in _DESCR_KEYWORDS:
                     if kw.lower() in sys_descr.lower():
-                        return vendor
-                log.debug("sysDescr on %s had no recognized vendor keyword: %s",
-                          host, sys_descr[:120])
-                break
-            if context_override == self._snmp._creds.context_name:
-                break
+                        result = (vendor, profile.name)
+                        with self._lock:
+                            self._cache[host] = result
+                        log.info("Vendor detected: %s → %s (profile=%s, "
+                                 "via sysDescr)", host, vendor, profile.name)
+                        return result
+                log.debug("sysDescr on %s via profile %s had no recognized "
+                          "vendor keyword: %s", host, profile.name,
+                          sys_descr[:120])
 
         return None
+
+    def invalidate(self, host: str) -> None:
+        """Drop the cached classification for *host*. Next call re-probes."""
+        with self._lock:
+            self._cache.pop(host, None)
+
+    def known(self) -> Dict[str, Tuple[str, str]]:
+        """Snapshot of all currently-cached (vendor, profile) classifications."""
+        with self._lock:
+            return dict(self._cache)
+
+    # The C3 _classify() helper that iterated context overrides on a
+    # single credential set has been removed. detect_with_profile()
+    # iterates entire profiles instead — each profile carries its own
+    # credentials AND context.
 
 
 # ─── module-level helper for tests / quick scripts ───────────────────────────

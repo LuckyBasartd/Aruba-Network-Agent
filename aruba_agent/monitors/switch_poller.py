@@ -16,7 +16,7 @@ from __future__ import annotations
 import configparser
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List
 
 from aruba_agent.drivers          import driver_for
@@ -59,51 +59,84 @@ class SwitchMonitor:
         self._detector         = detector   # None => skip vendor detection
 
         state.register_switch(name, host)
+        # Per-switch backoff timer for "no profile worked" — keeps
+        # an unclassified switch from running detection (and pinging
+        # every profile) every poll cycle.
+        self._classification_cooldown_until: Optional[datetime] = None
 
     # ─── reachability paths ─────────────────────────────────────────────────
 
+    # If the detector tries every profile and none authenticates, wait
+    # this long before retrying. Otherwise an Aruba-only profile against
+    # a Cisco-only switch (or any never-classifiable host) would re-run
+    # discovery every 30 seconds, burning SNMP calls on every profile.
+    _CLASSIFICATION_COOLDOWN_SECONDS = 300
+
     def _poll_snmp(self) -> bool:
         """
-        Single SNMPv3 GET on sysUpTime.0. No session, no logout, no
-        leak. If the agent has never resolved this switch's hostname
-        we also fetch sysName.0 — same protocol, same packet style.
+        Single SNMPv3 GET on sysUpTime.0 against the host's pinned
+        SNMP profile. No session, no logout, no leak.
 
-        On first reachable poll we additionally run the vendor
-        detector (sysObjectID.0). Result is cached on SwitchState so
-        subsequent polls don't re-probe; it survives agent restarts
-        via state.json.
-
-        Context selection
-        -----------------
-        Real-world fleets often need different SNMPv3 contexts per
-        vendor — Aruba CX commonly under a named context, Cisco /
-        Arista under the empty default. Once we know the vendor for
-        a host, we pass the right context override on every poll.
-        On the very first poll (vendor still unknown) we use the
-        credentials' default, which is whatever the operator picked
-        as the most-common case.
+        Profile resolution
+        ------------------
+        * If the host already has a pinned profile in SwitchState
+          (from a previous successful detection — possibly across
+          a restart), use it directly.
+        * Otherwise, the C6.2 detector iterates the profile registry
+          and pins the winner. If none authenticate, we set a
+          cooldown so we don't keep re-trying every poll.
+        * sysName resolution piggy-backs on the same profile.
         """
         sw = self.state.switches.get(self.name)
-        ctx_override = self._snmp.context_for_vendor(sw.vendor) if sw else None
+        if sw is None:
+            return False
 
-        ok = self._snmp.is_reachable(self.host, context_override=ctx_override)
+        profile_name = sw.snmp_profile
+
+        # ── New host (or pre-C6.2 state restore): run discovery ────────────
+        if not profile_name:
+            # Cooldown — skip discovery if we recently failed
+            if (self._classification_cooldown_until is not None and
+                    datetime.now() < self._classification_cooldown_until):
+                return False
+
+            if self._detector is not None:
+                result = self._detector.detect_with_profile(self.host)
+                if result is not None:
+                    vendor, profile_name = result
+                    self.state.update_switch(
+                        self.name, vendor=vendor, snmp_profile=profile_name,
+                    )
+                    # Drop any prior cooldown — the host is classified
+                    self._classification_cooldown_until = None
+                else:
+                    # No profile worked. Back off so we don't hammer
+                    # the registry on every poll.
+                    self._classification_cooldown_until = (
+                        datetime.now() +
+                        timedelta(seconds=self._CLASSIFICATION_COOLDOWN_SECONDS)
+                    )
+                    log.warning(
+                        "Switch %s: no SNMP profile authenticated — "
+                        "will retry in %d seconds",
+                        self.host, self._CLASSIFICATION_COOLDOWN_SECONDS,
+                    )
+                    return False
+            else:
+                # No detector available — fall back to default profile
+                # (which is what an empty profile_name resolves to in
+                # SnmpAgent.get).
+                profile_name = None
+
+        # ── Pinned profile path: poll using the host's known profile ──────
+        ok = self._snmp.is_reachable(self.host, profile_name=profile_name)
         if ok:
-            # sysName resolution: only on first successful poll, or
-            # when the agent's stored hostname is still the IP.
-            if sw is not None and (not sw.hostname or sw.hostname == self.name):
+            if not sw.hostname or sw.hostname == self.name:
                 hostname = self._snmp.get_sys_name(
-                    self.host, context_override=ctx_override,
+                    self.host, profile_name=profile_name,
                 )
                 if hostname and hostname != self.name:
                     self.state.update_switch(self.name, hostname=hostname)
-            # Vendor detection — once per switch. The detector pulls
-            # sysObjectID via the same SnmpAgent so the context
-            # override flows through.
-            if (sw is not None and not sw.vendor and
-                    self._detector is not None):
-                vendor = self._detector.detect(self.host)
-                if vendor:
-                    self.state.update_switch(self.name, vendor=vendor)
         return ok
 
     def _poll_rest(self) -> bool:
