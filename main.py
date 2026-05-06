@@ -24,6 +24,38 @@ logging.basicConfig(
 )
 log = logging.getLogger("aruba-agent")
 
+
+# ── unhandled-exception capture ─────────────────────────────────────────────
+# When a worker thread (waitress, switch monitor, scheduler) dies from an
+# unhandled exception, Python's default behavior is to print the traceback
+# to stderr — which systemd captures, but journald can rotate it away
+# before the operator notices the symptom. Route thread exceptions
+# through our regular logger so they stay in the journal alongside the
+# rest of the agent's output, with %(asctime)s prefixes that survive a
+# fleet-scale incident.
+def _thread_exception_hook(args) -> None:
+    thread_name = args.thread.name if args.thread is not None else "<unknown>"
+    log.error(
+        "Unhandled exception in thread %s — thread is now dead:",
+        thread_name,
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+threading.excepthook = _thread_exception_hook
+
+
+def _process_exception_hook(exc_type, exc_value, exc_traceback) -> None:
+    """Mirror of the thread hook for the main thread."""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    log.error(
+        "Unhandled exception on the main thread:",
+        exc_info=(exc_type, exc_value, exc_traceback),
+    )
+
+sys.excepthook = _process_exception_hook
+
 # ── imports ─────────────────────────────────────────────────────────────────
 from aruba_agent.notifier               import EmailNotifier
 from aruba_agent.snmp                   import from_config as build_snmp_agent
