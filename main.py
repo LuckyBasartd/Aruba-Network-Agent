@@ -15,7 +15,29 @@ import os
 import signal
 import sys
 import threading
+import warnings
 from typing import Dict
+
+
+# ── third-party warning suppression ─────────────────────────────────────────
+# pysnmp 6.x's AES priv path imports
+# cryptography.hazmat.primitives.ciphers.modes.CFB. cryptography 45+
+# moved CFB to the 'decrepit' submodule and emits a
+# CryptographyDeprecationWarning every time the old path is touched.
+# That fires on every SNMPv3 priv decrypt — at fleet scale (~200
+# switches × 30s polls), several warnings per second flood journald
+# and drown every other log line. Until pysnmp upstream switches to
+# the new import, suppress the warning here so the journal stays
+# usable. The actual cryptographic operation is unchanged.
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+    warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+except ImportError:
+    # Fallback: filter by message + module if the class isn't importable
+    warnings.filterwarnings("ignore", message=r".*CFB has been moved.*")
+    warnings.filterwarnings(
+        "ignore", category=DeprecationWarning, module=r"pysnmpcrypto.*",
+    )
 
 # ── logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
