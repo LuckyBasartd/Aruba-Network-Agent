@@ -120,7 +120,21 @@ class BackupTask:
                                                 f"{drv.error}"})
                         continue
 
-                    hostname = drv.get_hostname() or "unknown"
+                    # Prefer the hostname state already knows for this
+                    # IP (set by switch_poller via SNMP sysName.0).
+                    # That keeps the on-disk directory in sync with
+                    # what the dashboard renders, so the "click row
+                    # → show backups" modal can find the file.
+                    # NAPALM's get_hostname() for Cisco / Arista
+                    # returns the short hostname while SNMP sysName
+                    # often includes the domain — using the driver's
+                    # value would put files under a name the
+                    # dashboard never asks for.
+                    hostname = (
+                        self.state.get_hostname_for_host(ip)
+                        or drv.get_hostname()
+                        or "unknown"
+                    )
 
                     if not drv.save_running_to_startup():
                         failed.append({"ip": ip, "hostname": hostname,

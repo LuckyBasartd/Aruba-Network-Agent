@@ -292,6 +292,19 @@ class AgentState:
             self._save()
             return True
 
+    def get_hostname_for_host(self, host: str) -> str:
+        """
+        Return the SwitchState.hostname for a given IP / hostname,
+        or '' if unknown. Used by the backup task so config files
+        land under the same name the dashboard renders, ensuring
+        the "click row → show backups" modal can find them.
+        """
+        with self._lock:
+            for sw in self.switches.values():
+                if sw.host == host:
+                    return sw.hostname
+            return ""
+
     def get_snmp_profile_for_host(self, host: str) -> str:
         """
         Return the cached SNMPv3 profile name for a given IP /
