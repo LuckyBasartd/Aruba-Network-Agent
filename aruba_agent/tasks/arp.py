@@ -25,7 +25,16 @@ from aruba_agent.state     import AgentState
 
 log = logging.getLogger(__name__)
 
-_VLAN_RE = re.compile(r"^vlan\d+$", re.IGNORECASE)
+_MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$")
+
+# AOS-CX show-arp's last column is one of these state words. We use it
+# to tell whether parts[3] is the physical port or the state — on
+# permanent / broadcast entries the physical port is omitted and the
+# state shifts left by one column.
+_ARP_STATES = frozenset({
+    "reachable", "permanent", "incomplete", "stale",
+    "delay",     "probe",     "failed",     "static",
+})
 
 
 class ArpDiscoveryTask:
@@ -131,16 +140,53 @@ class ArpDiscoveryTask:
         return self._parse_arp(text)
 
     def _parse_arp(self, text: str) -> List[dict]:
+        """
+        Parse `show arp` output from AOS-CX. Modern layout:
+
+            IPv4 Address     MAC                Port     Physical Port    State
+            -----------------------------------------------------------------------
+            10.40.176.120    d0:8e:79:03:e0:a2  vlan218  lag13            reachable
+            10.41.17.255     FF:FF:FF:FF:FF:FF  vlan236                   permanent
+
+        Permanent / broadcast entries omit the physical-port column,
+        so parts[3] becomes the state word instead. We detect that
+        and treat physical port as empty in those rows. Broadcast
+        MACs are dropped entirely — they're not real hosts.
+
+        Returns a list of {ip, mac, type, port} dicts, where 'type'
+        carries the VLAN name (the most useful piece of grouping
+        info for ARP-driven device inventory).
+        """
         entries = []
         for line in text.strip().splitlines():
-            if not re.match(r"\d+\.\d+\.\d+\.\d+", line):
+            # First field must be an IPv4 — skips headers, dashes, blanks
+            if not re.match(r"^\s*\d+\.\d+\.\d+\.\d+\b", line):
                 continue
             parts = line.split()
-            if len(parts) >= 4 and not _VLAN_RE.match(parts[2]):
-                entries.append({
-                    "ip": parts[0], "mac": parts[1],
-                    "type": parts[2], "port": parts[3],
-                })
+            if len(parts) < 3:
+                continue
+
+            ip, mac = parts[0], parts[1]
+            if not _MAC_RE.match(mac):
+                continue
+            # Drop broadcast / permanent FF:FF entries — not real hosts
+            if mac.upper() == "FF:FF:FF:FF:FF:FF":
+                continue
+
+            vlan = parts[2]
+            # parts[3] is normally the physical port (lag5 / 1/1/24 / etc).
+            # On entries without one, it's actually the state word —
+            # detect by lowercase membership in the known state set.
+            port = ""
+            if len(parts) >= 4 and parts[3].lower() not in _ARP_STATES:
+                port = parts[3]
+
+            entries.append({
+                "ip":   ip,
+                "mac":  mac,
+                "type": vlan,
+                "port": port,
+            })
         return entries
 
     def _write_csv(
