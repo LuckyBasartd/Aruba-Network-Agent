@@ -209,9 +209,9 @@
         </div>
         <div class="card-body">
           <table class="table table-sm table-dark mb-0">
-            <thead><tr><th>Location</th><th>Last Run</th></tr></thead>
+            <thead><tr><th>Location</th><th>Last Run</th><th></th></tr></thead>
             <tbody id="arp-tbody">
-              <tr><td colspan="2" class="text-muted text-center">—</td></tr>
+              <tr><td colspan="3" class="text-muted text-center">—</td></tr>
             </tbody>
           </table>
         </div>
@@ -311,6 +311,7 @@
   window.addEventListener('DOMContentLoaded', () => {
     backupModal  = new bootstrap.Modal(document.getElementById('backupModal'));
     profileModal = new bootstrap.Modal(document.getElementById('profileModal'));
+    loadArpLocations();      // fire-and-forget; renderArp tolerates null
   });
 
   // ── helpers ──────────────────────────────────────────────────────────────
@@ -456,13 +457,69 @@
     $('scan-count').textContent = s.device_count ?? '—';
   }
 
+  // The set of locations we can trigger on demand. Refreshed once at
+  // page load from /api/arp/locations — small payload, doesn't change
+  // until the agent restarts.
+  let arpLocations = null;
+
+  async function loadArpLocations() {
+    try {
+      const r = await fetch('/api/arp/locations');
+      const j = await r.json();
+      arpLocations = new Set(j.locations || []);
+    } catch (e) {
+      arpLocations = new Set();
+    }
+  }
+
   function renderArp(arpRuns) {
-    const entries = Object.entries(arpRuns);
-    $('arp-tbody').innerHTML = entries.length
-      ? entries.map(([loc, ts]) =>
-          `<tr><td>${esc(loc)}</td><td>${fmtTs(ts)}</td></tr>`
-        ).join('')
-      : '<tr><td colspan="2" class="text-muted text-center">No locations configured.</td></tr>';
+    const known    = arpLocations || new Set();
+    // Merge: every known location + every location with a last_run
+    // (covers the early-startup window where /api/arp/locations
+    // hasn't returned yet).
+    const allLocs  = new Set([...known, ...Object.keys(arpRuns)]);
+    const sorted   = [...allLocs].sort();
+
+    $('arp-tbody').innerHTML = sorted.length
+      ? sorted.map(loc => {
+          const ts       = arpRuns[loc];
+          const tsCell   = ts ? fmtTs(ts) : '<span class="text-muted">never</span>';
+          const canRun   = known.has(loc);
+          const runBtn   = canRun
+            ? `<button class="btn btn-trigger btn-outline-success"
+                       title="Run ARP discovery now"
+                       onclick="triggerArp('${esc(loc)}', this)">
+                 <i class="bi bi-play-fill"></i>
+               </button>`
+            : `<span class="text-muted small">disabled</span>`;
+          return `<tr>
+            <td>${esc(loc)}</td>
+            <td>${tsCell}</td>
+            <td class="text-end">${runBtn}</td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="3" class="text-muted text-center">No locations configured.</td></tr>';
+  }
+
+  async function triggerArp(loc, btn) {
+    btn.disabled = true;
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    try {
+      const r = await fetch(`/api/arp/${encodeURIComponent(loc)}/trigger`,
+                            { method: 'POST' });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        showToast(`ARP discovery for ${loc} started — check logs for progress.`);
+      } else {
+        showToast(`ARP trigger failed: ${j.error || r.status}`);
+      }
+    } catch (e) {
+      showToast(`ARP trigger error: ${e.message}`);
+    } finally {
+      // Brief delay before re-enabling so the button doesn't jitter
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 1500);
+    }
   }
 
   // ── backup file modal ─────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ import os
 import signal
 import sys
 import threading
+from typing import Dict
 
 # ── logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -179,7 +180,11 @@ def main() -> None:
         scanner_task = NetworkScannerTask(cfg, notifier, state, monitor_manager=manager)
         scheduler.add(cfg.get("scanner", "schedule", fallback="00:00"), scanner_task.run)
 
-    # ARP discovery — one task per [arp.<location>] section
+    # ARP discovery — one task per [arp.<location>] section. We also
+    # accumulate a dict of name → run() callables so the web UI can
+    # offer a per-location Run Now button (mirroring the scanner /
+    # backup triggers).
+    arp_fns: Dict[str, callable] = {}
     for sec in cfg.sections():
         if not sec.startswith("arp."):
             continue
@@ -194,6 +199,7 @@ def main() -> None:
             arista_creds = cfg["credentials.arista"] if "credentials.arista" in cfg else None,
         )
         scheduler.add(cfg.get(sec, "schedule", fallback="01:00"), arp_task.run)
+        arp_fns[name] = arp_task.run
 
     scheduler.start()
 
@@ -209,6 +215,7 @@ def main() -> None:
         state,
         backup_fn  = backup_task.run  if backup_task  else None,
         scanner_fn = scanner_task.run if scanner_task else None,
+        arp_fns    = arp_fns,
         cfg        = cfg,
         cfg_path   = config_path,
         snmp_agent = snmp_agent,

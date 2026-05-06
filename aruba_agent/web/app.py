@@ -62,6 +62,7 @@ def create_app(
     state: AgentState,
     backup_fn:   Optional[Callable] = None,
     scanner_fn:  Optional[Callable] = None,
+    arp_fns:     Optional[dict]     = None,   # {location_name: callable}
     cfg: Optional[configparser.ConfigParser] = None,
     cfg_path: Optional[str] = None,
     snmp_agent = None,    # Optional[SnmpAgent] — duck-typed via .registry
@@ -1671,6 +1672,37 @@ def create_app(
         _run_in_thread(scanner_fn, "manual-scan")
         log.info("Web UI: manual scan triggered by user=%s", session.get("user"))
         return jsonify({"status": "triggered"})
+
+    @app.get("/api/arp/locations")
+    @require_login
+    def api_arp_locations():
+        """Names of every enabled [arp.<location>] section the agent
+        knows how to run. Used by the dashboard to render per-location
+        Run Now buttons next to the last_run timestamps."""
+        return jsonify({"locations": sorted(arp_fns.keys()) if arp_fns else []})
+
+    # Match the same name validation used elsewhere in the agent —
+    # locations are alphanumeric plus . _ -
+    _ARP_LOCATION_NAME = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+    @app.post("/api/arp/<location>/trigger")
+    @require_login
+    def api_arp_trigger(location: str):
+        """Run an ARP discovery task on demand. Mirrors
+        /api/scanner/trigger for the scanner."""
+        if not arp_fns:
+            return jsonify({"error": "No ARP locations configured"}), 503
+        if not _ARP_LOCATION_NAME.match(location):
+            abort(400)
+        fn = arp_fns.get(location)
+        if fn is None:
+            return jsonify({"error":
+                f"ARP location {location!r} not found. Available: "
+                f"{sorted(arp_fns.keys())}"}), 404
+        _run_in_thread(fn, f"manual-arp-{location}")
+        log.info("Web UI: manual ARP run for %s triggered by user=%s",
+                 location, session.get("user"))
+        return jsonify({"status": "triggered", "location": location})
 
     @app.get("/api/backups/<hostname>")
     @require_login
