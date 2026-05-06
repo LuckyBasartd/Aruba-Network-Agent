@@ -43,6 +43,17 @@ Group=aruba-agent
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
 
+# File descriptor headroom. The default per-process soft limit on
+# most distros (1024) is not enough for a 200+ switch fleet. Every
+# active SwitchMonitor thread keeps a pysnmp engine open with its
+# own UDP transport, plus pysnmp churns short-lived sockets per
+# request. We've seen the agent climb to ~1500 fds in normal
+# steady-state operation and hit ValueError: filedescriptor out
+# of range in select() inside waitress's poll loop. Bumping to
+# 65536 gives us 60× headroom and is a noop on systems that
+# don't need it.
+LimitNOFILE=65536
+
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=strict

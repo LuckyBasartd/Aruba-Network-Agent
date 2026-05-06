@@ -1756,6 +1756,24 @@ def start(
             ident   = "aruba-agent",
             # We sit behind Apache, which already times out idle conns;
             # waitress's default channel_timeout (120s) is fine.
+            #
+            # asyncore_use_poll=True is critical at fleet scale.
+            # Default is False, which makes waitress's poll loop call
+            # select.select() — that crashes with
+            #     ValueError: filedescriptor out of range in select()
+            # whenever ANY fd in the watched set exceeds FD_SETSIZE
+            # (1024 on Linux). With ~200 SwitchMonitor threads each
+            # holding a cached pysnmp engine + asyncio dispatcher
+            # plus pysnmp's per-call UDP socket churn, the agent
+            # routinely climbs past 1024 fds and waitress's listening
+            # socket ends up with fd > 1023. Result: web-ui thread
+            # dies with the ValueError, listener stays bound (socket
+            # is still open) but nothing ever calls accept() on it,
+            # Apache hits its 60s ProxyTimeout and returns 502.
+            #
+            # asyncore_use_poll=True swaps in select.poll() which has
+            # no FD_SETSIZE limit. Same blocking semantics, no cap.
+            asyncore_use_poll = True,
         )
 
     threading.Thread(target=_run_prod, name="web-ui", daemon=True).start()
