@@ -7,6 +7,48 @@ Allow ~25 minutes start to finish.
 
 ---
 
+## Quick start (one command)
+
+If you trust the upstream repo and want the fastest path from blank VM
+to working dashboard, run the bundled installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LuckyBasartd/Aruba-Network-Agent/main/install.sh \
+    | sudo bash
+```
+
+The script is idempotent — re-run it any time to upgrade an existing
+install. It NEVER touches `/etc/aruba-agent/config.ini`,
+`/etc/aruba-agent/master.key`, or `/var/lib/aruba-agent/*`, so your
+state and secrets survive every upgrade.
+
+When it finishes (~5 minutes on a fresh VM), it prints:
+
+- The encryption master-key path with a big "back this up" reminder.
+- A list of `config.ini` sections you should fill in.
+- The dashboard URL (`https://<host>/`).
+- Default first-login credentials (`admin` / `admin`, must change).
+
+Want to customise the install? The script honours these environment
+variables (all optional):
+
+```bash
+sudo REPO_REF=v3.0.1 \
+     CERT_HOST=switches.example.local \
+     SKIP_APACHE=1 \
+     bash install.sh
+```
+
+Full list: `REPO_URL`, `REPO_REF`, `STAGING_DIR`, `INSTALL_DIR`,
+`CONFIG_DIR`, `STATE_DIR`, `SVC_USER`, `SKIP_APACHE`, `SKIP_CERT`,
+`CERT_HOST`. See the comment block at the top of `install.sh`.
+
+The manual walkthrough below remains the source of truth for what the
+script does — read it once if you're rolling this out to a fleet or
+need to deviate from defaults.
+
+---
+
 ## 0 — Prerequisites
 
 You will need:
