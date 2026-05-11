@@ -23,6 +23,7 @@ from typing import Dict, List
 from aruba_agent.drivers          import driver_for
 from aruba_agent.drivers.detector import VendorDetector
 from aruba_agent.notifier         import EmailNotifier
+from aruba_agent.secrets_store    import decrypt as _decrypt
 from aruba_agent.snmp             import SnmpAgent
 from aruba_agent.state            import AgentState
 
@@ -342,9 +343,14 @@ def start_all(
     # inside manager.add() via the individual [switch.*] sections below.
     # There is no global [monitoring] section; per-switch values default to the
     # constants defined in SwitchMonitor.__init__ (poll_interval=30, threshold=3).
+    # Decrypt the global [credentials] password once on construction —
+    # SwitchMonitorManager hands it to every per-host driver later, so
+    # it expects cleartext (as it always has).
     manager = SwitchMonitorManager(
         username          = cfg.get("credentials", "username", fallback="admin"),
-        password          = cfg.get("credentials", "password", fallback=""),
+        password          = _decrypt(
+            cfg.get("credentials", "password", fallback="")
+        ),
         notifier          = notifier,
         state             = state,
         verify_ssl        = False,
@@ -354,7 +360,8 @@ def start_all(
         detector          = detector,
     )
 
-    # Seed with any manually configured switches
+    # Seed with any manually configured switches.
+    # Per-switch passwords (rare but supported) may also be encrypted.
     for sec in cfg.sections():
         if not sec.startswith("switch."):
             continue
@@ -364,7 +371,7 @@ def start_all(
             host              = sw["host"],
             name              = name,
             username          = sw.get("username", ""),
-            password          = sw.get("password", ""),
+            password          = _decrypt(sw.get("password", "")),
             verify_ssl        = sw.getboolean("verify_ssl", False),
             poll_interval     = sw.getint("poll_interval", 30),
             failure_threshold = sw.getint("failure_threshold", 3),

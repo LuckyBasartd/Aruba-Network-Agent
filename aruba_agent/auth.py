@@ -29,6 +29,8 @@ import logging
 import socket
 from typing import Optional
 
+from aruba_agent.secrets_store import decrypt as _decrypt
+
 log = logging.getLogger(__name__)
 
 # Minimal inline RADIUS dictionary.  Just enough attributes for a PAP
@@ -73,7 +75,10 @@ class RadiusAuthenticator:
         rc = config[section]
         self.enabled        = rc.getboolean("enabled", fallback=False)
         self.server         = rc.get("server", fallback="").strip() or None
-        secret              = rc.get("secret", fallback="").strip()
+        # The shared secret may be encrypted at rest (enc:<token>) in
+        # v3.0.1+ deployments. Decrypt before encoding so pyrad sees
+        # the actual secret bytes.
+        secret              = _decrypt(rc.get("secret", fallback="").strip())
         self.secret         = secret.encode("utf-8") if secret else None
         self.port           = rc.getint("port", fallback=1812)
         self.timeout        = rc.getint("timeout", fallback=5)

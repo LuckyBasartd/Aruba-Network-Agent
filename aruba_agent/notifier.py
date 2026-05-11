@@ -13,6 +13,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import List
 
+from aruba_agent.secrets_store import cfg_get as _cfg_get
+
 log = logging.getLogger(__name__)
 
 
@@ -24,7 +26,10 @@ class EmailNotifier:
         self.port     = cfg.getint("smtp",  "port",     fallback=587)
         self.use_tls  = cfg.getboolean("smtp", "use_tls", fallback=True)
         self.username = cfg.get("smtp",     "username", fallback="")
-        self.password = cfg.get("smtp",     "password", fallback="")
+        # Password is decrypted at read time if stored as enc:...
+        # Cleartext values pass through unchanged (back-compat with
+        # pre-v3.0.1 configs that haven't been migrated yet).
+        self.password = _cfg_get(cfg, "smtp", "password", fallback="")
         self.from_    = cfg.get("smtp",     "from",     fallback=self.username)
         self.to: List[str] = [
             a.strip()

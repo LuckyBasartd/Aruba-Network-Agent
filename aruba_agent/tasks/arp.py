@@ -20,8 +20,9 @@ import subprocess
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from aruba_agent.drivers   import driver_for
-from aruba_agent.state     import AgentState
+from aruba_agent.drivers       import driver_for
+from aruba_agent.secrets_store import decrypt as _decrypt
+from aruba_agent.state         import AgentState
 
 log = logging.getLogger(__name__)
 
@@ -52,21 +53,23 @@ class ArpDiscoveryTask:
         self.ip_list    = sec.get("ip_list", "")
         self.output_dir = sec.get("output_dir", f"/var/lib/aruba-agent/arp/{name}")
         self.username   = creds.get("username", "admin")
-        self.password   = creds.get("password", "")
+        # Passwords / enable secrets are decrypted at read time so the
+        # driver layer sees cleartext as it always has.
+        self.password   = _decrypt(creds.get("password", ""))
         self.state      = state
 
         # Per-vendor credentials. Blank values fall through to the
         # default username/password above.
         cc = cisco_creds or {}
         self.cisco_username = (cc.get("username", "") or "").strip()
-        self.cisco_password = cc.get("password", "")
-        self.cisco_enable   = cc.get("enable_secret", "")
+        self.cisco_password = _decrypt(cc.get("password", ""))
+        self.cisco_enable   = _decrypt(cc.get("enable_secret", ""))
         self.cisco_napalm   = (cc.get("napalm_driver", "ios") or "ios").strip()
 
         ac = arista_creds or {}
         self.arista_username = (ac.get("username", "") or "").strip()
-        self.arista_password = ac.get("password", "")
-        self.arista_enable   = ac.get("enable_password", "")
+        self.arista_password = _decrypt(ac.get("password", ""))
+        self.arista_enable   = _decrypt(ac.get("enable_password", ""))
         self.arista_transport = (ac.get("transport", "https") or "https").strip()
         try:
             self.arista_port = int(ac.get("port", "")) if (ac.get("port", "") or "").strip() else None

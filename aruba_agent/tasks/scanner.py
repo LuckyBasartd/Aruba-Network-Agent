@@ -32,9 +32,10 @@ import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-from aruba_agent.drivers   import driver_for
-from aruba_agent.notifier  import EmailNotifier
-from aruba_agent.state     import AgentState
+from aruba_agent.drivers       import driver_for
+from aruba_agent.notifier      import EmailNotifier
+from aruba_agent.secrets_store import decrypt as _decrypt
+from aruba_agent.state         import AgentState
 
 if TYPE_CHECKING:
     from aruba_agent.monitors.switch_poller import SwitchMonitorManager
@@ -71,7 +72,8 @@ class NetworkScannerTask:
         self.api_workers = int(s.get("api_workers", "16"))
         creds = cfg["credentials"] if "credentials" in cfg else {}
         self._api_user = creds.get("username", "")
-        self._api_pass = creds.get("password", "")
+        # Decrypt at read time — cleartext passes through unchanged.
+        self._api_pass = _decrypt(creds.get("password", ""))
         if self.verify_via_api and not (self._api_user and self._api_pass):
             log.warning(
                 "Scanner: verify_via_api is enabled but [credentials] is empty — "

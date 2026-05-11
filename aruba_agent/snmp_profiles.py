@@ -38,7 +38,8 @@ from configparser import ConfigParser
 from dataclasses  import dataclass
 from typing       import Dict, List, Optional
 
-from aruba_agent.snmp import SnmpV3Credentials
+from aruba_agent.secrets_store import decrypt as _decrypt
+from aruba_agent.snmp           import SnmpV3Credentials
 
 
 log = logging.getLogger(__name__)
@@ -130,12 +131,15 @@ def _parse_one_profile(name: str, sec) -> Optional[SnmpProfile]:
         log.warning("SNMP profile %r has no username — skipping", name)
         return None
 
+    # auth_password / priv_password may be stored as enc:<token> on
+    # disk (v3.0.1+). We decrypt at parse time so the rest of the
+    # SNMP stack continues to see cleartext as it always has.
     creds = SnmpV3Credentials(
         username          = username,
         auth_protocol     = (sec.get("auth_protocol", "SHA") or "SHA").strip(),
-        auth_password     = sec.get("auth_password", "") or "",
+        auth_password     = _decrypt(sec.get("auth_password", "") or ""),
         priv_protocol     = (sec.get("priv_protocol", "AES128") or "AES128").strip(),
-        priv_password     = sec.get("priv_password", "") or "",
+        priv_password     = _decrypt(sec.get("priv_password", "") or ""),
         context_name      = (sec.get("context_name", "") or "").strip(),
         context_engine_id = (sec.get("context_engine_id", "") or "").strip(),
     )

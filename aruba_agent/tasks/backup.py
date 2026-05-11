@@ -15,9 +15,10 @@ import os
 from datetime import datetime
 from typing import List
 
-from aruba_agent.drivers   import driver_for
-from aruba_agent.notifier  import EmailNotifier
-from aruba_agent.state     import AgentState
+from aruba_agent.drivers       import driver_for
+from aruba_agent.notifier      import EmailNotifier
+from aruba_agent.secrets_store import decrypt as _decrypt
+from aruba_agent.state         import AgentState
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,11 @@ class BackupTask:
         self.backup_path  = b.get("backup_path", "/var/lib/aruba-agent/backups")
         self.retention    = int(b.get("retention_days", "7"))
         self.username     = cr.get("username", "admin")
-        self.password     = cr.get("password", "")
+        # Passwords / enable secrets are decrypted at read time so the
+        # rest of the task (driver_for, NAPALM) sees cleartext as it
+        # always has. Cleartext values pass through unchanged for
+        # back-compat with un-migrated configs.
+        self.password     = _decrypt(cr.get("password", ""))
         self.api_version  = b.get("api_version") or None   # None → auto-detect
 
         # Per-vendor overrides. Blank values fall through to the
@@ -43,14 +48,14 @@ class BackupTask:
         # shop doesn't need to fill them in twice.
         cc = cfg["credentials.cisco"]  if "credentials.cisco"  in cfg else {}
         self.cisco_username = (cc.get("username", "") or "").strip()
-        self.cisco_password = cc.get("password", "")
-        self.cisco_enable   = cc.get("enable_secret", "")
+        self.cisco_password = _decrypt(cc.get("password", ""))
+        self.cisco_enable   = _decrypt(cc.get("enable_secret", ""))
         self.cisco_napalm   = (cc.get("napalm_driver", "ios") or "ios").strip()
 
         ac = cfg["credentials.arista"] if "credentials.arista" in cfg else {}
         self.arista_username = (ac.get("username", "") or "").strip()
-        self.arista_password = ac.get("password", "")
-        self.arista_enable   = ac.get("enable_password", "")
+        self.arista_password = _decrypt(ac.get("password", ""))
+        self.arista_enable   = _decrypt(ac.get("enable_password", ""))
         self.arista_transport = (ac.get("transport", "https") or "https").strip()
         try:
             self.arista_port = int(ac.get("port", "")) if (ac.get("port", "") or "").strip() else None

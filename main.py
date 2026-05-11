@@ -80,6 +80,7 @@ def _process_exception_hook(exc_type, exc_value, exc_traceback) -> None:
 sys.excepthook = _process_exception_hook
 
 # ── imports ─────────────────────────────────────────────────────────────────
+from aruba_agent                        import secrets_store
 from aruba_agent.notifier               import EmailNotifier
 from aruba_agent.snmp                   import from_config as build_snmp_agent
 from aruba_agent.state                  import AgentState
@@ -117,7 +118,8 @@ def run_firmware_update(cfg: configparser.ConfigParser) -> None:
     FirmwareUpdater(
         ip_list        = ips,
         username       = cr.get("username", "admin"),
-        password       = cr.get("password", ""),
+        # Password may be encrypted-at-rest in v3.0.1+ configs.
+        password       = secrets_store.decrypt(cr.get("password", "")),
         target_version = fw.get("target_version", ""),
         fw_image_path  = fw.get("image_path", ""),
         max_workers    = int(fw.get("max_workers", "2")),
@@ -135,6 +137,41 @@ def main() -> None:
     )
 
     cfg      = load_config(config_path)
+
+    # ── secrets bootstrap ────────────────────────────────────────────────────
+    # v3.0.1: every sensitive config field (passwords, RADIUS secret,
+    # SNMP auth/priv passphrases, secret_key) is stored encrypted at
+    # rest with a Fernet master key. We initialise the SecretManager
+    # BEFORE anything else reads config, then run the auto-migration
+    # so any cleartext values from a v3.0.0 install get encrypted
+    # in-place on first start. The migration is idempotent — once
+    # everything is enc:..., it's a no-op.
+    master_key_path = cfg.get(
+        "agent", "master_key_file",
+        fallback=secrets_store.DEFAULT_MASTER_KEY_PATH,
+    )
+    try:
+        sm = secrets_store.SecretManager(master_key_path)
+        secrets_store.install(sm)
+    except Exception as exc:
+        log.error(
+            "Could not initialise secret manager at %s: %s. "
+            "Passwords in config.ini will be read as cleartext.",
+            master_key_path, exc,
+        )
+    else:
+        try:
+            changed = secrets_store.migrate_config(config_path, sm)
+            if changed:
+                log.info("Encrypted %d cleartext field(s) in %s",
+                         len(changed), config_path)
+                # Reparse the config so downstream readers see the
+                # encrypted forms — the in-memory cfg above still
+                # holds the cleartext values from before the migration.
+                cfg = load_config(config_path)
+        except Exception as exc:
+            log.error("Config migration failed (%s) — continuing with "
+                      "what's already loaded", exc)
 
     # State persistence — survives agent restarts and host reboots.
     # Default lives alongside the rest of the runtime data under

@@ -16,15 +16,34 @@
 # ------------------------------------------------------------
 # Agent-wide settings
 #
-# state_file — JSON snapshot of in-memory state (registered
-#              switches, last backup result, scanner inventory,
-#              per-location ARP timestamps). Reloaded at startup
-#              so the dashboard survives reboots and restarts.
-#              The aruba-agent service account must be able to
-#              write to this path.
+# state_file       — JSON snapshot of in-memory state (registered
+#                    switches, last backup result, scanner inventory,
+#                    per-location ARP timestamps). Reloaded at startup
+#                    so the dashboard survives reboots and restarts.
+#                    The aruba-agent service account must be able to
+#                    write to this path.
+#
+# master_key_file  — Fernet master key used to encrypt every
+#                    sensitive field in this config (passwords,
+#                    RADIUS secret, SNMPv3 auth/priv passphrases,
+#                    web secret_key). Generated automatically on
+#                    first start with mode 0600.
+#
+#                    On first start the agent walks every sensitive
+#                    field and rewrites cleartext values to their
+#                    encrypted form (prefixed `enc:`). A one-time
+#                    `.bak` copy of the original config is kept
+#                    beside it so you have a recovery path.
+#
+#                    If you lose master.key you lose every encrypted
+#                    password — the agent will read them back as
+#                    empty strings and you'll need to re-enter them
+#                    through Settings → Credentials, Settings → Email,
+#                    etc. BACK THIS FILE UP.
 # ------------------------------------------------------------
 [agent]
-state_file = /var/lib/aruba-agent/state.json
+state_file      = /var/lib/aruba-agent/state.json
+master_key_file = /etc/aruba-agent/master.key
 
 
 # ------------------------------------------------------------

@@ -50,10 +50,30 @@ from flask import (
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from aruba_agent             import secrets_store
 from aruba_agent.auth          import RadiusAuthenticator
 from aruba_agent.config_editor import ConfigEditor
 from aruba_agent.local_auth    import LocalAuthStore
 from aruba_agent.state         import AgentState
+
+
+def _enc(value: str) -> str:
+    """
+    Encrypt ``value`` for storage in config.ini. Idempotent: a value
+    that's already ``enc:<token>`` is returned untouched, so the
+    "preserve existing on-disk password if the form field is blank"
+    pattern keeps working. Empty strings stay empty.
+
+    If no SecretManager has been installed (e.g. on a host that's
+    missing the cryptography library) this is a no-op — we'd rather
+    let the operator save cleartext than lose their input.
+    """
+    if not value:
+        return ""
+    if secrets_store.is_encrypted(value):
+        return value
+    sm = secrets_store.get()
+    return sm.encrypt(value) if sm is not None else value
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +98,10 @@ def create_app(
 
     if cfg:
         backup_path           = cfg.get("backup", "backup_path", fallback=backup_path)
-        secret_key            = cfg.get("web", "secret_key", fallback="").strip()
+        # secret_key is encrypted at rest in v3.0.1+ — decrypt for use.
+        secret_key            = secrets_store.decrypt(
+            cfg.get("web", "secret_key", fallback="").strip()
+        )
         session_timeout_hours = cfg.getint("web", "session_timeout_hours", fallback=8)
         secure_cookies        = cfg.getboolean("web", "secure_cookies", fallback=False)
         trust_proxy_headers   = cfg.getboolean("web", "trust_proxy_headers", fallback=False)
@@ -448,9 +471,12 @@ def create_app(
         new_secret = form.get("radius_secret") or ""
         live = editor.read()
         if new_secret.strip():
-            radius_values["secret"] = new_secret
+            # Encrypt new shared secrets before storage.
+            radius_values["secret"] = _enc(new_secret)
         else:
-            # Preserve the existing on-disk secret untouched
+            # Preserve the existing on-disk secret untouched (already
+            # encrypted in v3.0.1+, or still cleartext on a config the
+            # migration hasn't touched — either way pass it through).
             existing = live["radius"]["secret"] if (
                 live.has_section("radius") and live.has_option("radius", "secret")
             ) else ""
@@ -557,8 +583,10 @@ def create_app(
         }
         new_pw = form.get("smtp_password") or ""
         if new_pw:
-            values["password"] = new_pw
+            # New password from the form: encrypt before writing to disk.
+            values["password"] = _enc(new_pw)
         elif live.has_section("smtp") and live.has_option("smtp", "password"):
+            # Preserve the on-disk value (already enc:... after migration).
             values["password"] = live["smtp"]["password"]
         else:
             values["password"] = ""
@@ -592,7 +620,9 @@ def create_app(
         port    = int(s.get("port", "587") or "587")
         use_tls = s.get("use_tls", "true").lower() == "true"
         user    = (s.get("username", "") or "").strip()
-        pw      = s.get("password", "") or ""
+        # Password is encrypted-at-rest in v3.0.1+ configs; decrypt
+        # before handing it to smtplib.login().
+        pw      = secrets_store.decrypt(s.get("password", "") or "")
         sender  = (s.get("from", "") or user).strip() or "aruba-agent"
         to_str  = (s.get("to", "") or "").strip()
         recipients = [r.strip() for r in to_str.split(",") if r.strip()]
@@ -825,14 +855,17 @@ def create_app(
                       "error")
                 return redirect(url_for("settings_snmp_profile", name=name))
 
+        # New passphrases from the form get encrypted before storage.
+        # Existing on-disk values (already enc:... after migration)
+        # pass through _enc() unchanged because it's idempotent.
         values = {
             "username":          (f.get("username") or "").strip(),
             "context_name":      (f.get("context_name") or "").strip(),
             "context_engine_id": cei,
             "auth_protocol":     (f.get("auth_protocol") or "SHA").strip().upper(),
-            "auth_password":     new_auth if new_auth else existing_auth,
+            "auth_password":     _enc(new_auth) if new_auth else existing_auth,
             "priv_protocol":     (f.get("priv_protocol") or "AES128").strip().upper(),
-            "priv_password":     new_priv if new_priv else existing_priv,
+            "priv_password":     _enc(new_priv) if new_priv else existing_priv,
             "port":              str(port),
             "timeout":           str(timeout),
             "retries":           str(retries),
@@ -1044,7 +1077,8 @@ def create_app(
                     else "")
         editor.update_section("credentials", {
             "username": username,
-            "password": new_pw if new_pw else existing,
+            # Encrypt new passwords; preserve already-encrypted on-disk value if blank.
+            "password": _enc(new_pw) if new_pw else existing,
         })
         log.info("Web UI: switch credentials updated by user=%s",
                  session.get("user"))
@@ -1103,8 +1137,11 @@ def create_app(
 
         editor.update_section("credentials.cisco", {
             "username":      username,
-            "password":      new_pw     if new_pw     else existing_pw,
-            "enable_secret": new_enable if new_enable else existing_enable,
+            # New passwords from the form get encrypted; on-disk values
+            # stored as enc:... pass through unchanged when the field
+            # is blank.
+            "password":      _enc(new_pw)     if new_pw     else existing_pw,
+            "enable_secret": _enc(new_enable) if new_enable else existing_enable,
             "napalm_driver": nap_driver,
         })
         log.info("Web UI: Cisco credentials updated by user=%s",
@@ -1178,8 +1215,9 @@ def create_app(
 
         editor.update_section("credentials.arista", {
             "username":        username,
-            "password":        new_pw     if new_pw     else existing_pw,
-            "enable_password": new_enable if new_enable else existing_enable,
+            # Encrypt new passwords; preserve existing on-disk value if blank.
+            "password":        _enc(new_pw)     if new_pw     else existing_pw,
+            "enable_password": _enc(new_enable) if new_enable else existing_enable,
             "transport":       transport,
             "port":            str(port) if port != "" else "",
         })
@@ -1420,8 +1458,12 @@ def create_app(
 
         regen = f.get("regenerate_secret") == "on"
         if regen:
-            new_secret = secrets.token_urlsafe(48)
+            # Newly-minted key: encrypt before storage so the on-disk
+            # form stays consistent with the other sensitive fields.
+            new_secret = _enc(secrets.token_urlsafe(48))
         else:
+            # Preserve whatever's on disk untouched (already enc:...
+            # after the migration ran on first start).
             new_secret = existing_secret
 
         editor.update_section("web", {
