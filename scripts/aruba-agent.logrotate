@@ -1,0 +1,26 @@
+# /etc/logrotate.d/aruba-agent
+#
+# Rotates /var/log/aruba-agent/audit.log daily, keeps 30 days of
+# history, compresses delayed by 1 day so an operator can still
+# `tail -F audit.log.1` the morning after an incident.
+#
+# The agent's own RotatingFileHandler caps the active file at 5 MB
+# regardless of cadence, so this rule's daily rotation is the
+# primary mechanism; the in-process limit just keeps things sane
+# between rotations.
+
+/var/log/aruba-agent/audit.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    # copytruncate avoids needing to teach the agent to reopen the
+    # file after rotation. There's a microsecond window between copy
+    # and truncate where writes can land in the rotated copy, but
+    # for an audit log that emits a handful of lines per hour the
+    # risk of losing an event is negligible.
+    copytruncate
+    create 0600 aruba-agent aruba-agent
+}

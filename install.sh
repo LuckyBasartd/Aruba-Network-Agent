@@ -117,6 +117,8 @@ install -d -m 755 -o "${SVC_USER}" -g "${SVC_USER}" "${STATE_DIR}"
 install -d -m 755 -o "${SVC_USER}" -g "${SVC_USER}" "${STATE_DIR}/backups"
 install -d -m 755 -o "${SVC_USER}" -g "${SVC_USER}" "${STATE_DIR}/arp"
 install -d -m 755 -o "${SVC_USER}" -g "${SVC_USER}" "${STATE_DIR}/firmware"
+# Audit log lives under /var/log so logrotate.d picks it up by convention.
+install -d -m 750 -o "${SVC_USER}" -g "${SVC_USER}" /var/log/aruba-agent
 ok "Directories ready"
 
 # ─── 3. fetch source ─────────────────────────────────────────────────────
@@ -182,6 +184,14 @@ log "Installing systemd unit"
 install -m 644 "${SOURCE_DIR}/aruba-agent.service" /etc/systemd/system/aruba-agent.service
 systemctl daemon-reload
 ok "systemd unit installed"
+
+# logrotate.d config for the audit log
+if [[ -f "${SOURCE_DIR}/scripts/aruba-agent.logrotate" ]]; then
+  log "Installing logrotate.d config for audit log"
+  install -m 644 "${SOURCE_DIR}/scripts/aruba-agent.logrotate" \
+    /etc/logrotate.d/aruba-agent
+  ok "logrotate config installed"
+fi
 
 # ─── 5. python dependencies ──────────────────────────────────────────────
 log "Installing Python dependencies (pip)…"

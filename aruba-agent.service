@@ -60,7 +60,9 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=false
-ReadWritePaths=/var/lib/aruba-agent /etc/aruba-agent
+# /var/log/aruba-agent is the dedicated audit log path (v3.0.1+).
+# Must be in ReadWritePaths for the AuditLogger to append on append/rotate.
+ReadWritePaths=/var/lib/aruba-agent /etc/aruba-agent /var/log/aruba-agent
 
 [Install]
 WantedBy=multi-user.target

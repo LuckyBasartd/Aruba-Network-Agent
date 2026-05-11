@@ -48,9 +48,11 @@ from flask import (
     session,
     url_for,
 )
+from flask_wtf.csrf import CSRFProtect, CSRFError, generate_csrf
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from aruba_agent             import secrets_store
+from aruba_agent.audit         import audit
 from aruba_agent.auth          import RadiusAuthenticator
 from aruba_agent.config_editor import ConfigEditor
 from aruba_agent.local_auth    import LocalAuthStore
@@ -74,6 +76,76 @@ def _enc(value: str) -> str:
         return value
     sm = secrets_store.get()
     return sm.encrypt(value) if sm is not None else value
+
+
+# ─── login rate limiter ──────────────────────────────────────────────────────
+#
+# In-memory per-IP + per-username sliding-window counter. We track failed
+# attempts in deques keyed by IP and by username; on each /login POST we
+# prune expired entries and ask "are we over the threshold for either key
+# in the window?" If so, return 429 with a generic message and emit an
+# audit event so /var/log/aruba-agent/audit.log surfaces brute-force
+# attempts.
+#
+# Why not flask-limiter: keeping the dependency surface small. This is
+# ~40 lines of stdlib code, no Redis, no extra package to keep patched.
+# Loses state across restarts (the deques live in memory) — fine for
+# an internal dashboard, would not be enough for an internet-facing app.
+
+import collections
+import time as _time
+
+class _LoginRateLimiter:
+    """
+    Sliding-window login throttle.
+
+    Default: 5 failed attempts per (IP or username) within 15 min →
+    lockout for the remainder of the window. Successful login clears
+    the counters for that username AND that source IP, so a legitimate
+    user who fat-fingered their password isn't punished for a typo.
+    """
+
+    def __init__(self, max_failures: int = 5, window_seconds: int = 900) -> None:
+        self.max     = max_failures
+        self.window  = window_seconds
+        self._lock   = threading.Lock()
+        # deque[float] of failure timestamps, oldest → newest
+        self._by_ip:   "collections.defaultdict[str, collections.deque]" = \
+            collections.defaultdict(collections.deque)
+        self._by_user: "collections.defaultdict[str, collections.deque]" = \
+            collections.defaultdict(collections.deque)
+
+    def _prune(self, dq, now: float) -> None:
+        cutoff = now - self.window
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+
+    def is_locked(self, ip: str, username: str) -> bool:
+        """True if either the IP or the username has hit the threshold."""
+        now = _time.monotonic()
+        with self._lock:
+            self._prune(self._by_ip[ip],     now)
+            self._prune(self._by_user[username], now)
+            return (len(self._by_ip[ip])     >= self.max or
+                    len(self._by_user[username]) >= self.max)
+
+    def record_failure(self, ip: str, username: str) -> None:
+        now = _time.monotonic()
+        with self._lock:
+            self._by_ip[ip].append(now)
+            self._by_user[username].append(now)
+
+    def record_success(self, ip: str, username: str) -> None:
+        """Reset the counters for this IP+username. Doesn't punish a
+        legitimate user who mistyped a few times before getting it right."""
+        with self._lock:
+            self._by_ip.pop(ip,            None)
+            self._by_user.pop(username,    None)
+
+
+# Process-wide singleton. 5 / 15min — same defaults as PAM faillock,
+# familiar to anyone who's run Linux logins.
+_login_limiter = _LoginRateLimiter(max_failures=5, window_seconds=900)
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +194,36 @@ def create_app(
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"]   = secure_cookies
+
+    # ── CSRF protection ──────────────────────────────────────────────────────
+    # Every POST / PUT / PATCH / DELETE on this app needs a matching
+    # CSRF token. Templates pull the token from {{ csrf_token() }};
+    # JSON-API callers (the dashboard fetch() calls) read it from a
+    # meta tag and send it back as X-CSRFToken on subsequent requests.
+    #
+    # Routes that MUST stay token-free (health probes, read-only JSON
+    # used by external monitoring, and the test endpoints that take
+    # only GET) are exempted explicitly below the route registrations.
+    # The token shares the session cookie's lifetime, so it doesn't
+    # add new failure modes for users who keep tabs open.
+    csrf = CSRFProtect(app)
+
+    @app.errorhandler(CSRFError)
+    def _handle_csrf(error):
+        # Don't leak token internals; just say "stale form, refresh".
+        log.warning("CSRF check failed: %s (path=%s)", error.description, request.path)
+        if request.path.startswith("/api/"):
+            return jsonify({
+                "error": "CSRF token missing or invalid. Refresh the page and retry.",
+            }), 400
+        flash("Your session expired. Please sign in again.", "error")
+        return redirect(url_for("login"))
+
+    # Make the token available to every template as `csrf_token`,
+    # without each route having to inject it explicitly.
+    @app.context_processor
+    def _inject_csrf():
+        return {"csrf_token": generate_csrf}
 
     # Behind Apache's reverse proxy: trust the X-Forwarded-* headers it
     # sets so request.remote_addr reflects the real client IP, and
@@ -200,6 +302,18 @@ def create_app(
     def _run_in_thread(fn: Callable, name: str) -> None:
         threading.Thread(target=fn, name=name, daemon=True).start()
 
+    def _audit_save(section: str, **extra: object) -> None:
+        """
+        Emit a settings.<section>.save audit event. Wraps the
+        boilerplate of grabbing the current user + remote IP from the
+        request context. Call this right after a successful
+        editor.update_section() in any settings POST handler.
+        """
+        audit.record(f"settings.{section}.save",
+                     user=session.get("user"),
+                     ip=request.remote_addr,
+                     **extra)
+
     def require_login(fn: Callable) -> Callable:
         """
         Decorator: redirect unauthenticated users to the login page.
@@ -230,6 +344,32 @@ def create_app(
             return fn(*args, **kwargs)
         return wrapper
 
+    # --------------------------------------------------------------- health
+    #
+    # Unauthenticated liveness probe for external monitoring (Nagios,
+    # Uptime Kuma, Prometheus blackbox, kube probes, etc.). Lightweight
+    # on purpose: it tries to touch the AgentState lock briefly so a
+    # deadlocked state subsystem surfaces as a request timeout rather
+    # than a misleading 200. No data about the fleet is leaked — this
+    # endpoint is reachable without a session and the response body
+    # is fixed regardless of how many switches are UP or DOWN.
+    #
+    # Auth: deliberately unprotected (no @require_login). CSRF: GET-only,
+    # exempt from the CSRFProtect later. Keep this route as simple as
+    # possible — external monitors will poll it at high cadence.
+
+    @app.get("/healthz")
+    def healthz():
+        try:
+            # Touch the lock to detect deadlocks in the state subsystem.
+            # to_dict() is the same code path the dashboard uses, so if
+            # it hangs the dashboard would be hanging too.
+            _ = state.to_dict()
+            return jsonify({"status": "ok"}), 200
+        except Exception as exc:                              # pragma: no cover
+            log.warning("Healthz probe failed: %s", exc)
+            return jsonify({"status": "degraded"}), 503
+
     # --------------------------------------------------------------- auth routes
 
     @app.get("/login")
@@ -254,14 +394,39 @@ def create_app(
         Authentication order: local first (covers the bootstrap admin
         and any manually-added local accounts), then RADIUS if enabled.
         Local first means RADIUS outages don't lock the operator out.
+
+        Rate limit: 5 failed attempts per IP OR username in 15 min →
+        429. Window is sliding; a successful login clears both
+        counters for the actor.
         """
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         next_url = request.form.get("next", "") or url_for("dashboard")
+        client_ip = request.remote_addr or "unknown"
 
         # Only redirect to internal paths — blocks open-redirect attacks.
         if not next_url.startswith("/") or next_url.startswith("//"):
             next_url = url_for("dashboard")
+
+        # Rate-limit check BEFORE we touch the auth backends — a
+        # locked-out attacker shouldn't even get to test more
+        # passwords against scrypt or RADIUS.
+        if _login_limiter.is_locked(client_ip, username):
+            log.warning("Login throttled: ip=%s username=%s", client_ip, username)
+            audit.record("login.throttled",
+                         user=None, username=username,
+                         ip=client_ip,
+                         reason="too_many_failures")
+            # Render the login page directly with 429 so machine
+            # clients see the status code; the operator sees a
+            # normal page with the throttle message inline.
+            return (render_template(
+                "login.html",
+                radius_configured=radius.is_configured(),
+                local_auth_enabled=local_auth_enabled,
+                errors=["Too many failed attempts. Try again in a few minutes."],
+                next_url=next_url,
+            ), 429)
 
         if not username or not password:
             flash("Username and password are required.", "error")
@@ -287,9 +452,19 @@ def create_app(
 
         if auth_method is None:
             log.info("Web UI: failed login attempt user=%s from %s",
-                     username, request.remote_addr)
+                     username, client_ip)
+            audit.record("login.failed",
+                         user=None,
+                         username=username,
+                         ip=client_ip,
+                         reason="bad_credentials")
+            _login_limiter.record_failure(client_ip, username)
             flash("Invalid username or password.", "error")
             return redirect(url_for("login", next=next_url))
+
+        # Successful login — clear the throttle counters so this
+        # legitimate operator isn't punished for previous typos.
+        _login_limiter.record_success(client_ip, username)
 
         session.clear()
         session["user"]        = username
@@ -297,7 +472,12 @@ def create_app(
         session["must_change"] = must_change
         session.permanent      = True
         log.info("Web UI: user=%s logged in via %s from %s",
-                 username, auth_method, request.remote_addr)
+                 username, auth_method, client_ip)
+        audit.record("login.success",
+                     user=username,
+                     method=auth_method,
+                     ip=client_ip,
+                     must_change=str(must_change).lower())
 
         if must_change:
             flash("You're using a default password. Please set a new one.", "warning")
@@ -310,6 +490,7 @@ def create_app(
         session.clear()
         if user:
             log.info("Web UI: user=%s logged out", user)
+            audit.record("logout", user=user, ip=request.remote_addr)
         return redirect(url_for("login"))
 
     # ------------------------------------------------------- forced password change
@@ -362,6 +543,7 @@ def create_app(
 
         # Lift the must_change session flag now that they've complied.
         session["must_change"] = False
+        audit.record("password.changed", user=username, ip=request.remote_addr)
         flash("Password updated.", "success")
         return redirect(url_for("dashboard"))
 
@@ -399,6 +581,8 @@ def create_app(
                          "sudo systemctl restart aruba-agent",
             }), 503
         log.info("Web UI: restart triggered by user=%s", session.get("user"))
+        audit.record("agent.restart",
+                     user=session.get("user"), ip=request.remote_addr)
         # bash -c so we can chain sleep + systemctl in a detached subshell
         subprocess.Popen(
             ["bash", "-c",
@@ -498,6 +682,9 @@ def create_app(
         editor.update_section("local_auth", local_values)
         editor.update_section("radius",     radius_values)
         log.info("Web UI: auth settings updated by user=%s", session.get("user"))
+        _audit_save("auth",
+                    local_enabled=local_values["enabled"],
+                    radius_enabled=radius_values["enabled"])
         flash("Authentication settings saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_auth"))
 
@@ -517,6 +704,9 @@ def create_app(
         else:
             log.info("Web UI: local user added: %s (by %s)",
                      username, session.get("user"))
+            audit.record("user.add",
+                         user=session.get("user"), target=username,
+                         ip=request.remote_addr)
             flash(f"User '{username}' added.", "success")
         return redirect(url_for("settings_auth"))
 
@@ -533,6 +723,9 @@ def create_app(
         else:
             log.info("Web UI: local user removed: %s (by %s)",
                      username, session.get("user"))
+            audit.record("user.remove",
+                         user=session.get("user"), target=username,
+                         ip=request.remote_addr)
             flash(f"User '{username}' removed.", "success")
         return redirect(url_for("settings_auth"))
 
@@ -597,6 +790,7 @@ def create_app(
 
         editor.update_section("smtp", values)
         log.info("Web UI: SMTP settings updated by user=%s", session.get("user"))
+        _audit_save("smtp", host=values.get("host"))
         flash("Email settings saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_email"))
 
@@ -779,6 +973,7 @@ def create_app(
         })
         log.info("Web UI: SNMP global settings updated by user=%s",
                  session.get("user"))
+        _audit_save("snmp", default_profile=default_profile)
         flash("SNMP global settings saved. Restart the agent to apply.",
               "success")
         return redirect(url_for("settings_snmp"))
@@ -877,6 +1072,7 @@ def create_app(
         editor.update_section(section, values)
         log.info("Web UI: SNMP profile %r saved by user=%s",
                  name, session.get("user"))
+        _audit_save("snmp_profile", profile=name)
         flash(f"Profile {name!r} saved. Restart the agent to apply.",
               "success")
         return redirect(url_for("settings_snmp_profile", name=name))
@@ -915,6 +1111,9 @@ def create_app(
         })
         log.info("Web UI: SNMP profile %r created by user=%s",
                  name, session.get("user"))
+        audit.record("settings.snmp_profile.add",
+                     user=session.get("user"), profile=name,
+                     ip=request.remote_addr)
         flash(f"Profile {name!r} created. Fill in credentials and save.",
               "success")
         return redirect(url_for("settings_snmp_profile", name=name))
@@ -951,6 +1150,9 @@ def create_app(
         editor.save(live, header=header)
         log.info("Web UI: SNMP profile %r removed by user=%s",
                  name, session.get("user"))
+        audit.record("settings.snmp_profile.remove",
+                     user=session.get("user"), profile=name,
+                     ip=request.remote_addr)
         flash(f"Profile {name!r} removed. Restart the agent to apply.",
               "success")
         return redirect(url_for("settings_snmp"))
@@ -1082,6 +1284,7 @@ def create_app(
         })
         log.info("Web UI: switch credentials updated by user=%s",
                  session.get("user"))
+        _audit_save("credentials", username=username)
         flash("Switch credentials saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_credentials"))
 
@@ -1146,6 +1349,7 @@ def create_app(
         })
         log.info("Web UI: Cisco credentials updated by user=%s",
                  session.get("user"))
+        _audit_save("credentials_cisco", username=username, napalm_driver=nap_driver)
         flash("Cisco credentials saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_cisco_credentials"))
 
@@ -1223,6 +1427,7 @@ def create_app(
         })
         log.info("Web UI: Arista credentials updated by user=%s",
                  session.get("user"))
+        _audit_save("credentials_arista", username=username, transport=transport)
         flash("Arista credentials saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_arista_credentials"))
 
@@ -1294,6 +1499,7 @@ def create_app(
             "api_workers":      str(workers),
         })
         log.info("Web UI: scanner settings updated by user=%s", session.get("user"))
+        _audit_save("scanner")
         flash("Scanner settings saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_scanner"))
 
@@ -1356,6 +1562,7 @@ def create_app(
 
         editor.update_section("backup", values, remove_keys=remove)
         log.info("Web UI: backup settings updated by user=%s", session.get("user"))
+        _audit_save("backup")
         flash("Backup settings saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_backup"))
 
@@ -1403,6 +1610,7 @@ def create_app(
         })
         log.info("Web UI: firmware settings updated by user=%s",
                  session.get("user"))
+        _audit_save("firmware")
         flash("Firmware settings saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_firmware"))
 
@@ -1482,6 +1690,7 @@ def create_app(
 
         log.info("Web UI: web settings updated by user=%s (secret_regenerated=%s)",
                  session.get("user"), regen)
+        _audit_save("web", secret_regenerated=str(bool(regen)).lower())
         if regen:
             flash("Web settings saved AND a new secret_key was generated. "
                   "Existing sessions will be invalidated when the agent restarts.",
@@ -1691,6 +1900,10 @@ def create_app(
 
         log.info("Web UI: SNMP profile for %s set to %r by user=%s",
                  switch_name, profile or "<auto-detect>", session.get("user"))
+        audit.record("switch.profile_pin",
+                     user=session.get("user"), switch=switch_name,
+                     profile=profile or "<auto-detect>",
+                     ip=request.remote_addr)
         return jsonify({
             "status":  "ok",
             "switch":  switch_name,
@@ -1704,6 +1917,9 @@ def create_app(
             return jsonify({"error": "Backup not configured"}), 503
         _run_in_thread(backup_fn, "manual-backup")
         log.info("Web UI: manual backup triggered by user=%s", session.get("user"))
+        audit.record("task.manual_trigger",
+                     user=session.get("user"), task="backup",
+                     ip=request.remote_addr)
         return jsonify({"status": "triggered"})
 
     @app.post("/api/scanner/trigger")
@@ -1713,6 +1929,9 @@ def create_app(
             return jsonify({"error": "Scanner not configured"}), 503
         _run_in_thread(scanner_fn, "manual-scan")
         log.info("Web UI: manual scan triggered by user=%s", session.get("user"))
+        audit.record("task.manual_trigger",
+                     user=session.get("user"), task="scanner",
+                     ip=request.remote_addr)
         return jsonify({"status": "triggered"})
 
     @app.get("/api/arp/locations")
@@ -1744,6 +1963,9 @@ def create_app(
         _run_in_thread(fn, f"manual-arp-{location}")
         log.info("Web UI: manual ARP run for %s triggered by user=%s",
                  location, session.get("user"))
+        audit.record("task.manual_trigger",
+                     user=session.get("user"), task="arp",
+                     location=location, ip=request.remote_addr)
         return jsonify({"status": "triggered", "location": location})
 
     @app.get("/api/backups/<hostname>")

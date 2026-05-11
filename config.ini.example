@@ -407,20 +407,26 @@ retention_days = 7
 # ARP Discovery Tasks
 # One [arp.<location>] section per campus location.
 # Requires nmap installed on the agent host.
+#
+# retention_days — keep the N most recent CSV files per location and
+#                  prune the rest at the end of each run. Default 30.
+#                  Set 0 to disable pruning (history grows forever).
 # ------------------------------------------------------------
 [arp.location-1]
-enabled    = true
-schedule   = 01:00
-routers    = 10.253.0.12,10.253.0.13
-ip_list    = /etc/aruba-agent/subnets/loc1_ip_list.txt
-output_dir = /var/lib/aruba-agent/arp/location-1
+enabled        = true
+schedule       = 01:00
+routers        = 10.253.0.12,10.253.0.13
+ip_list        = /etc/aruba-agent/subnets/loc1_ip_list.txt
+output_dir     = /var/lib/aruba-agent/arp/location-1
+retention_days = 30
 
 [arp.location-2]
-enabled    = true
-schedule   = 01:15
-routers    = 10.253.0.14,10.253.0.15
-ip_list    = /etc/aruba-agent/subnets/loc2_ip_list.txt
-output_dir = /var/lib/aruba-agent/arp/location-2
+enabled        = true
+schedule       = 01:15
+routers        = 10.253.0.14,10.253.0.15
+ip_list        = /etc/aruba-agent/subnets/loc2_ip_list.txt
+output_dir     = /var/lib/aruba-agent/arp/location-2
+retention_days = 30
 
 
 # ------------------------------------------------------------

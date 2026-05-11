@@ -24,6 +24,7 @@
                 action="{{ url_for('settings_arp_remove', location=loc.name) }}"
                 onsubmit="return confirm('Remove location {{ loc.name }}? This will delete the [arp.{{ loc.name }}] section.');"
                 class="d-inline">
+                                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-outline-danger btn-sm">
               <i class="bi bi-trash me-1"></i>Remove
             </button>
@@ -33,6 +34,7 @@
         <form method="POST"
               action="{{ url_for('settings_arp_save', location=loc.name) }}"
               autocomplete="off">
+                                                              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
           <div class="row g-3 mb-3">
             <div class="col-md-3">
@@ -95,6 +97,7 @@
     <h6 class="mb-3"><i class="bi bi-plus-lg me-2"></i>Add a new location</h6>
     <form method="POST" action="{{ url_for('settings_arp_add') }}"
           autocomplete="off" class="row g-2 align-items-end">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-md-6">
         <label class="form-label" for="location_name">Location name</label>
         <input type="text" class="form-control" id="location_name"

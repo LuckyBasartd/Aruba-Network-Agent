@@ -24,6 +24,7 @@
         </p>
 
         <form method="POST" autocomplete="off">
+                                           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
           <div class="mb-3">
             <label class="form-label" for="username">User <span class="text-muted">(USM Security Name)</span></label>

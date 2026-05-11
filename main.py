@@ -81,6 +81,7 @@ sys.excepthook = _process_exception_hook
 
 # ── imports ─────────────────────────────────────────────────────────────────
 from aruba_agent                        import secrets_store
+from aruba_agent.audit                   import audit, DEFAULT_AUDIT_LOG_PATH
 from aruba_agent.notifier               import EmailNotifier
 from aruba_agent.snmp                   import from_config as build_snmp_agent
 from aruba_agent.state                  import AgentState
@@ -172,6 +173,18 @@ def main() -> None:
         except Exception as exc:
             log.error("Config migration failed (%s) — continuing with "
                       "what's already loaded", exc)
+
+    # Audit log — append-only file separate from journald.
+    # Operator-controllable path with the same [agent] block as the
+    # state file and master key. Failures are non-fatal: audit.install
+    # logs a warning and falls back to journal-only on permission
+    # errors.
+    audit_log_path = cfg.get(
+        "agent", "audit_log_file",
+        fallback=DEFAULT_AUDIT_LOG_PATH,
+    )
+    audit.install(audit_log_path)
+    log.info("Audit log: %s", audit.path or "(disabled — could not open file)")
 
     # State persistence — survives agent restarts and host reboots.
     # Default lives alongside the rest of the runtime data under

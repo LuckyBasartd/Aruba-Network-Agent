@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import configparser
 import csv
+import glob
 import ipaddress
 import logging
 import os
@@ -52,6 +53,16 @@ class ArpDiscoveryTask:
         self.router_ips = [r.strip() for r in sec.get("routers", "").split(",") if r.strip()]
         self.ip_list    = sec.get("ip_list", "")
         self.output_dir = sec.get("output_dir", f"/var/lib/aruba-agent/arp/{name}")
+        # v3.0.1: rolling retention. CSVs older than retention_days get
+        # pruned at the end of each run. Default 30 days — long enough
+        # for the operator to do back-references when troubleshooting
+        # a "where did this device live last week" question, short
+        # enough that the directory doesn't grow forever. Set 0 to
+        # disable pruning.
+        try:
+            self.retention = int(sec.get("retention_days", "30") or "30")
+        except (TypeError, ValueError):
+            self.retention = 30
         self.username   = creds.get("username", "admin")
         # Passwords / enable secrets are decrypted at read time so the
         # driver layer sees cleartext as it always has.
@@ -235,6 +246,36 @@ class ArpDiscoveryTask:
             w.writerows(rows)
         log.info("ARP[%s]: wrote %d entries → %s", self.name, len(rows), fpath)
 
+    def _cleanup(self) -> None:
+        """
+        Prune arp_scan_*.csv files older than ``retention_days`` from
+        ``output_dir``. Mirrors BackupTask._cleanup: keep the N newest
+        and delete everything older. retention=0 means keep forever.
+        """
+        if self.retention <= 0:
+            return
+        try:
+            files = sorted(
+                glob.glob(os.path.join(self.output_dir, "arp_scan_*.csv")),
+                key=os.path.getmtime,
+            )
+        except OSError as exc:
+            log.warning("ARP[%s]: could not list %s for cleanup: %s",
+                        self.name, self.output_dir, exc)
+            return
+        # files is now oldest → newest; keep the last `retention` entries.
+        # We retain by COUNT here (one CSV per run), which is equivalent
+        # to "retention_days days of history" when the task runs daily,
+        # and degrades gracefully when it runs more often.
+        for old in files[: -self.retention]:
+            try:
+                os.remove(old)
+                log.info("ARP[%s]: removed old CSV %s",
+                         self.name, os.path.basename(old))
+            except OSError as exc:
+                log.warning("ARP[%s]: could not remove %s: %s",
+                            self.name, old, exc)
+
     def run(self) -> None:
         log.info("ARP discovery started: %s", self.name)
         subnets = self._load_subnets()
@@ -251,6 +292,11 @@ class ArpDiscoveryTask:
             self._write_csv(all_entries, ip_to_dns, subnets)
         else:
             log.warning("ARP[%s]: no ARP data from any router", self.name)
+
+        # Retention pass: drop CSVs older than retention_days even when
+        # this particular run wrote nothing — operators expect history
+        # to age out regardless of fresh data.
+        self._cleanup()
 
         self.state.set_arp_last_run(self.name)
         log.info("ARP discovery done: %s", self.name)
