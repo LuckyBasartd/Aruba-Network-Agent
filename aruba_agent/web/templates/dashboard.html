@@ -127,15 +127,35 @@
   <div class="row g-3 mb-4">
     <div class="col-12">
       <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
           <span>
             <i class="bi bi-hdd-network me-2"></i>Switch Reachability
             <span id="filter-badge" class="badge bg-primary ms-2 d-none"></span>
+            <span id="search-badge" class="badge bg-info ms-1 d-none" title="Search active"></span>
           </span>
-          <button class="btn btn-outline-secondary btn-sm py-0" id="clear-filter-btn"
-                  onclick="setFilter('all')" style="display:none!important" title="Clear filter">
-            <i class="bi bi-x"></i> All
-          </button>
+          <!-- v3.0.1: client-side free-text search over name / hostname / host IP.
+               Filtering runs over the data /api/state already returns — no extra
+               round-trip, results update as the operator types. -->
+          <div class="d-flex align-items-center gap-2 ms-auto">
+            <div class="input-group input-group-sm" style="width:18rem;">
+              <span class="input-group-text bg-dark text-light border-secondary">
+                <i class="bi bi-search"></i>
+              </span>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="switch-search" placeholder="Search name, hostname, or IP…"
+                     autocomplete="off" spellcheck="false"
+                     oninput="onSearchInput(this.value)">
+              <button class="btn btn-outline-secondary btn-sm" type="button"
+                      id="search-clear-btn" onclick="clearSearch()"
+                      title="Clear search" style="display:none">
+                <i class="bi bi-x"></i>
+              </button>
+            </div>
+            <button class="btn btn-outline-secondary btn-sm py-0" id="clear-filter-btn"
+                    onclick="setFilter('all')" style="display:none!important" title="Clear status filter">
+              <i class="bi bi-x"></i> All
+            </button>
+          </div>
         </div>
         <div class="card-body p-0">
           <div class="switch-scroll">
@@ -303,6 +323,10 @@
   let timer;
   let activeFilter = 'all';   // 'all' | 'up' | 'down'
   let allSwitches  = [];
+  // v3.0.1: free-text filter applied on top of the status filter.
+  // Persisted in localStorage so a page reload doesn't drop the
+  // operator's query mid-triage.
+  let searchTerm   = (localStorage.getItem('switchSearch') || '').toLowerCase();
   let backupModal;
   let profileModal;
   let profilesCache  = null;       // {profiles: [...], default: '...'} from /api/snmp/profiles
@@ -312,6 +336,14 @@
     backupModal  = new bootstrap.Modal(document.getElementById('backupModal'));
     profileModal = new bootstrap.Modal(document.getElementById('profileModal'));
     loadArpLocations();      // fire-and-forget; renderArp tolerates null
+
+    // Restore the persisted search term into the input box so the
+    // operator sees what's being filtered after a reload.
+    const box = $('switch-search');
+    if (box && searchTerm) {
+      box.value = searchTerm;
+      updateSearchUi();
+    }
   });
 
   // ── helpers ──────────────────────────────────────────────────────────────
@@ -329,6 +361,49 @@
     return String(str ?? '').replace(/[&<>"']/g, c =>
       ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])
     );
+  }
+
+  // ── search logic ─────────────────────────────────────────────────────────
+  // Free-text filter over switch.name, switch.hostname, switch.host.
+  // Substring match, case-insensitive. Runs entirely client-side
+  // against the data already returned by /api/state.
+
+  function onSearchInput(value) {
+    searchTerm = (value || '').toLowerCase().trim();
+    // Persist so a reload mid-triage keeps the same query.
+    if (searchTerm) localStorage.setItem('switchSearch', searchTerm);
+    else            localStorage.removeItem('switchSearch');
+    updateSearchUi();
+    renderSwitches(allSwitches);
+  }
+
+  function clearSearch() {
+    const box = $('switch-search');
+    if (box) box.value = '';
+    onSearchInput('');
+  }
+
+  function updateSearchUi() {
+    const badge   = $('search-badge');
+    const clearBn = $('search-clear-btn');
+    if (!badge || !clearBn) return;
+    if (searchTerm) {
+      // Show the active query as a small chip next to the title, and
+      // reveal the inline clear-X button. Helpful so the operator
+      // notices when an old query is still narrowing their results.
+      badge.textContent = '“' + searchTerm + '”';
+      badge.classList.remove('d-none');
+      clearBn.style.display = '';
+    } else {
+      badge.classList.add('d-none');
+      clearBn.style.display = 'none';
+    }
+  }
+
+  function matchesSearch(sw) {
+    if (!searchTerm) return true;
+    const fields = [sw.name, sw.hostname, sw.host];
+    return fields.some(v => v && String(v).toLowerCase().includes(searchTerm));
   }
 
   // ── filter logic ─────────────────────────────────────────────────────────
@@ -383,12 +458,24 @@
   }
 
   function renderSwitches(switches) {
-    const filtered = activeFilter === 'all' ? switches
-                   : switches.filter(s => activeFilter === 'down' ? s.is_down : !s.is_down);
+    // Status filter (UP/DOWN/all) comes first, then the free-text
+    // search narrows whatever survives that. Doing status first keeps
+    // the active-filter card highlight semantics intuitive — "search
+    // within DOWN switches" is the obvious read of both being active.
+    let filtered = activeFilter === 'all' ? switches
+                 : switches.filter(s => activeFilter === 'down' ? s.is_down : !s.is_down);
+    if (searchTerm) filtered = filtered.filter(matchesSearch);
 
     if (!filtered.length) {
-      const msg = activeFilter === 'all' ? 'No switches configured.'
-                : `No switches currently ${activeFilter.toUpperCase()}.`;
+      let msg;
+      if (searchTerm) {
+        msg = activeFilter === 'all'
+          ? `No switches match “${esc(searchTerm)}”.`
+          : `No ${activeFilter.toUpperCase()} switches match “${esc(searchTerm)}”.`;
+      } else {
+        msg = activeFilter === 'all' ? 'No switches configured.'
+                                     : `No switches currently ${activeFilter.toUpperCase()}.`;
+      }
       $('switch-tbody').innerHTML = `<tr><td colspan="7" class="text-center text-muted py-3">${msg}</td></tr>`;
       return;
     }
