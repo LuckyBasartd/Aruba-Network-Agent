@@ -1,0 +1,53 @@
+name: tests
+
+# Run on every push to main and every PR targeting main. Keeps the
+# `pytest` green button visible without polluting noisy branches.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't bail the whole matrix on a single python-version failure.
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor (AlmaLinux 9 default), 3.12 is what
+        # AlmaLinux 10 ships. Pin both so a regression on either
+        # surfaces in CI.
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          # pip cache survives between jobs so the install step is
+          # 5 seconds instead of 90 on warm runs.
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install runtime + test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # napalm pulls in netmiko/paramiko/ncclient — heavy. Skip
+          # in CI; nothing in tests/ touches it.
+          grep -v '^napalm' requirements.txt > /tmp/req.txt
+          pip install -r /tmp/req.txt
+          pip install pytest
+
+      - name: Run pytest
+        run: pytest tests/ -v
+
+      - name: Compile the whole package
+        # Belt-and-braces: every .py file must at least import cleanly.
+        # Catches syntax errors that managed to land outside the test
+        # suite's reach.
+        run: |
+          python -m compileall -q aruba_agent main.py

@@ -504,6 +504,45 @@ encrypt.
 
 ---
 
+## Prometheus scraping (optional)
+
+The agent exposes a Prometheus `/metrics` endpoint with switch
+reachability, backup/scanner/ARP run ages, and login counters. Two
+deployment modes:
+
+**Open (trusted LAN)** — leave `[web] metrics_token` blank. Prometheus
+scrapes `https://<host>/metrics` directly. Apache's TLS still applies.
+
+**Authenticated** — set `[web] metrics_token` to a long random string
+(the agent encrypts it at rest like every other secret):
+
+```yaml
+# /etc/prometheus/prometheus.yml
+scrape_configs:
+  - job_name: aruba-agent
+    metrics_path: /metrics
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true     # self-signed cert
+    authorization:
+      type: Bearer
+      credentials: <paste the same string from config.ini>
+    static_configs:
+      - targets: ["arubaagent.example.local"]
+```
+
+Useful queries to drop into Grafana:
+
+- `aruba_switches_down` — gauge of unreachable switches right now.
+- `aruba_backup_last_run_age_seconds / 3600` — hours since the last
+  backup ran (alert if > 26).
+- `rate(aruba_login_failures_total[5m])` — login-failure rate.
+  Sustained > 0.1/sec is a brute-force signal.
+- `aruba_arp_last_run_age_seconds{location="hq"} / 3600` — hours
+  since the per-location ARP discovery last ran.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

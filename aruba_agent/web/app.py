@@ -51,6 +51,7 @@ from flask import (
 from flask_wtf.csrf import CSRFProtect, CSRFError, generate_csrf
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from aruba_agent             import metrics as _metrics_mod
 from aruba_agent             import secrets_store
 from aruba_agent.audit         import audit
 from aruba_agent.auth          import RadiusAuthenticator
@@ -370,6 +371,43 @@ def create_app(
             log.warning("Healthz probe failed: %s", exc)
             return jsonify({"status": "degraded"}), 503
 
+    # --------------------------------------------------------------- metrics
+    #
+    # Prometheus exposition. The token-auth model is "blank = open" so
+    # trusted-LAN deployments behind Apache get the simple path; teams
+    # that want auth set [web] metrics_token = <random> and scrape
+    # with `Authorization: Bearer <token>`.
+    #
+    # CSRF: GET-only so it's exempt automatically.
+    # Rate-limit: not applied — Prometheus polls every 15s and a real
+    # operator polling every 5s would still be within the noise floor.
+
+    _metrics_token_raw = ""
+    if cfg is not None:
+        # Token may be encrypted at rest like every other secret.
+        _metrics_token_raw = secrets_store.decrypt(
+            cfg.get("web", "metrics_token", fallback="").strip()
+        )
+
+    @app.get("/metrics")
+    def metrics_endpoint():
+        # When a token is configured, require it. When blank, the
+        # endpoint is open — same model Prometheus itself uses for
+        # its scrape targets by default.
+        if _metrics_token_raw:
+            auth_header = request.headers.get("Authorization", "")
+            ok = False
+            if auth_header.startswith("Bearer "):
+                supplied = auth_header[len("Bearer "):].strip()
+                # constant-time compare to dodge token-length oracles
+                import hmac
+                ok = hmac.compare_digest(supplied, _metrics_token_raw)
+            if not ok:
+                return ("Unauthorized\n", 401, {"WWW-Authenticate": "Bearer"})
+
+        body, ct = _metrics_mod.render(state)
+        return (body, 200, {"Content-Type": ct})
+
     # --------------------------------------------------------------- auth routes
 
     @app.get("/login")
@@ -417,6 +455,7 @@ def create_app(
                          user=None, username=username,
                          ip=client_ip,
                          reason="too_many_failures")
+            _metrics_mod.inc("login_throttled_total")
             # Render the login page directly with 429 so machine
             # clients see the status code; the operator sees a
             # normal page with the throttle message inline.
@@ -459,12 +498,14 @@ def create_app(
                          ip=client_ip,
                          reason="bad_credentials")
             _login_limiter.record_failure(client_ip, username)
+            _metrics_mod.inc("login_failures_total")
             flash("Invalid username or password.", "error")
             return redirect(url_for("login", next=next_url))
 
         # Successful login — clear the throttle counters so this
         # legitimate operator isn't punished for previous typos.
         _login_limiter.record_success(client_ip, username)
+        _metrics_mod.inc("login_success_total")
 
         session.clear()
         session["user"]        = username
@@ -1920,6 +1961,7 @@ def create_app(
         audit.record("task.manual_trigger",
                      user=session.get("user"), task="backup",
                      ip=request.remote_addr)
+        _metrics_mod.inc("manual_trigger_total")
         return jsonify({"status": "triggered"})
 
     @app.post("/api/scanner/trigger")
@@ -1932,6 +1974,7 @@ def create_app(
         audit.record("task.manual_trigger",
                      user=session.get("user"), task="scanner",
                      ip=request.remote_addr)
+        _metrics_mod.inc("manual_trigger_total")
         return jsonify({"status": "triggered"})
 
     @app.get("/api/arp/locations")
@@ -1966,6 +2009,7 @@ def create_app(
         audit.record("task.manual_trigger",
                      user=session.get("user"), task="arp",
                      location=location, ip=request.remote_addr)
+        _metrics_mod.inc("manual_trigger_total")
         return jsonify({"status": "triggered", "location": location})
 
     @app.get("/api/backups/<hostname>")

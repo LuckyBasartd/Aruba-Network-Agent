@@ -7,6 +7,10 @@ Normal daemon mode:
 
 On-demand firmware update (interactive, exits when done):
   python main.py [/path/to/config.ini] --firmware-update
+
+Verify all backup files against their SHA-256 sidecars (exits 0 if all
+match, 2 if any corruption is found — fit for cron):
+  python main.py [/path/to/config.ini] --verify-backups
 """
 
 import configparser
@@ -132,12 +136,31 @@ def run_firmware_update(cfg: configparser.ConfigParser) -> None:
 def main() -> None:
     args          = sys.argv[1:]
     firmware_mode = "--firmware-update" in args
+    verify_mode   = "--verify-backups" in args
     config_path   = next(
         (a for a in args if not a.startswith("--")),
         "/etc/aruba-agent/config.ini",
     )
 
     cfg      = load_config(config_path)
+
+    # T2.2: --verify-backups CLI subcommand.
+    # Walks the configured backup_path, recomputes SHA-256 for every
+    # .cfg, compares against its .sha256 sidecar, and exits non-zero
+    # if any mismatches surface. Designed for cron / monitoring.
+    # Runs BEFORE the secrets bootstrap so a missing master key
+    # doesn't block backup verification on a recovery host.
+    if verify_mode:
+        from aruba_agent.tasks.backup import verify_backups
+        backup_path = cfg.get(
+            "backup", "backup_path",
+            fallback="/var/lib/aruba-agent/backups",
+        )
+        ok, bad, bad_paths = verify_backups(backup_path)
+        print(f"verify_backups: {ok} OK, {bad} corrupt")
+        for p in bad_paths:
+            print(f"  CORRUPT: {p}")
+        sys.exit(0 if bad == 0 else 2)
 
     # ── secrets bootstrap ────────────────────────────────────────────────────
     # v3.0.1: every sensitive config field (passwords, RADIUS secret,

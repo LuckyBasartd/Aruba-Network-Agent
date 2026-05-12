@@ -46,6 +46,7 @@ class SwitchMonitor:
         failure_threshold: int = 3,
         snmp:     Optional[SnmpAgent]      = None,
         detector: Optional[VendorDetector] = None,
+        alert_dedup_seconds: int = 300,
     ) -> None:
         self.name              = name
         self.host              = host
@@ -59,6 +60,15 @@ class SwitchMonitor:
         self._stop             = threading.Event()
         self._snmp             = snmp       # None => use driver-based REST poll
         self._detector         = detector   # None => skip vendor detection
+
+        # v3.0.2 (T2.1): Alert deduplication.
+        # Per-kind timestamp of the most recent alert we actually sent.
+        # When a new alert of the same kind would fire within
+        # ``alert_dedup_seconds``, we suppress + log instead — keeps
+        # email volume bounded when a switch flaps repeatedly.
+        # 0 (or any non-positive) disables suppression entirely.
+        self._alert_dedup_seconds = max(0, int(alert_dedup_seconds))
+        self._last_alert: Dict[str, datetime] = {}
 
         state.register_switch(name, host)
         # Per-switch backoff timer for "no profile worked" — keeps
@@ -176,7 +186,8 @@ class SwitchMonitor:
             if sw.is_down:
                 self.state.update_switch(self.name, is_down=False)
                 log.info("Switch RESTORED: %s (%s)", self.name, self.host)
-                self.notifier.send(
+                self._maybe_send_alert(
+                    "restored",
                     f"[Aruba] Switch RESTORED: {self.name}",
                     (
                         f"Switch Management Reachability — RESTORED\n"
@@ -199,7 +210,8 @@ class SwitchMonitor:
             if new_failures >= self.failure_threshold and not sw.is_down:
                 self.state.update_switch(self.name, is_down=True)
                 log.error("Switch DOWN: %s (%s)", self.name, self.host)
-                self.notifier.send(
+                self._maybe_send_alert(
+                    "down",
                     f"[Aruba] Switch DOWN: {self.name}",
                     (
                         f"Switch Management Reachability — DOWN\n"
@@ -209,6 +221,42 @@ class SwitchMonitor:
                         f"Interval : {self.poll_interval}s\n"
                     ),
                 )
+
+    def _maybe_send_alert(self, kind: str, subject: str, body: str) -> None:
+        """
+        Send a reachability alert, unless we already sent one of the
+        same kind ('down' or 'restored') within the dedup window.
+
+        Why kind-specific instead of any-kind: an operator who got a
+        DOWN email still wants to see the RESTORED follow-up so they
+        know things stabilised. We only suppress *repeats* of the
+        same state change — that's what kills the email storm during
+        a flapping incident.
+
+        Updates the kind's timestamp on send AND on suppress, so a
+        burst of 20 transitions in 30 seconds still only emits ~2
+        emails per dedup window, not 1+ per minute.
+        """
+        if self._alert_dedup_seconds > 0:
+            last = self._last_alert.get(kind)
+            now  = datetime.now()
+            if last is not None:
+                elapsed = (now - last).total_seconds()
+                if elapsed < self._alert_dedup_seconds:
+                    log.info(
+                        "Alert SUPPRESSED (%s): %s — last sent %.0fs ago, "
+                        "dedup window %ds",
+                        kind, self.name, elapsed, self._alert_dedup_seconds,
+                    )
+                    # Refresh the timestamp so the window stays warm
+                    # while the host keeps flapping. Without this a
+                    # switch that flaps every 4 minutes would dodge a
+                    # 5-min window and email every cycle.
+                    self._last_alert[kind] = now
+                    return
+            self._last_alert[kind] = now
+
+        self.notifier.send(subject, body)
 
     def start(self) -> None:
         def _run() -> None:
@@ -255,6 +303,7 @@ class SwitchMonitorManager:
         failure_threshold: int = 3,
         snmp:     Optional[SnmpAgent]      = None,
         detector: Optional[VendorDetector] = None,
+        alert_dedup_seconds: int = 300,
     ) -> None:
         self._username         = username
         self._password         = password
@@ -265,6 +314,7 @@ class SwitchMonitorManager:
         self._failure_threshold = failure_threshold
         self._snmp             = snmp
         self._detector         = detector
+        self._alert_dedup_seconds = alert_dedup_seconds
         self._monitors: Dict[str, SwitchMonitor] = {}   # keyed by host IP
         self._lock = threading.Lock()
 
@@ -294,6 +344,7 @@ class SwitchMonitorManager:
                 failure_threshold = failure_threshold or self._failure_threshold,
                 snmp              = self._snmp,
                 detector          = self._detector,
+                alert_dedup_seconds = self._alert_dedup_seconds,
             )
             m.start()
             self._monitors[host] = m
@@ -346,6 +397,14 @@ def start_all(
     # Decrypt the global [credentials] password once on construction —
     # SwitchMonitorManager hands it to every per-host driver later, so
     # it expects cleartext (as it always has).
+    # T2.1: alert dedup window. [agent] alert_dedup_minutes (default 5);
+    # 0 disables. Stored as seconds since timedelta math is in seconds.
+    try:
+        dedup_minutes = int(cfg.get("agent", "alert_dedup_minutes", fallback="5"))
+    except (ValueError, TypeError):
+        dedup_minutes = 5
+    dedup_seconds = max(0, dedup_minutes) * 60
+
     manager = SwitchMonitorManager(
         username          = cfg.get("credentials", "username", fallback="admin"),
         password          = _decrypt(
@@ -358,7 +417,10 @@ def start_all(
         failure_threshold = 3,
         snmp              = snmp,
         detector          = detector,
+        alert_dedup_seconds = dedup_seconds,
     )
+    log.info("Alert dedup window: %d minute(s) per host per alert kind",
+             dedup_minutes)
 
     # Seed with any manually configured switches.
     # Per-switch passwords (rare but supported) may also be encrypted.

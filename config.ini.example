@@ -42,8 +42,14 @@
 #                    etc. BACK THIS FILE UP.
 # ------------------------------------------------------------
 [agent]
-state_file      = /var/lib/aruba-agent/state.json
-master_key_file = /etc/aruba-agent/master.key
+state_file           = /var/lib/aruba-agent/state.json
+master_key_file      = /etc/aruba-agent/master.key
+# audit_log_file     = /var/log/aruba-agent/audit.log    ; default if unset
+# alert_dedup_minutes — suppress repeat DOWN/RESTORED emails per switch
+#                       within this window. 5 = one email of each kind
+#                       per switch per 5 min. 0 disables (every flap
+#                       fires its own email).
+alert_dedup_minutes  = 5
 
 
 # ------------------------------------------------------------
@@ -281,6 +287,12 @@ to       = noc@example.com, admin@example.com
 [web]
 host                  = 127.0.0.1
 port                  = 8080
+# metrics_token — bearer token required to scrape GET /metrics.
+# Blank = no auth (fine on a trusted LAN behind Apache). Set to a
+# long random string to require:
+#     Authorization: Bearer <token>
+# on Prometheus's scrape config.
+metrics_token         =
 # threads — waitress worker pool. 16 gives the dashboard enough
 # headroom on a 200-switch fleet where 200 SwitchMonitor threads
 # compete for the GIL. Bump to 32 if /api/state still queues under

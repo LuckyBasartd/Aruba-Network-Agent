@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import configparser
 import glob
+import hashlib
 import logging
 import os
 from datetime import datetime
-from typing import List
+from typing import List, Tuple
 
 from aruba_agent.drivers       import driver_for
 from aruba_agent.notifier      import EmailNotifier
@@ -84,6 +85,14 @@ class BackupTask:
                 log.info("Backup: removed old file %s", os.path.basename(old))
             except OSError as exc:
                 log.warning("Backup: could not remove %s: %s", old, exc)
+            # Pair-delete the .sha256 sidecar so orphans don't accumulate.
+            sidecar = old + ".sha256"
+            if os.path.exists(sidecar):
+                try:
+                    os.remove(sidecar)
+                except OSError as exc:
+                    log.warning("Backup: could not remove sidecar %s: %s",
+                                sidecar, exc)
 
     def run(self) -> None:
         log.info("Backup task started")
@@ -161,6 +170,15 @@ class BackupTask:
                 fpath = os.path.join(host_dir, f"{hostname}-startup-config-{ts}.cfg")
                 with open(fpath, "wb") as f:
                     f.write(data)
+                # T2.2: write a SHA-256 sidecar alongside the config so
+                # bit-rot and silent corruption surface during verify
+                # passes. Format matches the standard `sha256sum`
+                # output ("<hex>  <basename>\n") so the operator can
+                # validate manually with sha256sum -c <file>.sha256.
+                digest = hashlib.sha256(data).hexdigest()
+                sidecar = fpath + ".sha256"
+                with open(sidecar, "w", encoding="ascii") as f:
+                    f.write(f"{digest}  {os.path.basename(fpath)}\n")
                 self._cleanup(host_dir, hostname)
                 success.append({"ip": ip, "hostname": hostname})
                 log.info("Backup OK: %s (%s)", hostname, ip)
@@ -191,3 +209,68 @@ class BackupTask:
             f"[Aruba] Config Backup Report — {datetime.now().strftime('%Y-%m-%d')}",
             body,
         )
+
+
+# ─── verify subcommand ───────────────────────────────────────────────────────
+
+def verify_backups(backup_root: str) -> Tuple[int, int, List[str]]:
+    """
+    Walk ``backup_root``, recompute SHA-256 for every ``.cfg`` file, and
+    compare against its ``.sha256`` sidecar. Returns (ok_count,
+    bad_count, bad_paths).
+
+    Files that don't have a sidecar (older backups from before T2.2)
+    are reported as "missing" but not counted as bad — they pre-date
+    the checksum behaviour and there's nothing to compare against.
+    Operators can re-run the backup task to generate sidecars going
+    forward.
+
+    Designed to be called from main.py's ``--verify-backups`` CLI so
+    operators can integrate this into cron / monitoring without
+    importing the agent.
+    """
+    ok    = 0
+    bad   = 0
+    bad_paths: List[str] = []
+    missing = 0
+
+    if not os.path.isdir(backup_root):
+        log.error("verify_backups: %s is not a directory", backup_root)
+        return (0, 0, [])
+
+    for dirpath, _dirnames, filenames in os.walk(backup_root):
+        for fn in filenames:
+            if not fn.endswith(".cfg"):
+                continue
+            cfg_path = os.path.join(dirpath, fn)
+            side_path = cfg_path + ".sha256"
+            if not os.path.exists(side_path):
+                missing += 1
+                continue
+            try:
+                # Read the expected digest. sha256sum format is
+                # "<hex>  <basename>" — we only care about the hex.
+                with open(side_path, "r", encoding="ascii") as f:
+                    expected = f.read().strip().split()[0].lower()
+                # Recompute. Files are typically <1 MB so we read in
+                # one shot; chunked read would matter only for huge
+                # configs which AOS-CX caps at ~10 MB anyway.
+                with open(cfg_path, "rb") as f:
+                    actual = hashlib.sha256(f.read()).hexdigest()
+            except (OSError, IndexError) as exc:
+                log.error("verify_backups: could not check %s: %s", cfg_path, exc)
+                bad += 1
+                bad_paths.append(cfg_path)
+                continue
+            if expected != actual:
+                log.error("verify_backups: MISMATCH %s "
+                          "(expected %s, got %s)",
+                          cfg_path, expected, actual)
+                bad += 1
+                bad_paths.append(cfg_path)
+            else:
+                ok += 1
+
+    log.info("verify_backups: %d ok, %d bad, %d without sidecar in %s",
+             ok, bad, missing, backup_root)
+    return (ok, bad, bad_paths)
