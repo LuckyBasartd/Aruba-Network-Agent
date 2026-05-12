@@ -53,6 +53,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from aruba_agent             import metrics as _metrics_mod
 from aruba_agent             import secrets_store
+from aruba_agent.api_tokens   import ApiTokenStore, KNOWN_SCOPES
 from aruba_agent.audit         import audit
 from aruba_agent.auth          import RadiusAuthenticator
 from aruba_agent.config_editor import ConfigEditor
@@ -258,6 +259,15 @@ def create_app(
     if local_auth_enabled:
         local_store.bootstrap_default_admin()
 
+    # T3.2: API tokens. Path mirrors the local-auth store (next door
+    # under /var/lib/aruba-agent), mode 600 enforced inside the store.
+    api_tokens_path = (
+        cfg.get("local_auth", "api_tokens_file",
+                fallback="/var/lib/aruba-agent/api_tokens.json")
+        if cfg else "/var/lib/aruba-agent/api_tokens.json"
+    )
+    api_tokens = ApiTokenStore(api_tokens_path)
+
     if local_auth_enabled:
         log.info("Web UI: local authentication enabled (store=%s)", local_store_path)
     if radius.is_configured():
@@ -315,6 +325,21 @@ def create_app(
                      ip=request.remote_addr,
                      **extra)
 
+    def _audit_actor() -> str:
+        """
+        Return a printable actor for audit lines on routes that accept
+        EITHER a session OR an API token. For sessions: the username.
+        For token auth: 'token:<id>:<name>' so the audit trail still
+        shows who issued the command. Falls back to '?' if neither is
+        set (shouldn't happen — decorator should have refused).
+        """
+        if session.get("user"):
+            return session["user"]
+        tok = getattr(request, "api_token", None)
+        if tok:
+            return f"token:{tok.get('id', '?')}:{tok.get('name', '?')}"
+        return "?"
+
     def require_login(fn: Callable) -> Callable:
         """
         Decorator: redirect unauthenticated users to the login page.
@@ -344,6 +369,72 @@ def create_app(
                     return redirect(url_for("change_password"))
             return fn(*args, **kwargs)
         return wrapper
+
+    def require_session_or_scope(required_scope: str):
+        """
+        Decorator factory: accept EITHER a logged-in session OR an
+        Authorization: Bearer <api-token> that carries ``required_scope``.
+
+        Token auth bypasses CSRF on the principle that "token-bearing
+        client is already authenticated by something CSRF can't forge"
+        — a malicious page in the operator's browser can't read the
+        token from a server-side automation script. The decorator
+        marks csrf_exempt internally when token auth succeeds.
+
+        Token auth updates the audit log with the token's ID + scope
+        instead of a username, so the trail still shows "who" did what.
+        """
+        def deco(fn: Callable) -> Callable:
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                # Path 1: a valid session cookie wins immediately.
+                if session.get("user"):
+                    # must_change still applies for session auth.
+                    if session.get("must_change"):
+                        return jsonify({
+                            "error": "Password change required",
+                            "redirect": url_for("change_password"),
+                        }), 403
+                    return fn(*args, **kwargs)
+
+                # Path 2: bearer token.
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    cleartext = auth_header[len("Bearer "):].strip()
+                    record = api_tokens.authenticate(cleartext)
+                    if record is None:
+                        log.info("API token auth FAIL from %s on %s",
+                                 request.remote_addr, request.path)
+                        audit.record("token.auth_failed",
+                                     user=None, ip=request.remote_addr,
+                                     path=request.path)
+                        return jsonify({"error": "Invalid API token"}), 401
+                    if not ApiTokenStore.has_scope(record, required_scope):
+                        audit.record("token.scope_denied",
+                                     user=None,
+                                     token=record["id"],
+                                     scope_required=required_scope,
+                                     ip=request.remote_addr,
+                                     path=request.path)
+                        return jsonify({
+                            "error": f"Token lacks required scope: {required_scope}",
+                        }), 403
+                    # Stash the token id on the request so the route
+                    # handler can include it in its own audit.record().
+                    request.api_token = record   # type: ignore[attr-defined]
+                    return fn(*args, **kwargs)
+
+                # Path 3: nothing matched → 401.
+                return jsonify({"error": "Authentication required"}), 401
+
+            # Mark this view CSRF-exempt: callers that present a valid
+            # token shouldn't also need to round-trip the dashboard to
+            # pick up a CSRF cookie. Session-cookie callers still go
+            # through the global CSRFProtect on their other endpoints,
+            # so this isn't a CSRF bypass for browsers.
+            wrapper = csrf.exempt(wrapper)
+            return wrapper
+        return deco
 
     # --------------------------------------------------------------- health
     #
@@ -502,6 +593,23 @@ def create_app(
             flash("Invalid username or password.", "error")
             return redirect(url_for("login", next=next_url))
 
+        # T3.3: TOTP 2FA for local accounts. RADIUS auth is left
+        # untouched — the RADIUS server is expected to be the second
+        # factor in that path. If the local user has enrolled, we DO
+        # NOT establish the full session yet; we stash a pending-2fa
+        # context and redirect to /login/2fa.
+        if auth_method == "local" and local_store.totp_enabled(username):
+            _login_limiter.record_success(client_ip, username)
+            # Use a short-lived flag, NOT session['user'], so a stolen
+            # pre-2fa cookie can't access anything except the 2fa form.
+            session.clear()
+            session["pending_2fa_user"]        = username
+            session["pending_2fa_must_change"] = must_change
+            session.permanent                  = False  # tighter than full login
+            audit.record("login.password_ok_awaiting_2fa",
+                         user=username, ip=client_ip)
+            return redirect(url_for("login_2fa", next=next_url))
+
         # Successful login — clear the throttle counters so this
         # legitimate operator isn't punished for previous typos.
         _login_limiter.record_success(client_ip, username)
@@ -520,6 +628,71 @@ def create_app(
                      ip=client_ip,
                      must_change=str(must_change).lower())
 
+        if must_change:
+            flash("You're using a default password. Please set a new one.", "warning")
+            return redirect(url_for("change_password"))
+        return redirect(next_url)
+
+    # ─── TOTP 2FA challenge ──────────────────────────────────────────────────
+
+    @app.get("/login/2fa")
+    def login_2fa():
+        if not session.get("pending_2fa_user"):
+            return redirect(url_for("login"))
+        return render_template(
+            "login_2fa.html",
+            errors=get_flashed_messages(category_filter=["error"]),
+            next_url=request.args.get("next", url_for("dashboard")),
+        )
+
+    @app.post("/login/2fa")
+    def login_2fa_post():
+        username = session.get("pending_2fa_user")
+        if not username:
+            return redirect(url_for("login"))
+
+        client_ip = request.remote_addr or "unknown"
+        code      = (request.form.get("code") or "").strip()
+        recovery  = (request.form.get("recovery") or "").strip()
+        next_url  = request.form.get("next", "") or url_for("dashboard")
+        if not next_url.startswith("/") or next_url.startswith("//"):
+            next_url = url_for("dashboard")
+
+        verified = False
+        method   = None
+        if code:
+            try:
+                import pyotp
+                secret = local_store.get_totp_secret(username)
+                if secret and pyotp.TOTP(secret).verify(code, valid_window=1):
+                    verified = True
+                    method   = "totp"
+            except ImportError:
+                log.error("pyotp not installed — TOTP verification impossible")
+        elif recovery:
+            if local_store.consume_recovery_code(username, recovery):
+                verified = True
+                method   = "recovery"
+
+        if not verified:
+            audit.record("login.2fa_failed",
+                         user=None, username=username, ip=client_ip)
+            _metrics_mod.inc("login_failures_total")
+            flash("Invalid 2FA code.", "error")
+            return redirect(url_for("login_2fa", next=next_url))
+
+        # Promote the pending session into a real one.
+        must_change = bool(session.get("pending_2fa_must_change"))
+        session.clear()
+        session["user"]        = username
+        session["auth_method"] = "local"
+        session["must_change"] = must_change
+        session.permanent      = True
+        _metrics_mod.inc("login_success_total")
+        audit.record("login.success",
+                     user=username, method="local+" + method,
+                     ip=client_ip,
+                     must_change=str(must_change).lower())
         if must_change:
             flash("You're using a default password. Please set a new one.", "warning")
             return redirect(url_for("change_password"))
@@ -769,6 +942,226 @@ def create_app(
                          ip=request.remote_addr)
             flash(f"User '{username}' removed.", "success")
         return redirect(url_for("settings_auth"))
+
+    # ── API token management (T3.2) ────────────────────────────────────────
+    #
+    # Operators mint long-lived tokens here to script the agent without
+    # using their own session credentials. The cleartext form is shown
+    # exactly once on the mint response; only the scrypt hash lives on
+    # disk afterward.
+
+    @app.get("/settings/api-tokens")
+    @require_login
+    def settings_api_tokens():
+        ctx = _settings_context()
+        ctx.update({
+            "tokens":        api_tokens.list_tokens(),
+            "known_scopes":  KNOWN_SCOPES,
+            "new_token":     session.pop("_new_token_cleartext", None),
+            "new_token_id":  session.pop("_new_token_id", None),
+            "errors":        get_flashed_messages(category_filter=["error"]),
+            "messages":      get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_api_tokens.html", **ctx)
+
+    @app.post("/settings/api-tokens/mint")
+    @require_login
+    def settings_api_tokens_mint():
+        name   = (request.form.get("name")   or "").strip()
+        scopes = request.form.getlist("scopes")
+        if not name:
+            flash("Token name is required.", "error")
+            return redirect(url_for("settings_api_tokens"))
+        if not scopes:
+            flash("Pick at least one scope.", "error")
+            return redirect(url_for("settings_api_tokens"))
+
+        token_id, cleartext = api_tokens.mint(
+            name=name, scopes=scopes,
+            created_by=session.get("user", "?"),
+        )
+        audit.record("token.mint",
+                     user=session.get("user"), token=token_id,
+                     name=name, scopes=",".join(scopes),
+                     ip=request.remote_addr)
+        # Stash the cleartext in the session so the settings page can
+        # render it ONCE; pop'd on the next GET so a refresh won't
+        # re-show the secret to a shoulder-surfer.
+        session["_new_token_cleartext"] = cleartext
+        session["_new_token_id"]        = token_id
+        flash(f"Token '{name}' created. Copy it now — it won't be shown again.",
+              "success")
+        return redirect(url_for("settings_api_tokens"))
+
+    @app.post("/settings/api-tokens/<token_id>/revoke")
+    @require_login
+    def settings_api_tokens_revoke(token_id: str):
+        # Defensive: token IDs are alphanumeric + underscore.
+        if not re.match(r"^tok_[A-Za-z0-9_-]+$", token_id):
+            abort(400)
+        if not api_tokens.revoke(token_id):
+            flash(f"Token {token_id} not found.", "error")
+        else:
+            audit.record("token.revoke",
+                         user=session.get("user"), token=token_id,
+                         ip=request.remote_addr)
+            flash(f"Token {token_id} revoked.", "success")
+        return redirect(url_for("settings_api_tokens"))
+
+    # ── TOTP 2FA enrollment (T3.3) ─────────────────────────────────────────
+    #
+    # Operators self-enrol from /settings/2fa. Flow:
+    #   1. GET  /settings/2fa            → status page; if enrolled
+    #                                       shows "Disable", if not
+    #                                       shows "Begin enrollment".
+    #   2. POST /settings/2fa/begin      → mint a fresh base32 secret,
+    #                                       stash in session, render
+    #                                       QR + recovery codes.
+    #   3. POST /settings/2fa/confirm    → operator submits the 6-digit
+    #                                       code from their authenticator;
+    #                                       on success, commit the secret
+    #                                       + recovery codes to users.json.
+    #   4. POST /settings/2fa/disable    → strip every TOTP field.
+    #
+    # RADIUS users hit a friendly "not applicable" page — their
+    # second factor is owned by the RADIUS server.
+
+    import secrets as _secrets   # stdlib, not our secrets_store module
+
+    def _generate_recovery_codes(n: int = 10) -> List[str]:
+        """Generate n single-use recovery codes. Format: 8 hex chars,
+        rendered as 'AB1C-DE2F' for readability when the operator
+        copies them to paper."""
+        codes = []
+        for _ in range(n):
+            raw = _secrets.token_hex(4).upper()       # 8 hex chars
+            codes.append(f"{raw[:4]}-{raw[4:]}")
+        return codes
+
+    @app.get("/settings/2fa")
+    @require_login
+    def settings_2fa():
+        ctx = _settings_context()
+        username = session.get("user", "")
+        ctx.update({
+            "auth_method":   session.get("auth_method"),
+            "is_enrolled":   local_store.totp_enabled(username),
+            "recovery_left": local_store.recovery_codes_remaining(username),
+            "pending_secret": session.get("_2fa_pending_secret"),
+            "pending_qr":     session.get("_2fa_pending_qr"),
+            "pending_codes":  session.get("_2fa_pending_codes"),
+            "errors":        get_flashed_messages(category_filter=["error"]),
+            "messages":      get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_2fa.html", **ctx)
+
+    @app.post("/settings/2fa/begin")
+    @require_login
+    def settings_2fa_begin():
+        if session.get("auth_method") != "local":
+            flash("2FA enrolment is only available for local accounts. "
+                  "RADIUS accounts authenticate against the RADIUS server's "
+                  "second factor.", "error")
+            return redirect(url_for("settings_2fa"))
+
+        username = session.get("user", "")
+        try:
+            import pyotp, qrcode, qrcode.image.svg
+        except ImportError as exc:
+            log.error("2FA enrolment failed: %s", exc)
+            flash("Server is missing pyotp / qrcode. "
+                  "Run: sudo pip3 install pyotp qrcode", "error")
+            return redirect(url_for("settings_2fa"))
+
+        secret = pyotp.random_base32()
+        # otpauth URI — what every authenticator app expects.
+        uri = pyotp.TOTP(secret).provisioning_uri(
+            name=username,
+            issuer_name="Aruba Network Agent",
+        )
+        # Render the QR as an inline SVG so we don't need Pillow / a
+        # separate static asset round-trip.
+        factory = qrcode.image.svg.SvgImage
+        img = qrcode.make(uri, image_factory=factory, box_size=8)
+        # qrcode's SvgImage stores the rendered SVG in img._img; get bytes.
+        from io import BytesIO
+        buf = BytesIO()
+        img.save(buf)
+        svg = buf.getvalue().decode("utf-8")
+
+        recovery = _generate_recovery_codes()
+        session["_2fa_pending_secret"] = secret
+        session["_2fa_pending_qr"]     = svg
+        session["_2fa_pending_codes"]  = recovery
+        audit.record("2fa.enroll_begin",
+                     user=username, ip=request.remote_addr)
+        return redirect(url_for("settings_2fa"))
+
+    @app.post("/settings/2fa/confirm")
+    @require_login
+    def settings_2fa_confirm():
+        username = session.get("user", "")
+        secret   = session.get("_2fa_pending_secret")
+        codes    = session.get("_2fa_pending_codes") or []
+        code_in  = (request.form.get("code") or "").strip()
+
+        if not secret:
+            flash("No pending enrolment. Start over.", "error")
+            return redirect(url_for("settings_2fa"))
+
+        try:
+            import pyotp
+            valid = pyotp.TOTP(secret).verify(code_in, valid_window=1)
+        except ImportError:
+            valid = False
+
+        if not valid:
+            flash("That code didn't match. Try again.", "error")
+            return redirect(url_for("settings_2fa"))
+
+        # Hash recovery codes with the same scrypt parameters used
+        # everywhere else, then store. Normalise the input format to
+        # uppercase, no separators, so consume_recovery_code matches
+        # whatever the operator types later.
+        from aruba_agent.local_auth import hash_password
+        normalized = [c.replace("-", "").upper() for c in codes]
+        hashes = [hash_password(c) for c in normalized]
+        if not local_store.enroll_totp(username, secret, hashes):
+            flash("Could not save 2FA enrolment.", "error")
+            return redirect(url_for("settings_2fa"))
+
+        # Wipe the pending blob so a page refresh can't re-show the QR /
+        # recovery codes after enrolment is committed.
+        for k in ("_2fa_pending_secret", "_2fa_pending_qr", "_2fa_pending_codes"):
+            session.pop(k, None)
+        audit.record("2fa.enrolled",
+                     user=username, ip=request.remote_addr)
+        flash("2FA enrolled. From your next login you'll be prompted "
+              "for a 6-digit code.", "success")
+        return redirect(url_for("settings_2fa"))
+
+    @app.post("/settings/2fa/disable")
+    @require_login
+    def settings_2fa_disable():
+        username = session.get("user", "")
+        # Require the operator's current TOTP code to disable, so a
+        # stolen session cookie can't strip 2FA without a second factor.
+        code = (request.form.get("code") or "").strip()
+        try:
+            import pyotp
+            secret = local_store.get_totp_secret(username)
+            ok = bool(secret and pyotp.TOTP(secret).verify(code, valid_window=1))
+        except ImportError:
+            ok = False
+        if not ok:
+            flash("Enter a valid current 2FA code to disable.", "error")
+            return redirect(url_for("settings_2fa"))
+
+        local_store.disable_totp(username)
+        audit.record("2fa.disabled",
+                     user=username, ip=request.remote_addr)
+        flash("2FA disabled.", "success")
+        return redirect(url_for("settings_2fa"))
 
     # ── Email alerts editor (SMTP + test send) ─────────────────────────────
 
@@ -1199,7 +1592,7 @@ def create_app(
         return redirect(url_for("settings_snmp"))
 
     @app.post("/api/settings/snmp/test")
-    @require_login
+    @require_session_or_scope("snmp.test")
     def settings_snmp_test():
         """Send a single sysUpTime.0 GET to a target host using one of
         the on-disk SNMP profiles. Operator can validate credentials
@@ -1870,7 +2263,7 @@ def create_app(
         return render_template("dashboard.html", current_user=session.get("user"))
 
     @app.get("/api/state")
-    @require_login
+    @require_session_or_scope("state.read")
     def api_state():
         return jsonify(state.to_dict())
 
@@ -1952,27 +2345,29 @@ def create_app(
         })
 
     @app.post("/api/backup/trigger")
-    @require_login
+    @require_session_or_scope("backup.trigger")
     def api_backup_trigger():
         if backup_fn is None:
             return jsonify({"error": "Backup not configured"}), 503
         _run_in_thread(backup_fn, "manual-backup")
-        log.info("Web UI: manual backup triggered by user=%s", session.get("user"))
+        actor = _audit_actor()
+        log.info("Web UI: manual backup triggered by %s", actor)
         audit.record("task.manual_trigger",
-                     user=session.get("user"), task="backup",
+                     user=actor, task="backup",
                      ip=request.remote_addr)
         _metrics_mod.inc("manual_trigger_total")
         return jsonify({"status": "triggered"})
 
     @app.post("/api/scanner/trigger")
-    @require_login
+    @require_session_or_scope("scanner.trigger")
     def api_scanner_trigger():
         if scanner_fn is None:
             return jsonify({"error": "Scanner not configured"}), 503
         _run_in_thread(scanner_fn, "manual-scan")
-        log.info("Web UI: manual scan triggered by user=%s", session.get("user"))
+        actor = _audit_actor()
+        log.info("Web UI: manual scan triggered by %s", actor)
         audit.record("task.manual_trigger",
-                     user=session.get("user"), task="scanner",
+                     user=actor, task="scanner",
                      ip=request.remote_addr)
         _metrics_mod.inc("manual_trigger_total")
         return jsonify({"status": "triggered"})
@@ -1990,7 +2385,7 @@ def create_app(
     _ARP_LOCATION_NAME = re.compile(r"^[a-zA-Z0-9._-]+$")
 
     @app.post("/api/arp/<location>/trigger")
-    @require_login
+    @require_session_or_scope("arp.trigger")
     def api_arp_trigger(location: str):
         """Run an ARP discovery task on demand. Mirrors
         /api/scanner/trigger for the scanner."""
@@ -2004,10 +2399,11 @@ def create_app(
                 f"ARP location {location!r} not found. Available: "
                 f"{sorted(arp_fns.keys())}"}), 404
         _run_in_thread(fn, f"manual-arp-{location}")
-        log.info("Web UI: manual ARP run for %s triggered by user=%s",
-                 location, session.get("user"))
+        actor = _audit_actor()
+        log.info("Web UI: manual ARP run for %s triggered by %s",
+                 location, actor)
         audit.record("task.manual_trigger",
-                     user=session.get("user"), task="arp",
+                     user=actor, task="arp",
                      location=location, ip=request.remote_addr)
         _metrics_mod.inc("manual_trigger_total")
         return jsonify({"status": "triggered", "location": location})

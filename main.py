@@ -11,6 +11,9 @@ On-demand firmware update (interactive, exits when done):
 Verify all backup files against their SHA-256 sidecars (exits 0 if all
 match, 2 if any corruption is found — fit for cron):
   python main.py [/path/to/config.ini] --verify-backups
+
+Decrypt a single backup file to stdout for restore:
+  python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
 
 import configparser
@@ -20,7 +23,7 @@ import signal
 import sys
 import threading
 import warnings
-from typing import Dict
+from typing import Dict, Optional
 
 
 # ── third-party warning suppression ─────────────────────────────────────────
@@ -137,6 +140,20 @@ def main() -> None:
     args          = sys.argv[1:]
     firmware_mode = "--firmware-update" in args
     verify_mode   = "--verify-backups" in args
+    # --decrypt-backup <path> is a two-token flag; the next positional
+    # is the backup file path. Extract it now so the path doesn't get
+    # mis-parsed as config_path below.
+    decrypt_path: Optional[str] = None
+    if "--decrypt-backup" in args:
+        idx = args.index("--decrypt-backup")
+        if idx + 1 >= len(args):
+            print("--decrypt-backup needs a path argument", file=sys.stderr)
+            sys.exit(2)
+        decrypt_path = args[idx + 1]
+        # Strip the flag + its value so the positional config-path
+        # filter below sees a clean argv.
+        args = args[:idx] + args[idx + 2:]
+
     config_path   = next(
         (a for a in args if not a.startswith("--")),
         "/etc/aruba-agent/config.ini",
@@ -163,6 +180,9 @@ def main() -> None:
         sys.exit(0 if bad == 0 else 2)
 
     # ── secrets bootstrap ────────────────────────────────────────────────────
+    # NOTE: --decrypt-backup needs this bootstrap to run BEFORE it
+    # invokes decrypt_backup(). Both fall through to the normal
+    # bootstrap block below.
     # v3.0.1: every sensitive config field (passwords, RADIUS secret,
     # SNMP auth/priv passphrases, secret_key) is stored encrypted at
     # rest with a Fernet master key. We initialise the SecretManager
@@ -196,6 +216,25 @@ def main() -> None:
         except Exception as exc:
             log.error("Config migration failed (%s) — continuing with "
                       "what's already loaded", exc)
+
+    # ── --decrypt-backup ────────────────────────────────────────────────────
+    # Runs after the secrets bootstrap (so the SecretManager is loaded)
+    # but before the rest of the agent comes up. Writes plaintext to
+    # stdout so the operator can pipe it anywhere:
+    #     ... --decrypt-backup file.cfg.enc > restored.cfg
+    # Exits non-zero with a useful error on missing key / wrong key.
+    if decrypt_path is not None:
+        from aruba_agent.tasks.backup import decrypt_backup
+        try:
+            plaintext = decrypt_backup(decrypt_path)
+        except RuntimeError as exc:
+            print(f"--decrypt-backup: {exc}", file=sys.stderr)
+            sys.exit(2)
+        # Write raw bytes to stdout; -- avoids encoding issues if the
+        # config file happens to be UTF-8 with line endings that
+        # differ from the OS.
+        sys.stdout.buffer.write(plaintext)
+        sys.exit(0)
 
     # Audit log — append-only file separate from journald.
     # Operator-controllable path with the same [agent] block as the

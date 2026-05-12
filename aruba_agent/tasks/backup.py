@@ -16,6 +16,7 @@ import os
 from datetime import datetime
 from typing import List, Tuple
 
+from aruba_agent              import secrets_store
 from aruba_agent.drivers       import driver_for
 from aruba_agent.notifier      import EmailNotifier
 from aruba_agent.secrets_store import decrypt as _decrypt
@@ -75,10 +76,17 @@ class BackupTask:
             return []
 
     def _cleanup(self, host_dir: str, hostname: str) -> None:
-        files = sorted(
-            glob.glob(os.path.join(host_dir, f"{hostname}-startup-config-*.cfg")),
-            key=os.path.getmtime,
+        # Glob both legacy .cfg and v3.0.4 .cfg.enc files. A site upgrading
+        # in place will have a mix until retention rotates the cleartext
+        # generation out — both shapes are retention-eligible.
+        patterns = (
+            f"{hostname}-startup-config-*.cfg",
+            f"{hostname}-startup-config-*.cfg.enc",
         )
+        all_files = []
+        for pat in patterns:
+            all_files.extend(glob.glob(os.path.join(host_dir, pat)))
+        files = sorted(all_files, key=os.path.getmtime)
         for old in files[: -self.retention]:
             try:
                 os.remove(old)
@@ -167,21 +175,74 @@ class BackupTask:
                 host_dir = os.path.join(self.backup_path, hostname)
                 os.makedirs(host_dir, exist_ok=True)
                 ts    = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-                fpath = os.path.join(host_dir, f"{hostname}-startup-config-{ts}.cfg")
+
+                # T3.1: encrypt the config blob at rest if a master key
+                # is available. Switch configs contain ACLs, VLAN
+                # secrets, BGP keys, SSH banners, sometimes the
+                # operator's RADIUS shared secret — a stolen
+                # /var/lib/aruba-agent/backups/ tarball would otherwise
+                # be a fleet-wide credential leak. We reuse the
+                # existing Fernet master key (managed by secrets_store)
+                # rather than introducing a second key to back up.
+                #
+                # File extension is .cfg.enc when ciphertext, .cfg when
+                # cleartext, so the on-disk shape is obvious without
+                # reading the file. The SHA-256 sidecar covers
+                # whatever bytes actually land on disk — verify_backups
+                # checks file integrity, not plaintext integrity.
+                sm = secrets_store.get()
+                if sm is not None:
+                    # Fernet wants str input. Encode bytes → str via
+                    # the Fernet-internal helper by calling
+                    # ._fernet.encrypt(data) directly; secrets_store
+                    # only exposes string encrypt(). Use the raw token.
+                    try:
+                        ciphertext = sm._fernet.encrypt(data)
+                    except Exception as exc:
+                        # If encryption ever fails, refuse to silently
+                        # write cleartext — that's the surprise we're
+                        # trying to prevent.
+                        failed.append({"ip": ip, "hostname": hostname,
+                                       "issue": f"Encryption failed: {exc}"})
+                        log.error("Backup encryption failed for %s: %s",
+                                  hostname, exc)
+                        continue
+                    fpath = os.path.join(
+                        host_dir,
+                        f"{hostname}-startup-config-{ts}.cfg.enc",
+                    )
+                    on_disk = ciphertext
+                else:
+                    # No master key: fall back to cleartext, but warn.
+                    # This is the path a v3.0.0 install without the
+                    # encryption layer takes; we don't want to refuse
+                    # the backup, just make the limitation visible.
+                    log.warning(
+                        "Backup: no master key — writing %s in CLEARTEXT. "
+                        "Configure /etc/aruba-agent/master.key to enable "
+                        "at-rest encryption.", hostname,
+                    )
+                    fpath = os.path.join(
+                        host_dir,
+                        f"{hostname}-startup-config-{ts}.cfg",
+                    )
+                    on_disk = data
+
                 with open(fpath, "wb") as f:
-                    f.write(data)
-                # T2.2: write a SHA-256 sidecar alongside the config so
-                # bit-rot and silent corruption surface during verify
-                # passes. Format matches the standard `sha256sum`
-                # output ("<hex>  <basename>\n") so the operator can
-                # validate manually with sha256sum -c <file>.sha256.
-                digest = hashlib.sha256(data).hexdigest()
+                    f.write(on_disk)
+
+                # T2.2: SHA-256 sidecar of whatever bytes hit disk.
+                # If the file is encrypted, the sidecar covers the
+                # ciphertext — bit-rot detection still works without
+                # the master key being available.
+                digest = hashlib.sha256(on_disk).hexdigest()
                 sidecar = fpath + ".sha256"
                 with open(sidecar, "w", encoding="ascii") as f:
                     f.write(f"{digest}  {os.path.basename(fpath)}\n")
                 self._cleanup(host_dir, hostname)
                 success.append({"ip": ip, "hostname": hostname})
-                log.info("Backup OK: %s (%s)", hostname, ip)
+                log.info("Backup OK: %s (%s)%s",
+                         hostname, ip, " [encrypted]" if sm else " [cleartext]")
 
             except Exception as exc:
                 failed.append({"ip": ip, "hostname": hostname, "issue": str(exc)})
@@ -240,7 +301,13 @@ def verify_backups(backup_root: str) -> Tuple[int, int, List[str]]:
 
     for dirpath, _dirnames, filenames in os.walk(backup_root):
         for fn in filenames:
-            if not fn.endswith(".cfg"):
+            # Cover both legacy cleartext (.cfg) and T3.1 ciphertext
+            # (.cfg.enc) backups. The SHA-256 sidecar is computed over
+            # whatever bytes hit disk, so we don't need the master key
+            # to verify integrity — operators can integrity-check a
+            # backup tarball on a recovery host that doesn't have the
+            # master key at all.
+            if not (fn.endswith(".cfg") or fn.endswith(".cfg.enc")):
                 continue
             cfg_path = os.path.join(dirpath, fn)
             side_path = cfg_path + ".sha256"
@@ -274,3 +341,42 @@ def verify_backups(backup_root: str) -> Tuple[int, int, List[str]]:
     log.info("verify_backups: %d ok, %d bad, %d without sidecar in %s",
              ok, bad, missing, backup_root)
     return (ok, bad, bad_paths)
+
+
+def decrypt_backup(path: str) -> bytes:
+    """
+    Return the plaintext of an encrypted backup file. Used by
+    ``main.py --decrypt-backup`` for restore workflows. Files ending
+    in ``.cfg`` are assumed to be legacy cleartext and returned as-is.
+
+    Raises ``RuntimeError`` with a useful message on:
+      * missing file
+      * missing master key (caller can't decrypt)
+      * malformed ciphertext
+    """
+    if not os.path.exists(path):
+        raise RuntimeError(f"Backup file not found: {path}")
+
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    if path.endswith(".cfg") and not path.endswith(".cfg.enc"):
+        # Legacy cleartext — return as-is.
+        return raw
+
+    sm = secrets_store.get()
+    if sm is None:
+        raise RuntimeError(
+            f"{path} is encrypted but no master key is loaded. "
+            "Configure /etc/aruba-agent/master.key (or pass "
+            "--config so the agent can find it)."
+        )
+    try:
+        # sm._fernet is the same Fernet instance used to encrypt.
+        return sm._fernet.decrypt(raw)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not decrypt {path}: {exc}. "
+            "Wrong master key, corrupted file, or a backup that "
+            "predates this master.key."
+        ) from exc

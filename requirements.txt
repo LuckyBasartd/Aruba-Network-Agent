@@ -6,6 +6,14 @@ waitress>=3.0
 scapy>=2.5
 pyrad>=2.4
 prometheus-client>=0.20
+
+# T3.3: TOTP 2FA on local accounts.
+# pyotp generates + validates 6-digit codes (RFC 6238).
+# qrcode renders the enrolment QR; using [pil] would force Pillow as a
+# transitive dep — we use the bundled "image factory" version which
+# produces SVG strings and avoids Pillow entirely.
+pyotp>=2.9
+qrcode>=7.4
 # pysnmp 6.2 (not 7.0 — earlier than expected) removed synchronous
 # getCmd from pysnmp.hlapi. Pin to 5.x or 6.0/6.1 until we migrate
 # the agent to pysnmp's asyncio API.

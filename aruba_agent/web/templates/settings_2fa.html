@@ -1,0 +1,136 @@
+{% extends "_settings_chrome.html" %}
+
+{% block title %}Two-Factor Authentication{% endblock %}
+{% block icon %}bi-shield-lock-fill{% endblock %}
+{% block heading %}Two-Factor Authentication{% endblock %}
+
+{% block content %}
+
+{% if auth_method != "local" %}
+<div class="alert alert-info">
+  <i class="bi bi-info-circle me-2"></i>
+  You're signed in via <code>{{ auth_method }}</code>. TOTP enrolment in
+  this UI only applies to local accounts — RADIUS users authenticate
+  against the RADIUS server's own second factor.
+</div>
+{% endif %}
+
+{# Active enrolment in progress: the user just clicked Begin, we have
+   a fresh secret + recovery codes in the session waiting to be
+   confirmed. #}
+{% if pending_secret %}
+<div class="card border-warning mb-4">
+  <div class="card-header bg-warning text-dark">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    Finish enrolment
+  </div>
+  <div class="card-body">
+    <p class="small">
+      1. Scan this QR code in your authenticator app
+      (Google Authenticator, Authy, 1Password, Bitwarden, etc.).
+    </p>
+    <div class="text-center my-3" style="max-width:300px;">
+      {{ pending_qr|safe }}
+    </div>
+    <p class="small">
+      Or enter the secret manually:
+      <code class="user-select-all">{{ pending_secret }}</code>
+    </p>
+
+    <hr>
+
+    <p class="small">
+      2. <strong>Save these recovery codes.</strong> Each works exactly
+      once and is your only way back in if you lose access to your
+      authenticator. Store them in a password manager or print them.
+    </p>
+    <div class="row">
+      {% for c in pending_codes %}
+      <div class="col-6 col-md-3 my-1">
+        <code class="font-monospace">{{ c }}</code>
+      </div>
+      {% endfor %}
+    </div>
+
+    <hr>
+
+    <p class="small">
+      3. Confirm by entering the 6-digit code your app shows right now:
+    </p>
+    <form method="POST" action="{{ url_for('settings_2fa_confirm') }}" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="input-group">
+        <input type="text" class="form-control font-monospace" name="code"
+               inputmode="numeric" pattern="[0-9]*" maxlength="6"
+               style="letter-spacing:.3rem;" autocomplete="one-time-code"
+               required>
+        <button type="submit" class="btn btn-primary">
+          <i class="bi bi-check2-circle me-1"></i>Confirm & enable
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% elif is_enrolled %}
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="d-flex align-items-center mb-3">
+      <i class="bi bi-shield-check-fill text-success me-2" style="font-size:1.5rem"></i>
+      <div>
+        <h5 class="mb-0">2FA is enabled on your account</h5>
+        <p class="text-muted small mb-0">
+          You'll be prompted for a code after every successful password
+          login. Recovery codes remaining: <strong>{{ recovery_left }}</strong>.
+        </p>
+      </div>
+    </div>
+
+    <div class="border-top pt-3">
+      <h6>Disable 2FA</h6>
+      <p class="small text-muted">
+        Enter your current 6-digit code to confirm. Disabling drops
+        the secret and all unused recovery codes.
+      </p>
+      <form method="POST" action="{{ url_for('settings_2fa_disable') }}" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="input-group" style="max-width:18rem;">
+          <input type="text" class="form-control font-monospace" name="code"
+                 inputmode="numeric" pattern="[0-9]*" maxlength="6"
+                 autocomplete="one-time-code"
+                 placeholder="6-digit code">
+          <button type="submit" class="btn btn-outline-danger">
+            <i class="bi bi-shield-slash me-1"></i>Disable 2FA
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% else %}
+<div class="card mb-4">
+  <div class="card-body">
+    <h5>Enable two-factor authentication</h5>
+    <p class="small text-muted">
+      Adds a 6-digit time-based code (RFC 6238 TOTP) on top of your
+      password. Works with any authenticator app — Google Authenticator,
+      Authy, 1Password, Bitwarden, etc. You'll also get ten one-time
+      recovery codes in case you lose your device.
+    </p>
+    {% if auth_method == "local" %}
+    <form method="POST" action="{{ url_for('settings_2fa_begin') }}" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-primary">
+        <i class="bi bi-shield-plus me-1"></i>Begin enrolment
+      </button>
+    </form>
+    {% else %}
+    <button type="button" class="btn btn-secondary" disabled>
+      Not available for {{ auth_method }} users
+    </button>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

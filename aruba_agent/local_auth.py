@@ -274,6 +274,88 @@ class LocalAuthStore:
             log.info("Local auth: password changed for user=%s", username)
             return True
 
+    # ─── TOTP 2FA (T3.3) ─────────────────────────────────────────────────────
+
+    def totp_enabled(self, username: str) -> bool:
+        """True if the user has enrolled in TOTP 2FA."""
+        with self._lock:
+            user = self._users.get(username)
+            return bool(user and user.get("totp_secret"))
+
+    def get_totp_secret(self, username: str) -> Optional[str]:
+        """Return the user's TOTP secret (base32) or None if not enrolled."""
+        with self._lock:
+            user = self._users.get(username)
+            return user.get("totp_secret") if user else None
+
+    def enroll_totp(self, username: str, secret: str,
+                    recovery_hashes: List[str]) -> bool:
+        """
+        Persist a TOTP secret + scrypt-hashed recovery codes. Caller
+        (the web layer) is responsible for generating both — keeping
+        TOTP / qrcode imports out of this module so a host without
+        pyotp installed still loads the agent.
+        """
+        if not secret or not recovery_hashes:
+            return False
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return False
+            user["totp_secret"]     = secret
+            user["totp_recovery"]   = list(recovery_hashes)
+            user["totp_enrolled"]   = datetime.now().isoformat(timespec="seconds")
+            self._save()
+            log.info("Local auth: TOTP enrolled for user=%s", username)
+            return True
+
+    def disable_totp(self, username: str) -> bool:
+        """Strip every TOTP field from the user. Used by Disable 2FA."""
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return False
+            changed = False
+            for k in ("totp_secret", "totp_recovery", "totp_enrolled"):
+                if k in user:
+                    del user[k]
+                    changed = True
+            if changed:
+                self._save()
+                log.info("Local auth: TOTP disabled for user=%s", username)
+            return changed
+
+    def consume_recovery_code(self, username: str, candidate: str) -> bool:
+        """
+        Check ``candidate`` against the user's stored recovery hashes;
+        on a match, remove that hash so the code can't be reused.
+        Returns True on success.
+        """
+        if not candidate:
+            return False
+        # Recovery codes are case-insensitive + dash-tolerant ('AB1C-DE2F').
+        normalized = candidate.replace("-", "").replace(" ", "").upper()
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return False
+            for stored in list(user.get("totp_recovery", [])):
+                if verify_password(normalized, stored):
+                    user["totp_recovery"].remove(stored)
+                    self._save()
+                    log.info("Local auth: TOTP recovery code consumed for user=%s "
+                             "(remaining=%d)",
+                             username, len(user["totp_recovery"]))
+                    return True
+            return False
+
+    def recovery_codes_remaining(self, username: str) -> int:
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return 0
+            return len(user.get("totp_recovery", []))
+
     # ─── user management ─────────────────────────────────────────────────────
 
     def list_users(self) -> List[dict]:

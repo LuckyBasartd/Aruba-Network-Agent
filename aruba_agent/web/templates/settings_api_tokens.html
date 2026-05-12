@@ -1,0 +1,148 @@
+{% extends "_settings_chrome.html" %}
+
+{% block title %}API Tokens{% endblock %}
+{% block icon %}bi-key-fill{% endblock %}
+{% block heading %}API Tokens{% endblock %}
+
+{% block content %}
+
+{# Show the freshly minted token cleartext, ONCE, after a successful
+   POST to /settings/api-tokens/mint. The route pop's it out of the
+   session so a refresh won't re-show it to anyone walking past the
+   operator's screen. #}
+{% if new_token %}
+<div class="card border-warning mb-4">
+  <div class="card-header bg-warning text-dark">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    New token created — copy it now
+  </div>
+  <div class="card-body">
+    <p class="small mb-2">
+      This is the only time the cleartext form of your new token
+      (<code>{{ new_token_id }}</code>) will be displayed. Copy it to
+      your password manager or the script that will use it. Reload
+      this page and it's gone.
+    </p>
+    <div class="input-group">
+      <input type="text" class="form-control font-monospace"
+             id="new-token-display" readonly
+             value="{{ new_token }}">
+      <button class="btn btn-outline-secondary" type="button"
+              onclick="copyToken()">
+        <i class="bi bi-clipboard me-1"></i>Copy
+      </button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card mb-4">
+  <div class="card-header">
+    <i class="bi bi-plus-circle me-2"></i>Mint a new token
+  </div>
+  <div class="card-body">
+    <form method="POST" action="{{ url_for('settings_api_tokens_mint') }}" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="mb-3">
+        <label class="form-label">Name <span class="text-danger">*</span></label>
+        <input type="text" class="form-control" name="name" required
+               placeholder="e.g. grafana-scraper, ci-backup-trigger"
+               maxlength="60">
+        <div class="form-text">
+          A short description so future-you can tell tokens apart at
+          a glance. Not used for auth.
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">Scopes <span class="text-danger">*</span></label>
+        <div class="form-text mb-2">
+          Tick only the scopes this token needs. Principle of least
+          privilege — a Grafana scraper only needs <code>state.read</code>,
+          not <code>backup.trigger</code>.
+        </div>
+        {% for scope in known_scopes %}
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox"
+                 name="scopes" value="{{ scope }}"
+                 id="scope-{{ scope }}">
+          <label class="form-check-label font-monospace" for="scope-{{ scope }}">
+            {{ scope }}
+          </label>
+        </div>
+        {% endfor %}
+      </div>
+
+      <button type="submit" class="btn btn-primary">
+        <i class="bi bi-plus-lg me-1"></i>Mint token
+      </button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <i class="bi bi-list-ul me-2"></i>Active tokens
+  </div>
+  <div class="card-body p-0">
+    {% if tokens %}
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>ID</th>
+          <th>Scopes</th>
+          <th>Created</th>
+          <th>Last used</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr>
+          <td>{{ t.name }}</td>
+          <td><code class="small">{{ t.id }}</code></td>
+          <td>
+            {% for s in t.scopes %}
+              <span class="badge bg-secondary font-monospace">{{ s }}</span>
+            {% endfor %}
+          </td>
+          <td class="small">
+            {{ t.created or "—" }}
+            <div class="text-muted">by {{ t.created_by or "?" }}</div>
+          </td>
+          <td class="small">{{ t.last_used or "—" }}</td>
+          <td class="text-end">
+            <form method="POST"
+                  action="{{ url_for('settings_api_tokens_revoke', token_id=t.id) }}"
+                  onsubmit="return confirm('Revoke token {{ t.name }}? Any script using it will fail immediately.');"
+                  class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-x-circle me-1"></i>Revoke
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="p-3 text-muted text-center">
+      No active tokens. Mint one above to script the agent.
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+function copyToken() {
+  const el = document.getElementById('new-token-display');
+  el.select();
+  navigator.clipboard.writeText(el.value).catch(() => {
+    document.execCommand('copy');
+  });
+}
+</script>
+{% endblock %}
