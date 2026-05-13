@@ -47,6 +47,7 @@ class SwitchMonitor:
         snmp:     Optional[SnmpAgent]      = None,
         detector: Optional[VendorDetector] = None,
         alert_dedup_seconds: int = 300,
+        monitor_mode: str      = "auto",
     ) -> None:
         self.name              = name
         self.host              = host
@@ -54,6 +55,7 @@ class SwitchMonitor:
         self.state             = state
         self.poll_interval     = poll_interval
         self.failure_threshold = failure_threshold
+        self.monitor_mode      = monitor_mode or "auto"
         self._username         = username
         self._password         = password
         self._verify           = verify_ssl
@@ -70,7 +72,7 @@ class SwitchMonitor:
         self._alert_dedup_seconds = max(0, int(alert_dedup_seconds))
         self._last_alert: Dict[str, datetime] = {}
 
-        state.register_switch(name, host)
+        state.register_switch(name, host, monitor_mode=self.monitor_mode)
         # Per-switch backoff timer for "no profile worked" — keeps
         # an unclassified switch from running detection (and pinging
         # every profile) every poll cycle.
@@ -169,8 +171,45 @@ class SwitchMonitor:
         except Exception:
             return False
 
+    def _poll_icmp(self) -> bool:
+        """
+        ICMP-only reachability for hosts that don't grant SNMP or
+        management-plane access (per-host monitor_mode = "icmp").
+
+        Uses subprocess to invoke /usr/bin/ping with -c1 -W2 so we
+        don't have to drag Scapy / raw sockets into the hot poll path.
+        The systemd unit already grants CAP_NET_RAW for the scanner;
+        unprivileged ping works for non-root users with /bin/ping
+        suid'd on every RHEL family distro.
+        """
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["ping", "-n", "-c", "1", "-W", "2", self.host],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            return r.returncode == 0
+        except (FileNotFoundError, subprocess.SubprocessError):
+            # If ping isn't available we treat the host as unreachable.
+            # Don't crash the monitor thread for this.
+            return False
+
     def _poll(self) -> None:
-        ok = self._poll_snmp() if self._snmp is not None else self._poll_rest()
+        # v3.0.3: dispatch based on per-host monitor_mode.
+        # The mode lives in AgentState — manual_hosts.py and the
+        # scanner both populate it via register_switch().
+        sw_now = self.state.switches.get(self.name)
+        mode   = (sw_now.monitor_mode if sw_now else "auto") or "auto"
+
+        if mode == "icmp":
+            ok = self._poll_icmp()
+        elif self._snmp is not None and mode in ("snmp_ro", "snmp_rw", "auto"):
+            ok = self._poll_snmp()
+        else:
+            ok = self._poll_rest()
 
         sw = self.state.switches.get(self.name)
         if sw is None:
@@ -327,8 +366,12 @@ class SwitchMonitorManager:
         verify_ssl: bool       = False,
         poll_interval: int     = 0,
         failure_threshold: int = 0,
+        monitor_mode: str      = "auto",
     ) -> None:
-        """Start monitoring *host* if not already tracked."""
+        """Start monitoring *host* if not already tracked.
+        ``monitor_mode`` flows through to SwitchMonitor + AgentState so
+        ping-only / SNMP-read-only manual hosts skip the heavier
+        management-plane probes."""
         with self._lock:
             if host in self._monitors:
                 return
@@ -345,10 +388,12 @@ class SwitchMonitorManager:
                 snmp              = self._snmp,
                 detector          = self._detector,
                 alert_dedup_seconds = self._alert_dedup_seconds,
+                monitor_mode      = monitor_mode or "auto",
             )
             m.start()
             self._monitors[host] = m
-            log.info("Monitor added: %s (%s)", name, host)
+            log.info("Monitor added: %s (%s) mode=%s", name, host,
+                     monitor_mode or "auto")
 
     def sync(self, ip_list: List[str]) -> None:
         """
@@ -359,6 +404,26 @@ class SwitchMonitorManager:
         """
         for ip in ip_list:
             self.add(host=ip, name=ip)
+
+    def remove(self, host: str) -> bool:
+        """
+        Stop monitoring ``host`` and drop the SwitchMonitor. Returns
+        True when a monitor was actually removed.
+
+        Used by the Settings → Manual Hosts page so removing a host
+        from the registry stops polling it immediately rather than
+        waiting for the next agent restart.
+        """
+        with self._lock:
+            m = self._monitors.pop(host, None)
+        if m is None:
+            return False
+        try:
+            m.stop()
+        except Exception as exc:
+            log.warning("Monitor stop failed for %s: %s", host, exc)
+        log.info("Monitor removed: %s", host)
+        return True
 
     def stop_all(self) -> None:
         with self._lock:

@@ -111,8 +111,21 @@ class BackupTask:
         success: List[dict] = []
         failed:  List[dict] = []
 
+        skipped_modes = 0
         for ip in ips:
             hostname = "N/A"
+            # v3.0.3: respect the per-host monitor_mode. Hosts marked
+            # as "icmp" or "snmp_ro" don't grant the agent the access
+            # it needs to read running-config, so skip them silently
+            # rather than fill the FAILED panel with noise about hosts
+            # that were never expected to back up.
+            mode = self.state.get_mode_for_host(ip)
+            if mode in ("icmp", "snmp_ro"):
+                log.debug("Backup: skipping %s — monitor_mode=%s "
+                          "(no write access)", ip, mode)
+                skipped_modes += 1
+                continue
+
             # Per-host vendor lookup. The C3 detector populates
             # SwitchState.vendor on the first reachable SNMPv3 poll;
             # we use that here so Aruba switches go through the
@@ -255,7 +268,8 @@ class BackupTask:
 
         self.state.set_backup_result(len(success), len(failed), failed)
         self._send_report(success, failed)
-        log.info("Backup task done: %d ok, %d failed", len(success), len(failed))
+        log.info("Backup task done: %d ok, %d failed, %d skipped (icmp/snmp_ro)",
+                 len(success), len(failed), skipped_modes)
 
     def _send_report(self, success: List[dict], failed: List[dict]) -> None:
         now  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

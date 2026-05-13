@@ -58,6 +58,7 @@ from aruba_agent.audit         import audit
 from aruba_agent.auth          import RadiusAuthenticator
 from aruba_agent.config_editor import ConfigEditor
 from aruba_agent.local_auth    import LocalAuthStore
+from aruba_agent.manual_hosts  import ManualHostsStore, VALID_MODES
 from aruba_agent.state         import AgentState
 
 
@@ -160,6 +161,11 @@ def create_app(
     cfg: Optional[configparser.ConfigParser] = None,
     cfg_path: Optional[str] = None,
     snmp_agent = None,    # Optional[SnmpAgent] — duck-typed via .registry
+    monitor_manager = None,    # Optional[SwitchMonitorManager] — Settings → Manual Hosts
+                               # needs to .add() / .remove() monitors live so the
+                               # operator doesn't have to wait for the next agent
+                               # restart to see their new host monitored.
+    manual_hosts_path: Optional[str] = None,
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.config["JSON_SORT_KEYS"] = False
@@ -267,6 +273,12 @@ def create_app(
         if cfg else "/var/lib/aruba-agent/api_tokens.json"
     )
     api_tokens = ApiTokenStore(api_tokens_path)
+
+    # v3.0.3: manual hosts store. Path falls back to the standard
+    # /var/lib/aruba-agent/ location if the caller didn't pin one.
+    manual_hosts = ManualHostsStore(
+        manual_hosts_path or "/var/lib/aruba-agent/manual_hosts.json"
+    )
 
     if local_auth_enabled:
         log.info("Web UI: local authentication enabled (store=%s)", local_store_path)
@@ -1007,6 +1019,148 @@ def create_app(
                          ip=request.remote_addr)
             flash(f"Token {token_id} revoked.", "success")
         return redirect(url_for("settings_api_tokens"))
+
+    # ── Manual hosts (F1) ──────────────────────────────────────────────────
+    #
+    # Hosts outside the scanner's subnets that the operator wants
+    # monitored anyway. Each entry carries a monitor_mode:
+    #   icmp     — ping only
+    #   snmp_ro  — SNMP polls but no backup attempts
+    #   snmp_rw  — full access (current default)
+    #   auto     — let the agent decide
+    # Stored in /var/lib/aruba-agent/manual_hosts.json (mode 600).
+
+    _MANUAL_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+    @app.get("/settings/manual-hosts")
+    @require_login
+    def settings_manual_hosts():
+        ctx = _settings_context()
+        # Cross-reference SwitchState so the page can show is_down/last_seen
+        # alongside the configured mode. Operators want to see at a glance
+        # whether their ICMP-only host is actually responding.
+        live = state.to_dict()
+        by_host = {s["host"]: s for s in live.get("switches", [])}
+        rows = []
+        for h in manual_hosts.list_hosts():
+            sw = by_host.get(h["host"])
+            rows.append({
+                **h,
+                "status":    "DOWN" if (sw and sw.get("is_down")) else
+                             ("UP" if sw else "—"),
+                "last_seen": (sw or {}).get("last_seen"),
+            })
+        ctx.update({
+            "hosts":         rows,
+            "valid_modes":   VALID_MODES,
+            "snmp_profiles": (snmp_agent.registry.names()
+                              if snmp_agent is not None else []),
+            "errors":        get_flashed_messages(category_filter=["error"]),
+            "messages":      get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_manual_hosts.html", **ctx)
+
+    @app.post("/settings/manual-hosts/add")
+    @require_login
+    def settings_manual_hosts_add():
+        f = request.form
+        name = (f.get("name") or "").strip()
+        host = (f.get("host") or "").strip()
+        mode = (f.get("monitor_mode") or "auto").strip()
+        profile = (f.get("snmp_profile") or "").strip()
+        desc = (f.get("description") or "").strip()
+
+        if not name or not _MANUAL_NAME.match(name):
+            flash("Name must be alphanumeric (plus . _ -).", "error")
+            return redirect(url_for("settings_manual_hosts"))
+        if not host:
+            flash("Host (IP or DNS name) is required.", "error")
+            return redirect(url_for("settings_manual_hosts"))
+        if mode not in VALID_MODES:
+            flash(f"Monitor mode must be one of {', '.join(VALID_MODES)}.", "error")
+            return redirect(url_for("settings_manual_hosts"))
+
+        if not manual_hosts.add(
+            name=name, host=host, monitor_mode=mode,
+            snmp_profile=profile, description=desc,
+            added_by=session.get("user", "?"),
+        ):
+            flash(f"Could not add host '{name}' — name may already be in use.",
+                  "error")
+            return redirect(url_for("settings_manual_hosts"))
+
+        # Hot-add to the live monitor pool so the operator doesn't have
+        # to restart the agent. If we don't have a manager (firmware
+        # mode etc.) the new host will be picked up on next start.
+        if monitor_manager is not None:
+            monitor_manager.add(host=host, name=name, monitor_mode=mode)
+            if profile:
+                state.set_switch_profile(name, profile)
+
+        audit.record("manual_host.add",
+                     user=session.get("user"), target=name,
+                     host=host, mode=mode, ip=request.remote_addr)
+        flash(f"Host '{name}' added.", "success")
+        return redirect(url_for("settings_manual_hosts"))
+
+    @app.post("/settings/manual-hosts/<name>/update")
+    @require_login
+    def settings_manual_hosts_update(name: str):
+        if not _MANUAL_NAME.match(name):
+            abort(400)
+        f = request.form
+        mode = (f.get("monitor_mode") or "").strip() or None
+        desc = f.get("description")
+        profile = f.get("snmp_profile")
+
+        if mode is not None and mode not in VALID_MODES:
+            flash(f"Monitor mode must be one of {', '.join(VALID_MODES)}.", "error")
+            return redirect(url_for("settings_manual_hosts"))
+        if not manual_hosts.update(name, monitor_mode=mode,
+                                   description=desc, snmp_profile=profile):
+            flash(f"Could not update '{name}'.", "error")
+            return redirect(url_for("settings_manual_hosts"))
+
+        # Propagate the new mode to SwitchState live. Next poll picks
+        # up the new mode automatically.
+        if mode is not None and name in state.switches:
+            state.switches[name].monitor_mode = mode
+        if profile is not None:
+            state.set_switch_profile(name, profile)
+
+        audit.record("manual_host.update",
+                     user=session.get("user"), target=name,
+                     mode=mode, ip=request.remote_addr)
+        flash(f"Host '{name}' updated.", "success")
+        return redirect(url_for("settings_manual_hosts"))
+
+    @app.post("/settings/manual-hosts/<name>/remove")
+    @require_login
+    def settings_manual_hosts_remove(name: str):
+        if not _MANUAL_NAME.match(name):
+            abort(400)
+        # Look up the host IP BEFORE deletion so we can stop the monitor.
+        existing = next((h for h in manual_hosts.list_hosts()
+                         if h["name"] == name), None)
+        if not manual_hosts.remove(name):
+            flash(f"Host '{name}' not found.", "error")
+            return redirect(url_for("settings_manual_hosts"))
+
+        # Remove the running monitor so we stop polling immediately.
+        # Manual hosts AREN'T in the scanner's ip_list, so they won't
+        # be re-added by the next sync().
+        if monitor_manager is not None and existing is not None:
+            try:
+                monitor_manager.remove(existing["host"])
+            except AttributeError:
+                # Older managers may not have remove(); fall through.
+                pass
+
+        audit.record("manual_host.remove",
+                     user=session.get("user"), target=name,
+                     ip=request.remote_addr)
+        flash(f"Host '{name}' removed.", "success")
+        return redirect(url_for("settings_manual_hosts"))
 
     # ── TOTP 2FA enrollment (T3.3) ─────────────────────────────────────────
     #

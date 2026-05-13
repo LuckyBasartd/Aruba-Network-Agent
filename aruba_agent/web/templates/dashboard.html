@@ -42,6 +42,18 @@
     .vendor-arista { background:#1f2937; color:#a78bfa; border-color:#5b21b6; }
     .vendor-unknown{ background:#0d1117; color:#8b949e; border-color:#30363d; }
 
+    /* v3.0.3: monitor-mode chip. icmp / snmp_ro / snmp_rw / auto.
+       Render in muted colours next to the vendor chip so an operator
+       can spot ping-only hosts at a glance without it shouting. */
+    .mode-chip   { display:inline-block; padding:.05rem .45rem; border-radius:8px;
+                   font-size:.65rem; font-weight:600; letter-spacing:.04em;
+                   border:1px solid transparent; white-space:nowrap;
+                   text-transform:uppercase; margin-left:.25rem; }
+    .mode-icmp   { background:#1f2937; color:#facc15; border-color:#854d0e; }
+    .mode-ro     { background:#1f2937; color:#34d399; border-color:#065f46; }
+    .mode-rw     { background:#0d1117; color:#8b949e; border-color:#30363d; }
+    .mode-auto   { background:#0d1117; color:#6b7280; border-color:#21262d; }
+
     /* Profile chip — clickable to open the per-switch profile picker. */
     .profile-chip   { display:inline-block; padding:.1rem .55rem; border-radius:10px;
                       font-size:.7rem; font-weight:600; letter-spacing:.02em;
@@ -522,9 +534,22 @@
         : '<span class="badge badge-up">UP</span>';
       const vLabel = VENDOR_LABEL[sw.vendor] || (sw.vendor || '—');
       const vClass = VENDOR_CLASS[sw.vendor] || 'vendor-unknown';
-      const vendorCell = sw.vendor
+      const vendorChip = sw.vendor
         ? `<span class="vendor-chip ${vClass}">${esc(vLabel)}</span>`
         : `<span class="text-muted">—</span>`;
+
+      // v3.0.3: monitor-mode chip. Only render when non-default so the
+      // typical "auto" host doesn't get visual clutter — the chip's
+      // purpose is to flag the unusual modes (icmp-only, snmp_ro).
+      const MODE_LABEL = { icmp: 'ICMP', snmp_ro: 'RO', snmp_rw: 'RW', auto: '' };
+      const MODE_CLASS = { icmp: 'mode-icmp', snmp_ro: 'mode-ro',
+                           snmp_rw: 'mode-rw', auto: 'mode-auto' };
+      const mode = sw.monitor_mode || 'auto';
+      const modeChip = (mode !== 'auto' && MODE_LABEL[mode])
+        ? `<span class="mode-chip ${MODE_CLASS[mode]}" title="Monitoring mode: ${esc(mode)}">${MODE_LABEL[mode]}</span>`
+        : '';
+
+      const vendorCell = vendorChip + modeChip;
 
       // Profile chip — clickable to open the picker. The
       // event.stopPropagation() keeps the parent row's openBackups

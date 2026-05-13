@@ -50,6 +50,11 @@ master_key_file      = /etc/aruba-agent/master.key
 #                       per switch per 5 min. 0 disables (every flap
 #                       fires its own email).
 alert_dedup_minutes  = 5
+# v3.0.3: manual_hosts_file — hosts outside the scanner's subnets that
+# operators add via Settings → Manual Hosts. Each entry carries a
+# monitor_mode (icmp / snmp_ro / snmp_rw / auto). Default location
+# matches the rest of /var/lib/aruba-agent/ runtime data.
+manual_hosts_file    = /var/lib/aruba-agent/manual_hosts.json
 
 
 # ------------------------------------------------------------

@@ -299,6 +299,31 @@ def main() -> None:
     except FileNotFoundError:
         log.info("No existing ip_list found at %s — waiting for first scan", _ip_list_path)
 
+    # v3.0.3: pre-seed with manually-added hosts (Settings → Manual Hosts).
+    # These live outside the scanner's subnets so manager.sync() will
+    # never bring them back if removed. Each carries its operator-chosen
+    # monitor_mode so the SwitchMonitor knows whether to ping, SNMP,
+    # or do the whole stack.
+    from aruba_agent.manual_hosts import ManualHostsStore
+    _manual_hosts_path = cfg.get(
+        "agent", "manual_hosts_file",
+        fallback="/var/lib/aruba-agent/manual_hosts.json",
+    )
+    _manual_store = ManualHostsStore(_manual_hosts_path)
+    _manual_list = _manual_store.list_hosts()
+    if _manual_list:
+        log.info("Pre-seeding monitor manager with %d manual host(s) from %s",
+                 len(_manual_list), _manual_hosts_path)
+        for _h in _manual_list:
+            manager.add(
+                host         = _h["host"],
+                name         = _h["name"],
+                monitor_mode = _h.get("monitor_mode", "auto"),
+            )
+            # Honour a per-host SNMP profile pin if the operator set one.
+            if _h.get("snmp_profile"):
+                state.set_switch_profile(_h["name"], _h["snmp_profile"])
+
     # ── scheduled tasks ──────────────────────────────────────────────────────
     scheduler = Scheduler()
 
@@ -347,12 +372,14 @@ def main() -> None:
     web_threads = int(web_cfg.get("threads", "16"))
     flask_app = create_app(
         state,
-        backup_fn  = backup_task.run  if backup_task  else None,
-        scanner_fn = scanner_task.run if scanner_task else None,
-        arp_fns    = arp_fns,
-        cfg        = cfg,
-        cfg_path   = config_path,
-        snmp_agent = snmp_agent,
+        backup_fn         = backup_task.run  if backup_task  else None,
+        scanner_fn        = scanner_task.run if scanner_task else None,
+        arp_fns           = arp_fns,
+        cfg               = cfg,
+        cfg_path          = config_path,
+        snmp_agent        = snmp_agent,
+        monitor_manager   = manager,
+        manual_hosts_path = _manual_hosts_path,
     )
     start_web(flask_app, host=web_host, port=web_port, threads=web_threads)
 

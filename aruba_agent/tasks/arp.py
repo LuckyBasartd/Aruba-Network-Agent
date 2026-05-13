@@ -286,6 +286,14 @@ class ArpDiscoveryTask:
         ip_to_dns: Dict[str, str] = self._nmap_scan(subnets)
         all_entries: List[dict]   = []
         for router in self.router_ips:
+            # v3.0.3: ARP discovery needs management-plane access to
+            # the router. Skip any router the operator has flagged
+            # icmp-only or snmp_ro — those won't accept "show arp".
+            mode = self.state.get_mode_for_host(router)
+            if mode in ("icmp", "snmp_ro"):
+                log.info("ARP[%s]: skipping router %s — monitor_mode=%s",
+                         self.name, router, mode)
+                continue
             all_entries.extend(self._fetch_arp(router))
 
         if all_entries:

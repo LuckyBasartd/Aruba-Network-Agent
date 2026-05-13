@@ -67,6 +67,15 @@ class SwitchState:
     hostname:     str               = ""   # resolved from switch API, may differ from name/IP
     vendor:       str               = ""   # "aruba_cx" / "cisco_ios" / "arista_eos" / ...
     snmp_profile: str               = ""   # name of SNMPv3 profile that works for this host
+    # v3.0.3: per-host monitoring access level. One of
+    #   "icmp"    — ping only (no SNMP, no driver, no backup)
+    #   "snmp_ro" — SNMPv3 polls but never invoke a vendor driver
+    #   "snmp_rw" — full access (SNMP + REST/SSH; default for new hosts)
+    #   "auto"    — let the agent decide (scanner default)
+    # Hosts that came in through manual_hosts.json or [switch.<name>]
+    # carry the operator's chosen mode; scanner-discovered hosts
+    # default to "auto".
+    monitor_mode: str               = "auto"
     is_down:      bool              = False
     failures:     int               = 0
     last_seen:    Optional[datetime] = None
@@ -151,6 +160,7 @@ class AgentState:
                     hostname     = entry.get("hostname",     "") or "",
                     vendor       = entry.get("vendor",       "") or "",
                     snmp_profile = entry.get("snmp_profile", "") or "",
+                    monitor_mode = entry.get("monitor_mode", "auto") or "auto",
                     is_down      = bool(entry.get("is_down", False)),
                     failures     = int(entry.get("failures", 0)),
                     last_seen    = _parse_iso(entry.get("last_seen")),
@@ -207,6 +217,7 @@ class AgentState:
                     "hostname":     s.hostname,
                     "vendor":       s.vendor,
                     "snmp_profile": s.snmp_profile,
+                    "monitor_mode": s.monitor_mode,
                     "is_down":      s.is_down,
                     "failures":     s.failures,
                     "last_seen":    _iso(s.last_seen),
@@ -253,11 +264,40 @@ class AgentState:
 
     # -------------------------------------------------------- switch helpers
 
-    def register_switch(self, name: str, host: str) -> None:
+    def register_switch(self, name: str, host: str,
+                        monitor_mode: str = "auto") -> None:
+        """
+        Add a switch to the registry if not already tracked. ``monitor_mode``
+        is the v3.0.3 per-host access level — defaults to "auto" which is
+        the scanner-discovered behaviour. Manual hosts (Settings → Manual
+        Hosts) pass their operator-chosen mode through here.
+        """
         with self._lock:
             if name not in self.switches:
-                self.switches[name] = SwitchState(name=name, host=host)
+                self.switches[name] = SwitchState(
+                    name=name, host=host, monitor_mode=monitor_mode,
+                )
                 self._save()
+            else:
+                # Existing entry — update the mode if the caller passed
+                # one. Lets the operator change an existing host's mode
+                # via the Settings UI without recreating its state.
+                sw = self.switches[name]
+                if monitor_mode and sw.monitor_mode != monitor_mode:
+                    sw.monitor_mode = monitor_mode
+                    self._save()
+
+    def get_mode_for_host(self, host: str) -> str:
+        """
+        Return the monitor_mode for a given IP / hostname, or "auto"
+        if unknown. Used by BackupTask, ARP, firmware to decide
+        whether the agent has write access to the device.
+        """
+        with self._lock:
+            for sw in self.switches.values():
+                if sw.host == host:
+                    return sw.monitor_mode or "auto"
+            return "auto"
 
     def get_vendor_for_host(self, host: str) -> str:
         """
@@ -379,6 +419,7 @@ class AgentState:
                         "hostname":     s.hostname or s.name,
                         "vendor":       s.vendor or "",
                         "snmp_profile": s.snmp_profile or "",
+                        "monitor_mode": s.monitor_mode or "auto",
                         "is_down":      s.is_down,
                         "failures":     s.failures,
                         "last_seen":    s.last_seen.isoformat() if s.last_seen else None,
