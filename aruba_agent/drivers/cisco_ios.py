@@ -42,6 +42,7 @@ import logging
 from typing import List, Optional
 
 from aruba_agent.drivers.base import ArpEntry, Facts
+from aruba_agent.secrets_store import redact as _redact
 
 
 log = logging.getLogger(__name__)
@@ -143,7 +144,7 @@ class CiscoIOSDriver:
         try:
             status = self._device.is_alive()
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return False
         # napalm returns {'is_alive': bool}
         return bool(status.get("is_alive", False)) if isinstance(status, dict) else False
@@ -160,7 +161,7 @@ class CiscoIOSDriver:
         try:
             data = self._device.get_facts()
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return None
         return Facts(
             hostname   = data.get("hostname",     "") or "",
@@ -183,7 +184,7 @@ class CiscoIOSDriver:
         try:
             cfg = self._device.get_config(retrieve="running")
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return None
         if isinstance(cfg, dict):
             text = cfg.get("running") or ""
@@ -204,7 +205,7 @@ class CiscoIOSDriver:
             self._device.cli(["write memory"])
             return True
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return False
 
     # ─── operational ────────────────────────────────────────────────────────
@@ -215,7 +216,7 @@ class CiscoIOSDriver:
         try:
             output = self._device.cli([cmd])
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return None
         if isinstance(output, dict):
             return output.get(cmd)
@@ -236,7 +237,7 @@ class CiscoIOSDriver:
         try:
             entries = self._device.get_arp_table()
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return []
 
         out: List[ArpEntry] = []

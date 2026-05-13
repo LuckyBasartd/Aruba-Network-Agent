@@ -245,8 +245,13 @@ class BackupTask:
                          hostname, ip, " [encrypted]" if sm else " [cleartext]")
 
             except Exception as exc:
-                failed.append({"ip": ip, "hostname": hostname, "issue": str(exc)})
-                log.error("Backup error for %s: %s", ip, exc)
+                # Belt-and-braces: drivers already scrub their own
+                # error fields, but anything that escapes here is
+                # bound for the dashboard's "FAILED" panel and the
+                # nightly email report. Strip credentials defensively.
+                msg = secrets_store.redact(str(exc))
+                failed.append({"ip": ip, "hostname": hostname, "issue": msg})
+                log.error("Backup error for %s: %s", ip, msg)
 
         self.state.set_backup_result(len(success), len(failed), failed)
         self._send_report(success, failed)

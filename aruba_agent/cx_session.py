@@ -39,6 +39,8 @@ from typing import Dict, List, Optional
 import requests
 import urllib3
 
+from aruba_agent.secrets_store import redact as _redact
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 log = logging.getLogger(__name__)
@@ -97,7 +99,12 @@ class ArubaCXSession:
                     return False
                 # 404 → try next version
             except requests.exceptions.RequestException as exc:
-                err = str(exc)
+                # urllib3 / requests bake the full request URL into the
+                # exception message, and AOS-CX puts the password into
+                # the query string (params=self._creds). Strip the
+                # credentials BEFORE the string makes it into self.error,
+                # which the dashboard renders and email reports include.
+                err = _redact(str(exc))
                 if any(kw in err for kw in ("Connection refused", "timed out", "Timeout")):
                     # Host is unreachable — no point trying remaining API versions
                     # on the same host; bail out immediately.
@@ -196,7 +203,9 @@ class ArubaCXSession:
                     resp = self._session.get(self.base_url + endpoint, verify=False, timeout=15, **kw)
             return resp
         except requests.exceptions.RequestException as exc:
-            self.error = str(exc)
+            # Redact: see comment in login(). urllib3/requests bake the
+            # request URL into exception strings.
+            self.error = _redact(str(exc))
             return None
 
     def _put(self, endpoint: str, **kw) -> Optional[requests.Response]:
@@ -205,7 +214,9 @@ class ArubaCXSession:
         try:
             return self._session.put(self.base_url + endpoint, verify=False, timeout=15, **kw)
         except requests.exceptions.RequestException as exc:
-            self.error = str(exc)
+            # Redact: see comment in login(). urllib3/requests bake the
+            # request URL into exception strings.
+            self.error = _redact(str(exc))
             return None
 
     def _post(self, endpoint: str, **kw) -> Optional[requests.Response]:
@@ -214,7 +225,9 @@ class ArubaCXSession:
         try:
             return self._session.post(self.base_url + endpoint, verify=False, timeout=30, **kw)
         except requests.exceptions.RequestException as exc:
-            self.error = str(exc)
+            # Redact: see comment in login(). urllib3/requests bake the
+            # request URL into exception strings.
+            self.error = _redact(str(exc))
             return None
 
     # ------------------------------------------------------- high-level API

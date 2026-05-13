@@ -150,6 +150,69 @@ def is_encrypted(value: str) -> bool:
     return bool(value) and isinstance(value, str) and value.startswith(_PREFIX)
 
 
+# ─── credential redaction ────────────────────────────────────────────────────
+#
+# Any exception message that bubbles up from urllib3 / requests / NAPALM can
+# include the full request URL, and AOS-CX puts credentials in the URL's
+# query string. The resulting error string would otherwise propagate through
+# driver.error → backup.py's failed_devices list → AgentState → /api/state →
+# dashboard and email reports — leaking the password into the operator's
+# browser, alert mailbox, and journald all at once.
+#
+# Every call site that captures `str(exc)` from a network operation MUST
+# route the result through redact() before storing it.
+
+import re as _re
+
+# Match common credential patterns in URLs, error strings, etc.
+# Tuples of (pattern, replacement). Order matters — earlier patterns win.
+_REDACT_PATTERNS = [
+    # `password=secret123` (query string)
+    (_re.compile(r'(?i)(password=)([^&\s\'"<>]+)'),       r'\1<REDACTED>'),
+    # `password: "secret"` / `password: secret` (JSON / Python repr style)
+    (_re.compile(r'(?i)(password[\'"]?\s*[:=]\s*[\'"]?)([^\'"\s,}&<>]+)'), r'\1<REDACTED>'),
+    # `auth_password=...` and `priv_password=...` (SNMPv3)
+    (_re.compile(r'(?i)((?:auth|priv)_password=)([^&\s\'"<>]+)'), r'\1<REDACTED>'),
+    # Shared secrets in URLs / strings
+    (_re.compile(r'(?i)(\bsecret=)([^&\s\'"<>]+)'),       r'\1<REDACTED>'),
+    # `enable_secret=` / `enable_password=` (Cisco / Arista)
+    (_re.compile(r'(?i)(enable_(?:secret|password)=)([^&\s\'"<>]+)'), r'\1<REDACTED>'),
+    # Bearer tokens — aat_... (our API tokens) and generic Bearer/Basic auth headers
+    (_re.compile(r'(?i)(authorization:\s*bearer\s+)\S+'),  r'\1<REDACTED>'),
+    (_re.compile(r'(?i)(authorization:\s*basic\s+)\S+'),   r'\1<REDACTED>'),
+    (_re.compile(r'\baat_[A-Za-z0-9_-]{8,}'),              r'<REDACTED-TOKEN>'),
+    # `enc:<fernet-token>` — our on-disk ciphertext. Doesn't leak a secret,
+    # but it's noise in error messages and may carry implementation details.
+    (_re.compile(r'\benc:[A-Za-z0-9_=-]{20,}'),            r'<enc:REDACTED>'),
+]
+
+
+def redact(text: str) -> str:
+    """
+    Strip credential-shaped substrings from an arbitrary error / log
+    message. Defense-in-depth: callers should also avoid putting
+    credentials in URLs in the first place, but redact() guarantees
+    that an exception message captured verbatim from urllib3 /
+    requests / NAPALM / pysnmp won't leak a password into the
+    dashboard, the audit log, or an alert email.
+
+    Always returns a string. ``None`` and empty strings pass through
+    unchanged so callers can use this on any error-capturing site
+    without adding null checks.
+    """
+    if not text:
+        return text or ""
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            return "<UNRENDERABLE>"
+    out = text
+    for pat, repl in _REDACT_PATTERNS:
+        out = pat.sub(repl, out)
+    return out
+
+
 # ─── SecretManager ────────────────────────────────────────────────────────────
 
 class SecretManager:

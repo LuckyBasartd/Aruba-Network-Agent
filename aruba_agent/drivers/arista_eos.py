@@ -33,6 +33,7 @@ import logging
 from typing import List, Optional
 
 from aruba_agent.drivers.base import ArpEntry, Facts
+from aruba_agent.secrets_store import redact as _redact
 
 
 log = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ class AristaEOSDriver:
         try:
             status = self._device.is_alive()
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return False
         return bool(status.get("is_alive", False)) if isinstance(status, dict) else False
 
@@ -152,7 +153,7 @@ class AristaEOSDriver:
         try:
             data = self._device.get_facts()
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return None
         return Facts(
             hostname   = data.get("hostname",     "") or "",
@@ -170,7 +171,7 @@ class AristaEOSDriver:
         try:
             cfg = self._device.get_config(retrieve="running")
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return None
         text = cfg.get("running") if isinstance(cfg, dict) else str(cfg or "")
         return text.encode("utf-8") if text else None
@@ -183,7 +184,7 @@ class AristaEOSDriver:
             self._device.cli(["copy running-config startup-config"])
             return True
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return False
 
     # ─── operational ────────────────────────────────────────────────────────
@@ -194,7 +195,7 @@ class AristaEOSDriver:
         try:
             output = self._device.cli([cmd])
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return None
         if isinstance(output, dict):
             return output.get(cmd)
@@ -206,7 +207,7 @@ class AristaEOSDriver:
         try:
             entries = self._device.get_arp_table()
         except Exception as exc:
-            self.error = str(exc)
+            self.error = _redact(str(exc))
             return []
 
         out: List[ArpEntry] = []
