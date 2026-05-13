@@ -25,7 +25,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -u /opt/aruba-agent/main.py /etc/aruba-agent/config.ini
+# v3.0.2+: agent runs inside a virtual environment owned by the service
+# account. Falls back to /usr/bin/python3 on installs that predate the
+# venv switch — the wrapper script preserves the legacy behaviour.
+# The wrapper is the file ExecStart points at, NOT main.py, so this
+# unit doesn't need editing again when the python path changes.
+ExecStart=/opt/aruba-agent/bin/aruba-agent /etc/aruba-agent/config.ini
 WorkingDirectory=/opt/aruba-agent
 Restart=on-failure
 RestartSec=10

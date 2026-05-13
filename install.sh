@@ -160,6 +160,14 @@ rsync -a --delete \
   --exclude '__pycache__' --exclude '*.pyc' --exclude '.git' \
   "${SOURCE_DIR}/aruba_agent/" "${INSTALL_DIR}/aruba_agent/"
 rsync -a "${SOURCE_DIR}/main.py" "${SOURCE_DIR}/requirements.txt" "${INSTALL_DIR}/"
+
+# Install the systemd ExecStart wrapper. The unit file points at this
+# script, which then routes to either the venv python or the system
+# python3. Keeps the unit stable across deploys that flip layouts.
+install -d -m 755 "${INSTALL_DIR}/bin"
+install -m 755 "${SOURCE_DIR}/scripts/aruba-agent-wrapper.sh" \
+  "${INSTALL_DIR}/bin/aruba-agent"
+
 ok "Code deployed"
 
 # Config template — but DO NOT overwrite an existing config.ini.
@@ -193,15 +201,45 @@ if [[ -f "${SOURCE_DIR}/scripts/aruba-agent.logrotate" ]]; then
   ok "logrotate config installed"
 fi
 
-# ─── 5. python dependencies ──────────────────────────────────────────────
-log "Installing Python dependencies (pip)…"
-pip3 install --upgrade --quiet -r "${INSTALL_DIR}/requirements.txt" \
-  > /tmp/aruba-install-pip.log 2>&1 \
+# Daily verify-backups cron — v3.0.2. Catches bit rot proactively
+# instead of "when someone runs the CLI by hand". Idempotent: re-runs
+# of install.sh just overwrite the same file.
+if [[ -f "${SOURCE_DIR}/scripts/aruba-agent-verify-backups.cron" ]]; then
+  log "Installing daily verify-backups cron job"
+  install -m 755 "${SOURCE_DIR}/scripts/aruba-agent-verify-backups.cron" \
+    /etc/cron.daily/aruba-agent-verify-backups
+  ok "verify-backups cron installed (mails on failure via "
+  ok "  /etc/aruba-agent/verify-backups.notify — one address per line)"
+fi
+
+# ─── 5. python dependencies (venv-isolated) ──────────────────────────────
+# v3.0.2: every Python dep installs into /opt/aruba-agent/venv so we
+# never touch the system Python. pip-as-root against the system
+# interpreter is the single fastest way to corrupt an RHEL-family host;
+# this isolation is the right pattern and matches what config-management
+# tools (Ansible, Salt) do by default.
+log "Setting up Python virtualenv at ${INSTALL_DIR}/venv"
+if [[ ! -x "${INSTALL_DIR}/venv/bin/python" ]]; then
+  python3 -m venv "${INSTALL_DIR}/venv" \
+    > /tmp/aruba-install-venv.log 2>&1 \
+    || die "venv creation failed — see /tmp/aruba-install-venv.log" 4
+  ok "venv created"
+else
+  ok "venv already present — reusing"
+fi
+
+log "Installing Python dependencies into venv…"
+"${INSTALL_DIR}/venv/bin/pip" install --upgrade --quiet pip \
+  >  /tmp/aruba-install-pip.log 2>&1 || true
+"${INSTALL_DIR}/venv/bin/pip" install --upgrade --quiet \
+    -r "${INSTALL_DIR}/requirements.txt" \
+  >> /tmp/aruba-install-pip.log 2>&1 \
   || die "pip install failed — see /tmp/aruba-install-pip.log" 4
 # Belt-and-suspenders: cryptography is a transitive dep but make it explicit
 # in case a future requirements.txt change drops it.
-pip3 install --upgrade --quiet cryptography >> /tmp/aruba-install-pip.log 2>&1 || true
-ok "Python deps installed"
+"${INSTALL_DIR}/venv/bin/pip" install --upgrade --quiet cryptography \
+  >> /tmp/aruba-install-pip.log 2>&1 || true
+ok "Python deps installed inside venv"
 
 # ─── 6. permissions ──────────────────────────────────────────────────────
 log "Setting permissions"

@@ -1,0 +1,88 @@
+#!/bin/bash
+#
+# /etc/cron.daily/aruba-agent-verify-backups
+#
+# Daily integrity check of every <hostname>-startup-config-*.cfg(.enc)
+# file under /var/lib/aruba-agent/backups/. Runs the agent's built-in
+# --verify-backups subcommand, which recomputes SHA-256 over each file
+# and compares against the .sha256 sidecar produced at backup time.
+#
+# Exit codes from the agent:
+#     0   every sidecar matches
+#     2   one or more files failed their integrity check (corruption,
+#         tampering, or bit-rot)
+#   other unexpected — treated as failure
+#
+# When verification fails, this script sends a short email to the
+# address in /etc/aruba-agent/verify-backups.notify (one address per
+# line). If that file doesn't exist or is empty, nothing is mailed and
+# the failure is left to journald.
+#
+# This script intentionally has no other side effects — it does not
+# attempt to "fix" anything. A failure here means an operator needs to
+# look at the file by hand.
+
+set -u
+
+# Find the venv python if it exists, else fall back to system python3.
+# This file is shipped by the agent's install.sh so /opt/aruba-agent
+# is the right pivot.
+if [[ -x /opt/aruba-agent/venv/bin/python ]]; then
+    PY=/opt/aruba-agent/venv/bin/python
+else
+    PY=/usr/bin/python3
+fi
+
+CONFIG=/etc/aruba-agent/config.ini
+NOTIFY_FILE=/etc/aruba-agent/verify-backups.notify
+
+# Capture stdout + stderr; we want to include them in any alert email.
+# Running as the service account so we read /etc/aruba-agent/master.key
+# but never write anywhere.
+OUTPUT=$(sudo -u aruba-agent "${PY}" /opt/aruba-agent/main.py "${CONFIG}" --verify-backups 2>&1)
+STATUS=$?
+
+# Always log to journal (cron.daily output goes to root's mail by
+# default; on this host we keep it visible via logger as well).
+logger -t aruba-agent-verify-backups -- "${OUTPUT}"
+
+if [[ ${STATUS} -ne 0 ]]; then
+    SUBJECT="[aruba-agent] backup integrity FAILED on $(hostname -s)"
+    BODY=$(cat <<EOF
+Daily backup integrity check on $(hostname -f) reported failures.
+
+Exit status: ${STATUS}
+
+Output:
+${OUTPUT}
+
+Investigate the files marked CORRUPT in /var/lib/aruba-agent/backups/
+by hand. Common causes:
+  - Bit rot on aging disk
+  - A backup file truncated by an out-of-space write
+  - Tampering (rare; verify host integrity)
+
+If you genuinely no longer need the corrupt file, delete it AND its
+.sha256 sidecar so this check stops flagging it.
+EOF
+)
+
+    # Only mail if a notification list is configured AND mail(1) is
+    # installed. Silent fall-through to journal is fine; this is a
+    # "nice to have" notification, not the integrity check itself.
+    if [[ -s "${NOTIFY_FILE}" ]] && command -v mail >/dev/null 2>&1; then
+        while IFS= read -r addr; do
+            addr=$(echo "${addr}" | sed 's/[[:space:]]//g')
+            [[ -z "${addr}" || "${addr}" == \#* ]] && continue
+            echo "${BODY}" | mail -s "${SUBJECT}" "${addr}"
+        done < "${NOTIFY_FILE}"
+    fi
+
+    # Surface to cron itself too — the daily cron driver will email
+    # root with this output if MAILTO is set.
+    echo "${SUBJECT}"
+    echo
+    echo "${BODY}"
+fi
+
+exit 0

@@ -1,51 +1,16 @@
 # Install Guide — Clean AlmaLinux 10
 
 End-to-end install of the Aruba Network Agent on a fresh AlmaLinux 10
-server with HTTPS, RADIUS login, and an Apache2 reverse proxy.
+server with HTTPS, RADIUS login, and an nginx reverse proxy (Apache
+also supported — see the appendix).
 
 Allow ~25 minutes start to finish.
 
----
-
-## Quick start (one command)
-
-If you trust the upstream repo and want the fastest path from blank VM
-to working dashboard, run the bundled installer:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LuckyBasartd/Aruba-Network-Agent/main/install.sh \
-    | sudo bash
-```
-
-The script is idempotent — re-run it any time to upgrade an existing
-install. It NEVER touches `/etc/aruba-agent/config.ini`,
-`/etc/aruba-agent/master.key`, or `/var/lib/aruba-agent/*`, so your
-state and secrets survive every upgrade.
-
-When it finishes (~5 minutes on a fresh VM), it prints:
-
-- The encryption master-key path with a big "back this up" reminder.
-- A list of `config.ini` sections you should fill in.
-- The dashboard URL (`https://<host>/`).
-- Default first-login credentials (`admin` / `admin`, must change).
-
-Want to customise the install? The script honours these environment
-variables (all optional):
-
-```bash
-sudo REPO_REF=v3.0.1 \
-     CERT_HOST=switches.example.local \
-     SKIP_APACHE=1 \
-     bash install.sh
-```
-
-Full list: `REPO_URL`, `REPO_REF`, `STAGING_DIR`, `INSTALL_DIR`,
-`CONFIG_DIR`, `STATE_DIR`, `SVC_USER`, `SKIP_APACHE`, `SKIP_CERT`,
-`CERT_HOST`. See the comment block at the top of `install.sh`.
-
-The manual walkthrough below remains the source of truth for what the
-script does — read it once if you're rolling this out to a fleet or
-need to deviate from defaults.
+> **For sysadmin-managed hosts:** if your config-management already
+> handles OS updates, base package installs, and TLS/reverse-proxy
+> provisioning, you can skip the steps marked **[CFGMGMT]** and use
+> only the application-layer steps. Both kinds of step are flagged
+> inline.
 
 ---
 
@@ -53,13 +18,15 @@ need to deviate from defaults.
 
 You will need:
 
-- A clean AlmaLinux 10 server with internet access (minimal install is fine).
+- A clean AlmaLinux 10 server with internet access (minimal install is
+  fine), with system packages already up to date.
 - An account with `sudo`.
-- The hostname or IP the dashboard will be reached at (used in the TLS cert).
+- The hostname or IP the dashboard will be reached at.
 - (Optional, recommended) A RADIUS server: IP, shared secret, and this
   host's IP allowlisted as a NAS.
 - (Optional) SMTP relay credentials for email alerts.
-- A GitHub account with read access to the repository.
+- A GitHub account with admin access to the repository (to add a
+  deploy key).
 
 ```bash
 # Confirm the OS, take a snapshot of useful info before starting
@@ -70,144 +37,29 @@ hostname -I
 
 ---
 
-## 1 — System update and base packages
+## 1 — Base packages **[CFGMGMT — skip if your sysadmin handles it]**
+
+Base OS packages the agent needs. If your config-management already
+keeps these in place, skip to step 2.
 
 ```bash
 sudo dnf -y update
 sudo dnf install -y \
-    git python3 python3-pip nmap openssl \
-    httpd mod_ssl firewalld policycoreutils-python-utils nano
+    git python3 python3-pip python3-virtualenv \
+    nmap openssl rsync nano \
+    policycoreutils-python-utils firewalld
 sudo systemctl enable --now firewalld
 ```
 
-`policycoreutils-python-utils` ships `semanage` / `setsebool`, used by
-`install-apache.sh` to fix SELinux up so Apache can reach the Flask
-backend on `127.0.0.1:8080`.
+`policycoreutils-python-utils` provides `semanage` / `setsebool` used
+by the SELinux step later.
+
+The reverse-proxy daemon (`nginx` or `httpd` + `mod_ssl`) is in step 8
+since you may already have one running.
 
 ---
 
-## 2 — Generate an SSH key for GitHub
-
-GitHub turned off password auth for git operations in 2021. The cleanest
-long-lived option is an SSH key dedicated to this host. (Personal Access
-Tokens work too — covered at the end of this section.)
-
-### 2a. Create the key
-
-```bash
-ssh-keygen -t ed25519 -C "aruba-agent@$(hostname -s)" -f ~/.ssh/aruba_agent_github -N ""
-```
-
-What each flag does:
-
-- `-t ed25519` — modern curve; smaller and faster than RSA, supported by GitHub.
-- `-C "aruba-agent@<host>"` — comment baked into the public key so you
-  can recognise it later in the GitHub UI.
-- `-f ~/.ssh/aruba_agent_github` — keep this key separate from any
-  personal keys you may have on this host.
-- `-N ""` — no passphrase. The key file itself is mode `600` and only
-  this account can read it; a passphrase would block unattended pulls.
-  If your security policy requires one, drop `-N ""` and you'll be
-  prompted to set a passphrase (you'll then need `ssh-agent` for
-  passwordless pulls).
-
-The command produces two files:
-
-```
-~/.ssh/aruba_agent_github      # private key — NEVER share
-~/.ssh/aruba_agent_github.pub  # public key  — paste into GitHub
-```
-
-### 2b. Tell SSH to use this key for github.com
-
-```bash
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-
-cat >> ~/.ssh/config <<'EOF'
-
-# Aruba Network Agent — deploy key for the upstream repo
-Host github.com
-    HostName        github.com
-    User            git
-    IdentityFile    ~/.ssh/aruba_agent_github
-    IdentitiesOnly  yes
-EOF
-
-chmod 600 ~/.ssh/config
-```
-
-`IdentitiesOnly yes` is the key line — without it, SSH offers every
-private key it can find to GitHub, and after too many wrong offers
-GitHub will reject the connection with "Too many authentication
-failures."
-
-### 2c. Add the public key to GitHub
-
-Print it and copy to your clipboard:
-
-```bash
-cat ~/.ssh/aruba_agent_github.pub
-```
-
-In your browser:
-
-1. GitHub → click your avatar → **Settings**.
-2. Left sidebar → **SSH and GPG keys**.
-3. **New SSH key**.
-4. **Title**: something you'll recognise, e.g. `aruba-agent server`.
-5. **Key type**: Authentication Key.
-6. **Key**: paste the entire line you just `cat`-ed, starting with
-   `ssh-ed25519 AAAA…` and ending with the comment you set.
-7. **Add SSH key**. GitHub may ask you to re-enter your GitHub
-   password to confirm.
-
-### 2d. Test the connection
-
-```bash
-ssh -T git@github.com
-```
-
-Accept the host fingerprint prompt the first time (`yes`). A successful
-auth replies with:
-
-```
-Hi <your-github-username>! You've successfully authenticated, but GitHub does not provide shell access.
-```
-
-That message is the success state — GitHub never offers a real shell.
-
-### Plan B — Personal Access Token (PAT)
-
-If you can't use SSH (egress firewall blocks port 22, corporate policy,
-etc.), use an HTTPS clone with a PAT instead:
-
-1. GitHub → Settings → Developer settings → Personal access tokens →
-   **Tokens (classic)** → **Generate new token**.
-2. Scope: `repo` (or `public_repo` if the repository is public).
-3. Set an expiration you can live with — 90 days is a reasonable
-   default; renew when it lapses.
-4. Copy the token (`ghp_…`). You won't see it again.
-5. Clone using HTTPS:
-
-   ```bash
-   git clone https://github.com/LuckyBasartd/Aruba-Network-Agent.git
-   # Username:  your GitHub username (e.g. LuckyBasartd)
-   # Password:  paste the ghp_… token
-   ```
-
-6. Optional — cache the token so subsequent pulls don't prompt:
-
-   ```bash
-   git config --global credential.helper store
-   ```
-
-   The token gets stored in plaintext at `~/.git-credentials` (mode 600).
-   On a root-only deploy host that's acceptable; on a multi-user host
-   prefer `credential.helper cache` (memory only) or SSH.
-
----
-
-## 3 — Service account and directory tree
+## 2 — Service account and directory tree
 
 ```bash
 # Dedicated low-privilege account — never logs in interactively
@@ -219,30 +71,132 @@ sudo mkdir -p \
     /etc/aruba-agent/subnets \
     /var/lib/aruba-agent/backups \
     /var/lib/aruba-agent/arp \
-    /var/lib/aruba-agent/firmware
+    /var/lib/aruba-agent/firmware \
+    /var/log/aruba-agent
 ```
+
+---
+
+## 3 — Set up a GitHub deploy key
+
+The agent's code is pulled from a private GitHub repository using a
+read-only SSH deploy key scoped to **that repository only**. This is
+safer than using a personal account's key, which would give access to
+all your repositories and could be disrupted if the account changes
+or the person leaves.
+
+All commands in this section should be run as a dedicated deployment
+user (or `root`), **not your personal account**. A personal account
+that rotates keys or leaves the team takes the agent host's git
+access with it.
+
+### 3a. Configure SSH to use the deploy key
+
+Create (or append to) `~/.ssh/config` so SSH automatically selects
+the right key for GitHub:
+
+```bash
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+cat >> ~/.ssh/config <<'EOF'
+# Aruba Network Agent — deploy key for the upstream repo
+Host github.com
+    HostName        github.com
+    User            git
+    IdentityFile    ~/.ssh/aruba_agent_github
+    IdentitiesOnly  yes
+EOF
+chmod 600 ~/.ssh/config
+```
+
+`IdentitiesOnly yes` is critical — without it, SSH offers every
+private key it can find to GitHub, and after too many wrong offers
+GitHub will reject the connection with "Too many authentication
+failures."
+
+### 3b. Create the key
+
+```bash
+ssh-keygen -t ed25519 -C "aruba-agent@$(hostname -s)" \
+           -f ~/.ssh/aruba_agent_github -N ""
+```
+
+Flag-by-flag:
+
+- `-t ed25519` — modern curve; smaller and faster than RSA, supported
+  by GitHub.
+- `-C "aruba-agent@<host>"` — comment baked into the public key so
+  you can recognise it later.
+- `-f ~/.ssh/aruba_agent_github` — keeps this key separate from any
+  personal keys on this host.
+- `-N ""` — no passphrase. The key file is mode 600 and only this
+  account can read it; a passphrase would block unattended pulls.
+
+The command produces two files:
+
+```
+~/.ssh/aruba_agent_github      # private key — NEVER share
+~/.ssh/aruba_agent_github.pub  # public key — paste into GitHub
+```
+
+### 3c. Add the public key as a **repository deploy key**
+
+Print the public key and copy it to your clipboard:
+
+```bash
+cat ~/.ssh/aruba_agent_github.pub
+```
+
+In your browser:
+
+1. Go to the repository on GitHub (e.g.
+   `https://github.com/LuckyBasartd/Aruba-Network-Agent`).
+2. Click **Settings** → **Deploy keys** (left sidebar, under
+   "Security").
+3. Click **Add deploy key**.
+4. **Title**: something you'll recognise, e.g. `aruba-agent server`.
+5. **Key**: paste the entire line you just `cat`-ed, starting with
+   `ssh-ed25519 AAAA…`.
+6. **Leave "Allow write access" unchecked** — this key only pulls.
+7. Click **Add key**.
+
+Deploy keys are scoped to this single repo and can be revoked
+independently of any user account.
+
+### 3d. Test the connection
+
+```bash
+ssh -T git@github.com
+```
+
+Accept the host fingerprint prompt the first time (`yes`). A
+successful auth replies with:
+
+```
+Hi <repo-owner>! You've successfully authenticated, but GitHub does not provide shell access.
+```
+
+(For deploy keys, GitHub greets the repo's owner rather than your
+personal username.) The message itself is the success state — GitHub
+never offers a real shell.
 
 ---
 
 ## 4 — Clone the repository
 
-Using the SSH key you set up in step 2:
+Clone into a stable working directory **outside `/tmp`** (files there
+can be read or tampered with by other local users and may be cleared
+on reboot):
 
 ```bash
-cd /tmp
+sudo mkdir -p /opt/aruba-agent-src
+sudo chown "$(whoami)":"$(whoami)" /opt/aruba-agent-src
+cd /opt/aruba-agent-src
 git clone git@github.com:LuckyBasartd/Aruba-Network-Agent.git
 cd Aruba-Network-Agent
 git log --oneline -5
 ```
 
-You should see recent v3.0.1 commits at the top of the log (encryption
-+ dashboard search). If you used a PAT instead, clone the HTTPS URL:
-
-```bash
-cd /tmp
-git clone https://github.com/LuckyBasartd/Aruba-Network-Agent.git
-cd Aruba-Network-Agent
-```
+You should see the latest release commit at the top of the log.
 
 ---
 
@@ -250,13 +204,22 @@ cd Aruba-Network-Agent
 
 `rsync` is preferred over `cp -r` for both the initial install and
 later updates: it copies only changed files, and `--delete` removes
-anything that's no longer in the repo so stale `.py` files can't
-linger in `/opt/aruba-agent` and shadow newer modules.
+anything no longer in the repo so stale `.py` files can't linger in
+`/opt/aruba-agent` and shadow newer modules.
 
 ```bash
+cd /opt/aruba-agent-src/Aruba-Network-Agent
+
 # Code
 sudo rsync -a --delete aruba_agent/ /opt/aruba-agent/aruba_agent/
 sudo rsync -a main.py requirements.txt /opt/aruba-agent/
+
+# The systemd ExecStart wrapper — picks venv vs system python at
+# runtime. Lives in /opt/aruba-agent/bin/ so the systemd unit can
+# stay stable across deploys.
+sudo install -d -m 755 /opt/aruba-agent/bin
+sudo install -m 755 scripts/aruba-agent-wrapper.sh \
+    /opt/aruba-agent/bin/aruba-agent
 
 # Config template — secured because it will hold credentials.
 # The real config.ini is gitignored; the repo ships config.ini.example.
@@ -269,24 +232,44 @@ sudo install -m 640 -o aruba-agent -g aruba-agent \
 
 # Systemd unit
 sudo rsync -a aruba-agent.service /etc/systemd/system/
+
+# logrotate.d rule for the audit log
+sudo install -m 644 scripts/aruba-agent.logrotate \
+    /etc/logrotate.d/aruba-agent
+
+# Optional but recommended: daily backup-integrity cron
+sudo install -m 755 scripts/aruba-agent-verify-backups.cron \
+    /etc/cron.daily/aruba-agent-verify-backups
 ```
 
 ---
 
-## 6 — Python dependencies
+## 6 — Python dependencies (virtual environment)
+
+**Never run `pip` as root against the system Python.** Doing so can
+corrupt system packages that the OS depends on. The agent installs
+into a virtual environment owned by root and consumed by the service
+account.
 
 ```bash
-sudo pip3 install -r /opt/aruba-agent/requirements.txt
+# Create the venv inside the application directory
+sudo python3 -m venv /opt/aruba-agent/venv
+
+# Install dependencies into the venv (no root-as-pip, no system-wide changes)
+sudo /opt/aruba-agent/venv/bin/pip install --upgrade pip
+sudo /opt/aruba-agent/venv/bin/pip install \
+     -r /opt/aruba-agent/requirements.txt
 ```
 
-This installs `requests`, `urllib3`, `flask`, `waitress`, `scapy`,
-`pyrad`, `pysnmp`, and `napalm`. The `cryptography` library used by
-v3.0.1 secret storage comes in as a transitive dependency. If you ever
-see a `cryptography` import error in the journal:
+This installs `requests`, `urllib3`, `flask`, `flask-wtf`, `waitress`,
+`scapy`, `pyrad`, `pysnmp<6.2`, `napalm`, `prometheus-client`,
+`pyotp`, and `qrcode`. The `cryptography` library used by the
+secret-storage layer comes in as a transitive dependency.
 
-```bash
-sudo pip3 install cryptography
-```
+The systemd unit's `ExecStart` points at
+`/opt/aruba-agent/bin/aruba-agent`, which picks
+`/opt/aruba-agent/venv/bin/python` automatically when the venv
+exists. No further unit edits are needed.
 
 ---
 
@@ -297,11 +280,14 @@ sudo chown -R root:aruba-agent /opt/aruba-agent
 sudo chmod -R 750              /opt/aruba-agent
 sudo chown -R aruba-agent:aruba-agent /var/lib/aruba-agent
 sudo chown -R aruba-agent:aruba-agent /etc/aruba-agent
+sudo chown -R aruba-agent:aruba-agent /var/log/aruba-agent
+sudo chmod 750 /var/log/aruba-agent
 ```
 
 `/etc/aruba-agent/` must be writable by the service account so the
 agent can write `master.key` on first start and the Settings UI can
-save config changes back to `config.ini`.
+save config changes back to `config.ini`. `/var/log/aruba-agent/`
+holds the audit log written by the agent.
 
 ---
 
@@ -311,81 +297,99 @@ save config changes back to `config.ini`.
 sudo -u aruba-agent nano /etc/aruba-agent/config.ini
 ```
 
-Minimum you'll want to touch on a fresh install:
+Minimum settings to touch on a fresh install:
 
-- **`[credentials]`** — switch admin username + password (used as defaults across vendors).
-- **`[smtp]`** — `enabled = true` + host/port/from/to if you want email alerts.
+- **`[credentials]`** — switch admin username + password (used as
+  defaults across vendors).
+- **`[smtp]`** — `enabled = true` + host/port/from/to if you want
+  email alerts.
 - **`[web]`**
-  - `secret_key`         = leave blank for now; the Settings page can
-                           generate one later. Or run
-                           `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
-                           and paste.
-  - `host`               = `127.0.0.1` (Apache fronts it — don't change).
-  - `secure_cookies`     = `true`
-  - `trust_proxy_headers` = `true`
-- **`[radius]`** (optional) — `enabled = true`, server IP, shared secret,
-  `nas_identifier`. Register this host on the RADIUS server with the
-  matching secret.
-- **`[scanner]`** — comma-separated CIDRs for `subnets`.
-- **`[arp.<location>]`** — one block per campus location with router IPs.
+  - `secret_key` — leave blank for now; the Settings page can
+    generate one later. Or run
+    `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
+    and paste.
+  - `host = 127.0.0.1` (the reverse proxy fronts it — don't change).
+  - `secure_cookies = true`
+  - `trust_proxy_headers = true`
+- **`[radius]`** (optional) — `enabled = true`, server IP, shared
+  secret, `nas_identifier`. Register this host on the RADIUS server
+  with the matching secret.
+- **`[scanner]`** — comma-separated CIDRs for subnets.
+- **`[arp.<location>]`** — one block per campus location with router
+  IPs.
 
-Save and exit. **Don't worry about encrypting the password fields
-yourself** — the agent will auto-encrypt every cleartext value on first
+Save and exit. Don't worry about encrypting the password fields
+yourself — the agent will auto-encrypt every cleartext value on first
 start.
 
 ---
 
-## 9 — Generate the TLS certificate
+## 9 — TLS certificate **[CFGMGMT — skip if your sysadmin handles TLS]**
+
+If your team provisions TLS certs centrally, skip this step and make
+sure your cert is in place where the reverse-proxy expects it
+(default: `/etc/pki/tls/certs/aruba-switch-manager.crt` +
+`/etc/pki/tls/private/aruba-switch-manager.key`).
+
+Otherwise, generate a self-signed cert for testing or internal-only
+deployments:
 
 ```bash
-cd /tmp/Aruba-Network-Agent
+cd /opt/aruba-agent-src/Aruba-Network-Agent
 sudo ./scripts/generate-self-signed-cert.sh
 ```
 
-The script auto-detects this host's hostname and primary IP and writes
-both into the cert's SANs, so the obvious access paths are covered
-without further config. To pin a specific hostname:
+To pin a specific hostname:
 
 ```bash
 sudo ./scripts/generate-self-signed-cert.sh switches.example.local
 ```
 
-Output lands at `/etc/pki/tls/certs/aruba-switch-manager.crt` and
-`/etc/pki/tls/private/aruba-switch-manager.key`.
-
 ---
 
-## 10 — Install Apache + reverse proxy
+## 10 — Reverse proxy: nginx **[CFGMGMT — your sysadmin may handle this]**
+
+The agent ships drop-in vhosts for both nginx (recommended) and
+Apache. If your team handles the reverse-proxy layer separately,
+point your existing config at `127.0.0.1:8080` and add the security
+headers from the shipped vhost; otherwise:
 
 ```bash
-sudo ./scripts/install-apache.sh
+# Install nginx if not already present
+sudo dnf install -y nginx
+sudo systemctl enable --now nginx
+
+# Drop in the vhost
+sudo install -m 644 nginx/aruba-switch-manager.conf \
+    /etc/nginx/conf.d/aruba-switch-manager.conf
+
+# SELinux: allow nginx to reach the Flask backend on 127.0.0.1:8080
+sudo setsebool -P httpd_can_network_connect 1
+
+# Firewall: open 443, close 8080 if it ever got opened
+sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --permanent --remove-port=8080/tcp 2>/dev/null || true
+sudo firewall-cmd --reload
+
+# Validate and reload
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-The script handles every AlmaLinux 10 quirk in one shot:
+For Apache instead, see [Appendix A — Apache](#appendix-a--apache).
 
-1. Installs `httpd` + `mod_ssl` (idempotent — safe to re-run).
-2. Patches the stock `ssl.conf` to point at the agent cert (AlmaLinux 10
-   stopped shipping the `localhost.crt` placeholder).
-3. Disables `welcome.conf` so the "AlmaLinux Test Page" doesn't shadow
-   your vhost.
-4. Drops `/etc/httpd/conf.d/aruba-switch-manager.conf` into place with
-   `ServerAlias *` so the vhost matches every hostname/IP you might hit
-   it on.
-5. Sets `setsebool -P httpd_can_network_connect 1` so SELinux lets
-   Apache talk to Flask on `127.0.0.1:8080`.
-6. Opens TCP/443 in firewalld and removes any leftover TCP/8080 rule.
-7. Runs `apachectl configtest` and refuses to start with a broken
-   config.
-
-If `configtest` fails, the script stops and prints the error — fix it
-before continuing.
+Both vhosts set HSTS, X-Frame-Options, X-Content-Type-Options,
+Referrer-Policy, Content-Security-Policy, Cache-Control: no-store,
+and Permissions-Policy headers. Hardening that's hard to get back
+later if you forget to bake it in now.
 
 ---
 
 ## 11 — Allow the Settings → Restart Now button (optional but recommended)
 
-The Settings page has a **Restart Agent** button that shells out to
-`systemctl restart aruba-agent` via sudo. The rule:
+The Settings page has a **Restart Agent** button that calls
+`systemctl restart aruba-agent` via `sudo`. Without this rule, the
+dashboard hides the button and prints the manual command instead —
+config still saves correctly, it just doesn't auto-apply.
 
 ```bash
 sudo tee /etc/sudoers.d/aruba-agent-restart > /dev/null <<'EOF'
@@ -396,10 +400,6 @@ EOF
 sudo chmod 440 /etc/sudoers.d/aruba-agent-restart
 sudo visudo -c -f /etc/sudoers.d/aruba-agent-restart
 ```
-
-Without this rule, the dashboard hides the Restart button and prints
-the manual `systemctl` command instead — config still saves correctly,
-it just doesn't auto-apply.
 
 ---
 
@@ -416,23 +416,21 @@ On the first boot you should see, in order:
 ```
 No master key at /etc/aruba-agent/master.key — generating a new one. ...
 Migrate: wrote one-time backup of /etc/aruba-agent/config.ini to /etc/aruba-agent/config.ini.bak
-Migrate: encrypted N field(s) in /etc/aruba-agent/config.ini: [credentials] password, [smtp] password, ...
-Switch poller: SNMPv3 reachability ENABLED      (or REST fallback if [snmp] is not configured)
+Migrate: encrypted N field(s) in /etc/aruba-agent/config.ini: [credentials] password, ...
+Switch poller: SNMPv3 reachability ENABLED      (or REST fallback)
 Web UI: local authentication enabled
 Web UI: ProxyFix enabled — trusting one upstream proxy hop
 Aruba agent running (PID …)
 ```
 
-Ctrl-C out of the journal tail.
+`Ctrl-C` out of the journal tail.
 
 ---
 
 ## 13 — Back up the master key
 
-This is the only step in the whole install that's truly irreversible.
-If you lose `master.key`, every encrypted password in `config.ini`
-becomes unrecoverable and you'll have to re-enter them through the
-Settings UI.
+**The only truly irreversible step in the install.** Losing
+`master.key` means every encrypted password becomes unrecoverable.
 
 ```bash
 sudo ls -la /etc/aruba-agent/master.key
@@ -441,22 +439,41 @@ sudo cp /etc/aruba-agent/master.key /root/master.key.backup-$(date +%F)
 
 Expected ownership: `-rw------- 1 aruba-agent aruba-agent`.
 
-Move the backup copy somewhere off this host — a password manager, an
-encrypted USB stick, your team's secrets vault, a sealed envelope in a
-safe. Whatever your org's standard is for "single small file that
-cannot leak and cannot be lost."
-
-Once you've confirmed the agent decrypts cleanly across a restart
-(next step), you can also delete `/etc/aruba-agent/config.ini.bak` so
-the cleartext copy isn't sitting on disk indefinitely:
+Move the backup copy somewhere off this host — password manager,
+encrypted USB, your team's secrets vault. Once you've confirmed the
+agent decrypts cleanly across a restart, delete the plaintext config
+backup:
 
 ```bash
 sudo rm /etc/aruba-agent/config.ini.bak
 ```
 
+See [DISASTER-RECOVERY.md](DISASTER-RECOVERY.md) for the recovery
+recipes if anything ever goes sideways.
+
 ---
 
-## 14 — Verify
+## 14 — Optional: configure verify-backups notifications
+
+The cron job installed in step 5 runs `--verify-backups` daily. To
+get emailed when corruption is detected, list recipients (one per
+line) in `/etc/aruba-agent/verify-backups.notify`:
+
+```bash
+sudo tee /etc/aruba-agent/verify-backups.notify > /dev/null <<EOF
+noc@example.com
+admin@example.com
+EOF
+sudo chown aruba-agent:aruba-agent /etc/aruba-agent/verify-backups.notify
+sudo chmod 640 /etc/aruba-agent/verify-backups.notify
+```
+
+The script uses `mail(1)` — install `s-nail` or `mailx` if you don't
+already have it.
+
+---
+
+## 15 — Verify
 
 From a workstation on the same network:
 
@@ -466,28 +483,30 @@ https://<server-ip>/
 
 Walk through:
 
-1. Browser warns about the self-signed cert — click through, or import
-   `/etc/pki/tls/certs/aruba-switch-manager.crt` into your workstation's
-   trust store to silence it.
-2. The login page appears.
-3. Sign in as `admin` / `admin`. The agent ships this default account
-   flagged "must change". You'll be redirected to a password-change
-   page and required to pick a real password before reaching the
-   dashboard. Local credentials are scrypt-hashed in
-   `/var/lib/aruba-agent/users.json` (mode 0600).
-4. The dashboard loads with Switch Reachability, Config Backup, Network
-   Scanner, and ARP Discovery cards. The search box above the Switch
-   Reachability table narrows by name / hostname / IP as you type.
-5. Open Settings (sprocket icon) → **Email Alerts** → click "Send test
-   email" to confirm SMTP works.
-6. Settings → **SNMPv3** → "Test profile" against a switch IP to confirm
-   SNMP credentials, if you've configured any.
+1. The login page appears. (Browser may warn about the cert
+   depending on your TLS setup.)
+2. Sign in as `admin` / `admin`. The agent ships this default
+   account flagged "must change". You'll be redirected to a
+   password-change page before reaching the dashboard. Credentials
+   are scrypt-hashed in `/var/lib/aruba-agent/users.json` (mode 0600).
+3. The dashboard loads. The search box above the Switch Reachability
+   table narrows by name / hostname / IP as you type.
+4. Open Settings (sprocket icon) → **Email Alerts** → "Send test
+   email" to confirm SMTP.
+5. Settings → **SNMPv3** → "Test profile" against a switch IP to
+   confirm SNMP credentials.
+6. (Optional) Settings → **Two-Factor Auth** → "Begin enrolment" to
+   add TOTP 2FA. Save the recovery codes off-host.
+7. (Optional) Settings → **API Tokens** → "Mint token" to script the
+   agent from CI / Grafana.
 
 Smoke tests on the host:
 
 ```bash
 sudo journalctl -u aruba-agent | grep -E "logged in|failed login|Migrate"
-sudo tail /var/log/httpd/aruba-switch-manager_ssl_access.log
+sudo tail -f /var/log/aruba-agent/audit.log    # leave this running
+                                                # in another shell
+sudo tail /var/log/nginx/aruba-switch-manager_ssl_access.log
 ```
 
 Restart once to confirm encrypted secrets round-trip cleanly:
@@ -498,23 +517,28 @@ sudo journalctl -u aruba-agent -n 50 --no-pager | grep -iE "error|migrate|enable
 ```
 
 You should see
-`Migrate: every sensitive field already encrypted — nothing to do` —
-that confirms the secrets layer is healthy and there's nothing left to
-encrypt.
+`Migrate: every sensitive field already encrypted — nothing to do`.
+
+Run the integrity check manually once so you know what success
+looks like:
+
+```bash
+sudo /etc/cron.daily/aruba-agent-verify-backups
+echo "exit status: $?"        # should be 0 if no .cfg.enc files exist yet
+```
 
 ---
 
 ## Prometheus scraping (optional)
 
 The agent exposes a Prometheus `/metrics` endpoint with switch
-reachability, backup/scanner/ARP run ages, and login counters. Two
-deployment modes:
+reachability, backup/scanner/ARP run ages, and login counters.
 
-**Open (trusted LAN)** — leave `[web] metrics_token` blank. Prometheus
-scrapes `https://<host>/metrics` directly. Apache's TLS still applies.
+Open (trusted LAN): leave `[web] metrics_token` blank — Prometheus
+scrapes `https://<host>/metrics` directly.
 
-**Authenticated** — set `[web] metrics_token` to a long random string
-(the agent encrypts it at rest like every other secret):
+Authenticated: set `[web] metrics_token` to a long random string
+(the agent encrypts it at rest):
 
 ```yaml
 # /etc/prometheus/prometheus.yml
@@ -531,51 +555,34 @@ scrape_configs:
       - targets: ["arubaagent.example.local"]
 ```
 
-Useful queries to drop into Grafana:
+Useful Grafana queries:
 
-- `aruba_switches_down` — gauge of unreachable switches right now.
-- `aruba_backup_last_run_age_seconds / 3600` — hours since the last
+- `aruba_switches_down` — gauge of unreachable switches.
+- `aruba_backup_last_run_age_seconds / 3600` — hours since last
   backup ran (alert if > 26).
 - `rate(aruba_login_failures_total[5m])` — login-failure rate.
   Sustained > 0.1/sec is a brute-force signal.
 - `aruba_arp_last_run_age_seconds{location="hq"} / 3600` — hours
-  since the per-location ARP discovery last ran.
+  since the per-location ARP run.
 
 ---
 
-## Troubleshooting
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `ssh -T git@github.com` says "Permission denied (publickey)" | Public key wasn't added to GitHub, or `~/.ssh/config` doesn't point at the right key | Re-check step 2c (paste the entire line from the `.pub` file). Then `ssh -vT git@github.com` and look for "Offering public key" — the path should match your config |
-| `git clone` says "Too many authentication failures" | SSH is offering every key it has; GitHub rejected after the limit | Ensure `IdentitiesOnly yes` is in `~/.ssh/config` for `Host github.com` |
-| `ModuleNotFoundError: No module named 'aruba_agent.notifier'` | rsync didn't run after a `git pull` | `cd /tmp/Aruba-Network-Agent && sudo rsync -a --delete aruba_agent/ /opt/aruba-agent/aruba_agent/ && sudo systemctl restart aruba-agent` |
-| `Could not initialise secret manager at /etc/aruba-agent/master.key` | `/etc/aruba-agent/` not writable by the agent | `sudo chown -R aruba-agent:aruba-agent /etc/aruba-agent` |
-| `Could not decrypt a stored secret` | `master.key` was replaced after config was encrypted | Restore the original key from your backup. If lost: delete `master.key` and re-enter every password through Settings |
-| Browser shows the "AlmaLinux Test Page" | Apache fell through to `welcome.conf` | `install-apache.sh` already handles this; if you ran an older script: `sudo mv /etc/httpd/conf.d/welcome.conf{,.disabled} && sudo systemctl reload httpd` |
-| `apachectl configtest` complains about `localhost.crt` | AlmaLinux 10 mod_ssl no longer ships the dummy cert | Rerun `sudo ./scripts/install-apache.sh` — current version patches this |
-| 502 Bad Gateway on the dashboard | Flask not running, OR SELinux blocking httpd → localhost:8080 | `sudo systemctl status aruba-agent` and `sudo setsebool -P httpd_can_network_connect 1` |
-| Sessions invalidated on every agent restart | `[web] secret_key` is blank | Generate one or open Settings → Web Server → "Regenerate secret_key" |
-| ARP discovery rows stay empty | `nmap` missing, or router credentials wrong | `which nmap` and verify `[arp.<location>]` |
-
----
-
-## Updating later
+## Updating
 
 ```bash
-cd /tmp/Aruba-Network-Agent
+cd /opt/aruba-agent-src/Aruba-Network-Agent
 sudo git pull
 sudo rsync -a --delete aruba_agent/ /opt/aruba-agent/aruba_agent/
 sudo rsync -a main.py requirements.txt /opt/aruba-agent/
-sudo pip3 install -r /opt/aruba-agent/requirements.txt
+sudo install -m 755 scripts/aruba-agent-wrapper.sh \
+    /opt/aruba-agent/bin/aruba-agent
+sudo /opt/aruba-agent/venv/bin/pip install \
+    --upgrade -r /opt/aruba-agent/requirements.txt
 sudo systemctl restart aruba-agent
 sudo journalctl -u aruba-agent -n 30 --no-pager
 ```
 
-The master key persists across updates — no re-migration prompts on
-subsequent restarts. Apache and the TLS cert only need touching if
-`apache/aruba-switch-manager.conf` or `scripts/install-apache.sh`
-themselves changed.
+Master key persists across updates — no re-migration prompts.
 
 ---
 
@@ -584,23 +591,72 @@ themselves changed.
 ```bash
 sudo systemctl disable --now aruba-agent
 sudo rm /etc/systemd/system/aruba-agent.service
-sudo rm /etc/httpd/conf.d/aruba-switch-manager.conf
-sudo systemctl restart httpd
+sudo systemctl daemon-reload
 
 # Wipe runtime state, config, and the encryption key.
 # Make sure you no longer need any of this first.
-sudo rm -rf /opt/aruba-agent /var/lib/aruba-agent /etc/aruba-agent
+sudo rm -rf /opt/aruba-agent /opt/aruba-agent-src \
+            /var/lib/aruba-agent /etc/aruba-agent /var/log/aruba-agent
+
+# Reverse-proxy vhost (whichever you used)
+sudo rm -f /etc/nginx/conf.d/aruba-switch-manager.conf
+sudo rm -f /etc/httpd/conf.d/aruba-switch-manager.conf
+
+# Cron + logrotate + sudoers
+sudo rm -f /etc/cron.daily/aruba-agent-verify-backups \
+           /etc/logrotate.d/aruba-agent \
+           /etc/sudoers.d/aruba-agent-restart
 
 sudo userdel aruba-agent
 
-# TLS material
-sudo rm -f /etc/pki/tls/certs/aruba-switch-manager.crt \
-           /etc/pki/tls/private/aruba-switch-manager.key
-
-# Sudoers carve-out
-sudo rm -f /etc/sudoers.d/aruba-agent-restart
-
-# Optional: remove the SSH key from this host (the public side stays
-# on GitHub until you delete it there too)
+# Optional: remove the deploy SSH key from this host. The public side
+# stays on GitHub until you remove it under repo → Settings → Deploy keys.
 rm -f ~/.ssh/aruba_agent_github ~/.ssh/aruba_agent_github.pub
 ```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `ssh -T git@github.com` says "Permission denied (publickey)" | Public key wasn't added as a deploy key, or `~/.ssh/config` doesn't point at the right key | Re-check step 3c. `ssh -vT git@github.com` and look for "Offering public key" — the path should match your config |
+| `git clone` says "Too many authentication failures" | SSH is offering every key it has; GitHub rejected after the limit | Ensure `IdentitiesOnly yes` is in `~/.ssh/config` for `Host github.com` |
+| `ModuleNotFoundError: No module named 'aruba_agent.notifier'` | rsync didn't run after a git pull | Re-run the `rsync` lines from step 5 + restart |
+| `Could not initialise secret manager at /etc/aruba-agent/master.key` | `/etc/aruba-agent/` not writable by the agent | `sudo chown -R aruba-agent:aruba-agent /etc/aruba-agent` |
+| `Could not decrypt a stored secret` | `master.key` was replaced after config was encrypted | See [DISASTER-RECOVERY.md §1](DISASTER-RECOVERY.md) |
+| 502 Bad Gateway | Flask not running OR SELinux blocking the reverse proxy → localhost:8080 | `sudo systemctl status aruba-agent`; `sudo setsebool -P httpd_can_network_connect 1` |
+| Sessions invalidated on every agent restart | `[web] secret_key` is blank | Generate one or open Settings → Web Server → "Regenerate secret_key" |
+| ARP discovery rows stay empty | `nmap` missing, or router credentials wrong | `which nmap`; verify `[arp.<location>]` |
+| Login locked out with "Too many failed attempts" | Rate limiter active (5 fails / 15 min) | Wait 15 min, or restart the agent to clear the in-memory counters |
+| Browser sees "your connection is not private" | Self-signed cert | Add the cert to your trust store, or use a real CA-signed cert |
+
+---
+
+## Appendix A — Apache
+
+If your team standardises on Apache instead of nginx, the agent
+ships a parallel vhost at `apache/aruba-switch-manager.conf` and an
+installer script:
+
+```bash
+cd /opt/aruba-agent-src/Aruba-Network-Agent
+sudo dnf install -y httpd mod_ssl
+sudo ./scripts/install-apache.sh
+```
+
+The script:
+
+1. Installs `httpd` + `mod_ssl` (idempotent).
+2. Patches `ssl.conf` to point at the agent cert (AlmaLinux 10 no
+   longer ships a `localhost.crt` placeholder).
+3. Disables `welcome.conf` so the AlmaLinux test page doesn't shadow
+   the vhost.
+4. Drops `/etc/httpd/conf.d/aruba-switch-manager.conf` with
+   `ServerAlias *`.
+5. Sets `httpd_can_network_connect` for SELinux.
+6. Opens 443 in firewalld; removes any leftover 8080 rule.
+7. Validates the config and restarts httpd.
+
+Both vhosts ship the same security headers; pick whichever matches
+your shop's standards.
