@@ -210,6 +210,20 @@ username      =
 password      =
 enable_secret =
 napalm_driver = ios
+# v3.0.3: SSH public-key auth. When key_file is set, NAPALM uses the
+# private key for SSH auth instead of the password — the password
+# field above becomes the key's passphrase (empty for unencrypted).
+# Install the matching PUBLIC key on each switch under the username
+# above:
+#     conf t
+#     ip ssh pubkey-chain
+#       username monitoring
+#         key-string
+#           ssh-ed25519 AAAA…
+#         exit
+#       exit
+# Key file must be mode 600, owned by the aruba-agent service account.
+key_file      =
 
 
 # ------------------------------------------------------------

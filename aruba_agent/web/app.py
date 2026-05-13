@@ -52,6 +52,7 @@ from flask_wtf.csrf import CSRFProtect, CSRFError, generate_csrf
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from aruba_agent             import metrics as _metrics_mod
+from aruba_agent             import passkeys as _passkeys
 from aruba_agent             import secrets_store
 from aruba_agent.api_tokens   import ApiTokenStore, KNOWN_SCOPES
 from aruba_agent.audit         import audit
@@ -1317,6 +1318,239 @@ def create_app(
         flash("2FA disabled.", "success")
         return redirect(url_for("settings_2fa"))
 
+    # ── WebAuthn / passkey enrolment + login (F2b) ──────────────────────────
+    #
+    # Two distinct flows in this section:
+    #   * /settings/passkeys/*  — operator enrols / removes passkeys for
+    #                              their already-logged-in account
+    #   * /login/passkey/*      — passwordless login using an
+    #                              already-enrolled passkey
+    #
+    # Both flows use the same begin/complete pattern: server emits a
+    # challenge, client browser calls navigator.credentials.create or
+    # .get, server verifies the response. The challenge lives in the
+    # Flask session for the brief window between the two halves.
+    #
+    # Origin / rp_id are computed per-request from request.host so a
+    # site that moves between hostnames doesn't have to edit config.
+
+    import base64 as _b64
+
+    def _rp_id_and_origin() -> Tuple[str, str]:
+        """
+        WebAuthn ties credentials to (rp_id, origin). Derive both from
+        the live request — works behind nginx/Apache because ProxyFix
+        rewrites request.host / request.url_root to the operator-facing
+        hostname.
+
+        rp_id is hostname only (no port, no scheme); origin includes
+        scheme + host + port. Both must be exactly what the browser
+        sees, or verification refuses.
+        """
+        host = request.host.split(":", 1)[0]
+        scheme = request.scheme or "https"
+        origin = f"{scheme}://{request.host}"
+        return host, origin
+
+    @app.get("/settings/passkeys")
+    @require_login
+    def settings_passkeys():
+        ctx = _settings_context()
+        username = session.get("user", "")
+        ctx.update({
+            "auth_method":  session.get("auth_method"),
+            "passkeys":     local_store.list_passkeys(username),
+            "errors":       get_flashed_messages(category_filter=["error"]),
+            "messages":     get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_passkeys.html", **ctx)
+
+    @app.post("/settings/passkeys/register/begin")
+    @require_login
+    def settings_passkeys_register_begin():
+        """Return the options the browser passes to
+        navigator.credentials.create(). The challenge is stashed in
+        the session under a short-lived key."""
+        if session.get("auth_method") != "local":
+            return jsonify({"error": "Passkeys are only available for local accounts."}), 400
+        username = session.get("user", "")
+        existing = local_store.list_credential_ids(username)
+        try:
+            rp_id, _ = _rp_id_and_origin()
+            opts, challenge = _passkeys.registration_options(
+                username=username,
+                existing_credential_ids=existing,
+                rp_id=rp_id,
+            )
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 500
+        session["_pk_reg_challenge"] = _b64.b64encode(challenge).decode("ascii")
+        return jsonify(opts)
+
+    @app.post("/settings/passkeys/register/complete")
+    @require_login
+    def settings_passkeys_register_complete():
+        username = session.get("user", "")
+        challenge_b64 = session.pop("_pk_reg_challenge", None)
+        if not challenge_b64:
+            return jsonify({"error": "No pending registration challenge. "
+                            "Start over."}), 400
+        try:
+            challenge = _b64.b64decode(challenge_b64)
+        except Exception:
+            return jsonify({"error": "Corrupt registration state."}), 400
+
+        payload = request.get_json(silent=True) or {}
+        nickname = (payload.get("name") or "").strip()[:60]
+        attestation = payload.get("attestation") or {}
+
+        rp_id, origin = _rp_id_and_origin()
+        try:
+            passkey = _passkeys.verify_registration(
+                response_json=attestation,
+                expected_challenge=challenge,
+                rp_id=rp_id,
+                origin=origin,
+            )
+        except (ValueError, RuntimeError) as exc:
+            audit.record("passkey.enroll_failed",
+                         user=username, ip=request.remote_addr,
+                         reason=str(exc))
+            return jsonify({"error": str(exc)}), 400
+
+        passkey["name"] = nickname or "Unnamed passkey"
+        if not local_store.add_passkey(username, passkey):
+            return jsonify({"error": "Could not persist passkey."}), 500
+        audit.record("passkey.enrolled",
+                     user=username, ip=request.remote_addr,
+                     name=passkey["name"])
+        return jsonify({"status": "ok",
+                        "credential_id": passkey["credential_id"]})
+
+    @app.post("/settings/passkeys/<credential_id>/remove")
+    @require_login
+    def settings_passkeys_remove(credential_id: str):
+        # credential IDs are base64url; sanity-check the shape so we
+        # don't path-traversal anything.
+        if not re.match(r"^[A-Za-z0-9_-]+$", credential_id) or len(credential_id) > 512:
+            abort(400)
+        username = session.get("user", "")
+        if not local_store.remove_passkey(username, credential_id):
+            flash("Passkey not found.", "error")
+        else:
+            audit.record("passkey.removed",
+                         user=username, ip=request.remote_addr,
+                         credential_id=credential_id[:16])
+            flash("Passkey removed.", "success")
+        return redirect(url_for("settings_passkeys"))
+
+    # ── Passwordless login via passkey ──────────────────────────────────────
+
+    @app.post("/login/passkey/begin")
+    @csrf.exempt
+    def login_passkey_begin():
+        """Build assertion options. Accepts an optional ``username``
+        to scope the allow_credentials list; if omitted, the browser
+        shows every discoverable passkey it can find."""
+        payload  = request.get_json(silent=True) or {}
+        username = (payload.get("username") or "").strip()
+
+        allow_ids: List[str] = []
+        if username:
+            allow_ids = local_store.list_credential_ids(username)
+            if not allow_ids:
+                # Don't leak whether the user exists — empty allow list
+                # falls through to passwordless and the user just sees
+                # the normal "no passkey matched" path.
+                pass
+
+        try:
+            rp_id, _ = _rp_id_and_origin()
+            opts, challenge = _passkeys.authentication_options(
+                allow_credential_ids=allow_ids or None,
+                rp_id=rp_id,
+            )
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 500
+        session["_pk_auth_challenge"] = _b64.b64encode(challenge).decode("ascii")
+        session["_pk_auth_username"]  = username or ""
+        return jsonify(opts)
+
+    @app.post("/login/passkey/complete")
+    @csrf.exempt
+    def login_passkey_complete():
+        client_ip = request.remote_addr or "unknown"
+        challenge_b64 = session.pop("_pk_auth_challenge", None)
+        username_hint = session.pop("_pk_auth_username", "") or ""
+        if not challenge_b64:
+            return jsonify({"error": "No pending authentication challenge."}), 400
+        try:
+            challenge = _b64.b64decode(challenge_b64)
+        except Exception:
+            return jsonify({"error": "Corrupt authentication state."}), 400
+
+        payload = request.get_json(silent=True) or {}
+        assertion = payload.get("assertion") or {}
+        # Browser-returned id is the base64url credential id.
+        credential_id = assertion.get("id") or ""
+        if not credential_id:
+            return jsonify({"error": "Malformed assertion."}), 400
+
+        # Resolve username from the credential. If the operator typed
+        # a username, the credential MUST belong to them; otherwise we
+        # accept whoever owns the credential (passwordless flow).
+        owner = local_store.find_user_by_credential_id(credential_id)
+        if owner is None:
+            audit.record("passkey.auth_failed",
+                         user=None, ip=client_ip,
+                         reason="unknown_credential")
+            return jsonify({"error": "Unknown passkey."}), 401
+        if username_hint and username_hint != owner:
+            audit.record("passkey.auth_failed",
+                         user=None, ip=client_ip,
+                         reason="username_mismatch",
+                         claimed=username_hint, owner=owner)
+            return jsonify({"error": "Passkey does not match the username."}), 401
+
+        stored = local_store.get_passkey(owner, credential_id)
+        if not stored:
+            return jsonify({"error": "Passkey lookup failed."}), 500
+
+        rp_id, origin = _rp_id_and_origin()
+        try:
+            new_count = _passkeys.verify_authentication(
+                response_json     = assertion,
+                expected_challenge= challenge,
+                stored_passkey    = stored,
+                rp_id             = rp_id,
+                origin            = origin,
+            )
+        except (ValueError, RuntimeError) as exc:
+            audit.record("passkey.auth_failed",
+                         user=owner, ip=client_ip, reason=str(exc))
+            _metrics_mod.inc("login_failures_total")
+            return jsonify({"error": str(exc)}), 401
+
+        local_store.update_passkey_after_use(owner, credential_id, new_count)
+
+        # Establish the full session. Passkey auth bypasses TOTP — a
+        # passkey IS a strong second factor on its own.
+        must_change = local_store.must_change_password(owner)
+        session.clear()
+        session["user"]        = owner
+        session["auth_method"] = "local"
+        session["must_change"] = must_change
+        session.permanent      = True
+        _metrics_mod.inc("login_success_total")
+        audit.record("login.success",
+                     user=owner, method="local+passkey",
+                     ip=client_ip,
+                     must_change=str(must_change).lower())
+        return jsonify({
+            "status":   "ok",
+            "redirect": url_for("change_password") if must_change else url_for("dashboard"),
+        })
+
     # ── Email alerts editor (SMTP + test send) ─────────────────────────────
 
     @app.get("/settings/email")
@@ -1894,6 +2128,10 @@ def create_app(
             "enable_secret_set":   bool(c.get("enable_secret", "").strip()),
             "napalm_driver":       c.get("napalm_driver", "ios"),
             "napalm_drivers":      _NAPALM_CISCO_DRIVERS,
+            # v3.0.3: SSH key path — not a secret, render it verbatim
+            # so the operator can see exactly which file the driver is
+            # going to read.
+            "key_file":            c.get("key_file", ""),
             "errors":              get_flashed_messages(category_filter=["error"]),
             "messages":            get_flashed_messages(category_filter=["success"]),
         })
@@ -1910,11 +2148,30 @@ def create_app(
         new_pw      = f.get("password") or ""
         new_enable  = f.get("enable_secret") or ""
         nap_driver  = (f.get("napalm_driver") or "ios").strip()
+        key_file    = (f.get("key_file") or "").strip()
 
         if nap_driver not in _NAPALM_CISCO_DRIVERS:
             flash(f"Unknown NAPALM driver {nap_driver!r}. Pick one of "
                   f"{', '.join(_NAPALM_CISCO_DRIVERS)}.", "error")
             return redirect(url_for("settings_cisco_credentials"))
+
+        # v3.0.3: validate the key file before saving. Failing here
+        # surfaces the misconfiguration BEFORE the next backup run
+        # spams the FAILED panel with auth errors.
+        if key_file:
+            if not os.path.isfile(key_file):
+                flash(f"SSH key file not found: {key_file}", "error")
+                return redirect(url_for("settings_cisco_credentials"))
+            try:
+                mode = os.stat(key_file).st_mode & 0o777
+                if mode & 0o077:
+                    flash(f"SSH key file {key_file} is mode {oct(mode)} — "
+                          f"OpenSSH refuses keys readable by group/other. "
+                          f"Run: sudo chmod 600 {key_file}", "error")
+                    return redirect(url_for("settings_cisco_credentials"))
+            except OSError as exc:
+                flash(f"Could not stat SSH key file: {exc}", "error")
+                return redirect(url_for("settings_cisco_credentials"))
 
         live = editor.read()
         existing_pw = (live["credentials.cisco"]["password"]
@@ -1934,10 +2191,13 @@ def create_app(
             "password":      _enc(new_pw)     if new_pw     else existing_pw,
             "enable_secret": _enc(new_enable) if new_enable else existing_enable,
             "napalm_driver": nap_driver,
+            # key_file is a path, not a secret — store verbatim.
+            "key_file":      key_file,
         })
-        log.info("Web UI: Cisco credentials updated by user=%s",
-                 session.get("user"))
-        _audit_save("credentials_cisco", username=username, napalm_driver=nap_driver)
+        log.info("Web UI: Cisco credentials updated by user=%s (key_file=%s)",
+                 session.get("user"), bool(key_file))
+        _audit_save("credentials_cisco", username=username,
+                    napalm_driver=nap_driver, key_file_set=bool(key_file))
         flash("Cisco credentials saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_cisco_credentials"))
 

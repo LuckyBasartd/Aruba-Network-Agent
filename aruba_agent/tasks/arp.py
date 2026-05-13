@@ -76,6 +76,8 @@ class ArpDiscoveryTask:
         self.cisco_password = _decrypt(cc.get("password", ""))
         self.cisco_enable   = _decrypt(cc.get("enable_secret", ""))
         self.cisco_napalm   = (cc.get("napalm_driver", "ios") or "ios").strip()
+        # v3.0.3: optional SSH key for Cisco (NAPALM netmiko).
+        self.cisco_key_file = (cc.get("key_file", "") or "").strip()
 
         ac = arista_creds or {}
         self.arista_username = (ac.get("username", "") or "").strip()
@@ -131,6 +133,7 @@ class ArpDiscoveryTask:
             cisco_password          = self.cisco_password,
             cisco_enable            = self.cisco_enable,
             cisco_napalm_driver     = self.cisco_napalm,
+            cisco_key_file          = self.cisco_key_file,
             arista_username         = self.arista_username,
             arista_password         = self.arista_password,
             arista_enable_password  = self.arista_enable,

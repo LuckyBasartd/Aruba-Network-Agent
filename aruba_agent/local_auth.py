@@ -356,6 +356,114 @@ class LocalAuthStore:
                 return 0
             return len(user.get("totp_recovery", []))
 
+    # ─── WebAuthn passkeys (F2b) ─────────────────────────────────────────────
+    #
+    # Per-user passkey list. Each entry is:
+    #   {
+    #     "credential_id":  "<base64url>",
+    #     "public_key":     "<base64url COSE key>",
+    #     "sign_count":     int,         # cloning detection
+    #     "name":           "iPhone",    # operator label
+    #     "created":        "ISO ts",
+    #     "last_used":      "ISO ts"     # null until first use
+    #   }
+    #
+    # We delegate all WebAuthn cryptography to aruba_agent.passkeys —
+    # this module just owns persistence.
+
+    def add_passkey(self, username: str, passkey: dict) -> bool:
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return False
+            user.setdefault("passkeys", []).append(passkey)
+            self._save()
+            log.info("Local auth: passkey enrolled for user=%s (name=%s)",
+                     username, passkey.get("name"))
+            return True
+
+    def list_passkeys(self, username: str) -> List[dict]:
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return []
+            return [
+                {
+                    "credential_id": p.get("credential_id", ""),
+                    "name":          p.get("name", ""),
+                    "created":       p.get("created"),
+                    "last_used":     p.get("last_used"),
+                    "sign_count":    p.get("sign_count", 0),
+                }
+                for p in user.get("passkeys", [])
+            ]
+
+    def get_passkey(self, username: str, credential_id: str) -> Optional[dict]:
+        """Return the full passkey dict (incl. public_key + sign_count)
+        for verification, or None."""
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return None
+            for p in user.get("passkeys", []):
+                if p.get("credential_id") == credential_id:
+                    return dict(p)
+        return None
+
+    def update_passkey_after_use(
+        self, username: str, credential_id: str, new_sign_count: int,
+    ) -> bool:
+        """Persist a successful authentication. Mandatory per the
+        WebAuthn spec — the sign_count detects cloned authenticators."""
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return False
+            for p in user.get("passkeys", []):
+                if p.get("credential_id") == credential_id:
+                    p["sign_count"] = new_sign_count
+                    p["last_used"]  = datetime.now().isoformat(timespec="seconds")
+                    self._save()
+                    return True
+        return False
+
+    def remove_passkey(self, username: str, credential_id: str) -> bool:
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return False
+            keys = user.get("passkeys", [])
+            new = [p for p in keys if p.get("credential_id") != credential_id]
+            if len(new) == len(keys):
+                return False
+            user["passkeys"] = new
+            self._save()
+            log.info("Local auth: passkey removed for user=%s (%s)",
+                     username, credential_id[:12])
+            return True
+
+    def list_credential_ids(self, username: str) -> List[str]:
+        """Lightweight lookup for the WebAuthn assertion options
+        ('which credentials does this user have'). Pre-login path
+        so it tolerates an unknown username silently."""
+        with self._lock:
+            user = self._users.get(username)
+            if not user:
+                return []
+            return [p.get("credential_id", "")
+                    for p in user.get("passkeys", [])
+                    if p.get("credential_id")]
+
+    def find_user_by_credential_id(self, credential_id: str) -> Optional[str]:
+        """Reverse lookup for username-less passkey login. Returns the
+        username that owns this credential, or None."""
+        with self._lock:
+            for username, user in self._users.items():
+                for p in user.get("passkeys", []):
+                    if p.get("credential_id") == credential_id:
+                        return username
+        return None
+
     # ─── user management ─────────────────────────────────────────────────────
 
     def list_users(self) -> List[dict]:

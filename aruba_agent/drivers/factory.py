@@ -54,6 +54,11 @@ def driver_for(
     cisco_password: str = "",
     cisco_enable:   str = "",
     cisco_napalm_driver: str = "ios",
+    # v3.0.3: SSH public-key auth for Cisco (NAPALM via netmiko). When
+    # set, NAPALM uses the key instead of cisco_password — leave
+    # cisco_password empty for unencrypted keys, or set it to the
+    # key's passphrase. Falls back to password auth when blank.
+    cisco_key_file: str = "",
     # Arista-specific overrides; ignored when the resolved vendor
     # isn't arista_eos. If empty, fall back to username / password.
     arista_username:        str = "",
@@ -94,6 +99,7 @@ def driver_for(
             password      = cisco_password or password,
             enable_secret = cisco_enable,
             napalm_driver = cisco_napalm_driver,
+            key_file      = cisco_key_file,
         )
 
     if vendor_hint == VENDOR_ARISTA:

@@ -61,6 +61,7 @@ class CiscoIOSDriver:
         enable_secret: str = "",
         napalm_driver: str = "ios",
         timeout: int = 30,
+        key_file: str = "",
     ) -> None:
         self.host          = host
         self._username     = username
@@ -68,6 +69,13 @@ class CiscoIOSDriver:
         self._enable       = enable_secret
         self._driver_name  = napalm_driver
         self._timeout      = timeout
+        # v3.0.3: SSH public-key auth. When key_file is set, NAPALM
+        # uses it instead of the password — the password becomes
+        # the key's passphrase (empty for unencrypted keys). The
+        # operator installs the matching public key on the switch.
+        # Falls back to password auth when key_file is empty so
+        # existing deployments keep working unchanged.
+        self._key_file     = (key_file or "").strip()
         self._device       = None     # napalm device instance, set after login
         self.error: str    = ""
 
@@ -101,6 +109,13 @@ class CiscoIOSDriver:
         optional: dict = {}
         if self._enable:
             optional["secret"] = self._enable
+        # SSH key auth: NAPALM looks for use_keys + key_file in
+        # optional_args. NAPALM still wants a (possibly empty)
+        # password — it doubles as the key's passphrase, but for an
+        # unencrypted key the empty string is correct.
+        if self._key_file:
+            optional["use_keys"] = True
+            optional["key_file"] = self._key_file
 
         try:
             device = DriverCls(

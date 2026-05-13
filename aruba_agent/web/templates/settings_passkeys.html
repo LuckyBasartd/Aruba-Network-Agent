@@ -1,0 +1,170 @@
+{% extends "_settings_chrome.html" %}
+
+{% block title %}Passkeys{% endblock %}
+{% block icon %}bi-key-fill{% endblock %}
+{% block heading %}Passkeys (WebAuthn){% endblock %}
+
+{% block content %}
+
+{% if auth_method != "local" %}
+<div class="alert alert-info">
+  <i class="bi bi-info-circle me-2"></i>
+  You're signed in via <code>{{ auth_method }}</code>. Passkey enrolment
+  applies only to local accounts.
+</div>
+{% endif %}
+
+<div class="card mb-4">
+  <div class="card-body">
+    <h5>Enrolled passkeys</h5>
+    <p class="small text-muted">
+      Passkeys let you log in by tapping your authenticator
+      (Touch ID, Windows Hello, YubiKey, phone passkey, etc.) instead
+      of typing a password. Each passkey is bound to this site — it
+      cannot be phished or replayed.
+    </p>
+
+    {% if passkeys %}
+    <table class="table table-sm">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Created</th>
+          <th>Last used</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in passkeys %}
+        <tr>
+          <td>{{ p.name or "Unnamed passkey" }}</td>
+          <td class="small text-muted">{{ p.created or "" }}</td>
+          <td class="small text-muted">{{ p.last_used or "—" }}</td>
+          <td class="text-end">
+            <form method="POST"
+                  action="{{ url_for('settings_passkeys_remove', credential_id=p.credential_id) }}"
+                  onsubmit="return confirm('Remove this passkey?');"
+                  class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-x-circle me-1"></i>Remove
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small text-muted fst-italic">No passkeys enrolled yet.</p>
+    {% endif %}
+
+    {% if auth_method == "local" %}
+    <hr class="my-3">
+    <h6>Add a passkey</h6>
+    <div class="input-group mb-2" style="max-width:30rem;">
+      <input type="text" class="form-control" id="passkey-name"
+             placeholder="A label for this passkey (e.g. iPhone, YubiKey)"
+             maxlength="60" autocomplete="off">
+      <button type="button" class="btn btn-primary" id="enroll-btn">
+        <i class="bi bi-plus-circle me-1"></i>Enrol passkey
+      </button>
+    </div>
+    <div id="enroll-status" class="small"></div>
+    {% endif %}
+  </div>
+</div>
+
+{% if auth_method == "local" %}
+<script>
+// WebAuthn helper — base64url ↔ ArrayBuffer.
+function b64uToBuf(b64u) {
+  const pad = "===".slice(0, (4 - b64u.length % 4) % 4);
+  const b64 = (b64u + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+function bufToB64u(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+document.getElementById("enroll-btn").addEventListener("click", async () => {
+  const status = document.getElementById("enroll-status");
+  const nameInput = document.getElementById("passkey-name");
+  status.textContent = "Requesting challenge…";
+  status.className = "small text-muted";
+
+  if (!window.PublicKeyCredential) {
+    status.textContent = "WebAuthn is not available in this browser.";
+    status.className = "small text-danger";
+    return;
+  }
+
+  try {
+    // 1. Ask the server for creation options.
+    const optsRes = await fetch("{{ url_for('settings_passkeys_register_begin') }}",
+                                { method: "POST" });
+    if (!optsRes.ok) throw new Error("Server refused: " + optsRes.status);
+    const opts = await optsRes.json();
+    if (opts.error) throw new Error(opts.error);
+
+    // 2. Decode the server's base64url fields into ArrayBuffers for
+    // navigator.credentials.create.
+    opts.challenge = b64uToBuf(opts.challenge);
+    opts.user.id   = b64uToBuf(opts.user.id);
+    if (opts.excludeCredentials)
+      opts.excludeCredentials = opts.excludeCredentials.map(
+        c => ({...c, id: b64uToBuf(c.id)}));
+
+    status.textContent = "Waiting for authenticator… (tap your device)";
+
+    // 3. Trigger the browser's WebAuthn UI.
+    const cred = await navigator.credentials.create({ publicKey: opts });
+
+    // 4. Re-encode the response for the server.
+    const attestation = {
+      id:    cred.id,
+      rawId: bufToB64u(cred.rawId),
+      type:  cred.type,
+      response: {
+        clientDataJSON:    bufToB64u(cred.response.clientDataJSON),
+        attestationObject: bufToB64u(cred.response.attestationObject),
+      },
+      clientExtensionResults: cred.getClientExtensionResults
+                                ? cred.getClientExtensionResults() : {},
+    };
+
+    // 5. Send to server to verify + persist.
+    status.textContent = "Verifying with server…";
+    const completeRes = await fetch(
+      "{{ url_for('settings_passkeys_register_complete') }}",
+      {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          name:        nameInput.value,
+          attestation: attestation,
+        }),
+      });
+    const result = await completeRes.json();
+    if (!completeRes.ok || result.error) {
+      throw new Error(result.error || ("HTTP " + completeRes.status));
+    }
+    status.textContent = "Passkey enrolled — reload this page to see it.";
+    status.className = "small text-success";
+    setTimeout(() => window.location.reload(), 1200);
+  } catch (e) {
+    console.error(e);
+    status.textContent = "Enrolment failed: " + (e.message || e);
+    status.className = "small text-danger";
+  }
+});
+</script>
+{% endif %}
+
+{% endblock %}

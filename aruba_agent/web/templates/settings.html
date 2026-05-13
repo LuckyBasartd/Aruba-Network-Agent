@@ -175,6 +175,25 @@ sudo chmod 640 {{ config_path or '/etc/aruba-agent/config.ini' }}</code></pre>
       </div>
     </div>
 
+    <!-- Passkeys (F2b) -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-key-fill me-2"></i>Passkeys
+          </h5>
+          <p class="card-text small text-muted">
+            Add WebAuthn passkeys to your local account. Tap your
+            authenticator (Touch ID, Windows Hello, YubiKey, phone)
+            instead of typing a password.
+          </p>
+          <a href="{{ url_for('settings_passkeys') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Manage
+          </a>
+        </div>
+      </div>
+    </div>
+
     <!-- Email Alerts -->
     <div class="col-md-6 col-lg-4">
       <div class="card section-card h-100">
