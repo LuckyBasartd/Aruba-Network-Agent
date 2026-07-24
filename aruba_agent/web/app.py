@@ -2832,7 +2832,8 @@ def create_app(
         if not os.path.isdir(host_dir):
             return jsonify([])
         files = sorted(
-            [f for f in os.listdir(host_dir) if f.endswith(".cfg")],
+            [f for f in os.listdir(host_dir)
+             if f.endswith(".cfg") or f.endswith(".cfg.enc")],
             reverse=True,
         )
         return jsonify(files)
@@ -2840,7 +2841,16 @@ def create_app(
     @app.get("/api/backups/<hostname>/<filename>")
     @require_login
     def api_backup_download(hostname: str, filename: str):
-        """Stream a backup .cfg file as a download."""
+        """Stream a backup config as a download.
+
+        Backups are encrypted at rest (``.cfg.enc``). We decrypt in-memory
+        with the agent master key so the operator downloads readable
+        running-config — the plaintext never lands on disk. Legacy
+        cleartext ``.cfg`` files pass through unchanged.
+        """
+        import io
+        from aruba_agent.tasks.backup import decrypt_backup
+
         if not all(c.isalnum() or c in "-_." for c in hostname):
             abort(400)
         if not all(c.isalnum() or c in "-_." for c in filename):
@@ -2852,7 +2862,21 @@ def create_app(
             abort(403)
         if not os.path.isfile(real_file):
             abort(404)
-        return send_file(real_file, as_attachment=True, download_name=filename)
+
+        try:
+            plaintext = decrypt_backup(real_file)
+        except Exception as exc:
+            log.error("Backup decrypt failed for %s: %s", real_file, exc)
+            abort(500)
+
+        # Hand the browser a .cfg name even for .cfg.enc sources.
+        download_name = filename[:-4] if filename.endswith(".enc") else filename
+        return send_file(
+            io.BytesIO(plaintext),
+            as_attachment=True,
+            download_name=download_name,
+            mimetype="text/plain",
+        )
 
     return app
 
