@@ -20,3 +20,6 @@ firmware/
 
 # macOS
 .DS_Store
+
+# Generated snapshot (repomix)
+repomix-output.xml
