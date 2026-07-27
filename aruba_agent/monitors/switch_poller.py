@@ -40,17 +40,24 @@ log = logging.getLogger(__name__)
 #   Arista EOS  "Arista Networks EOS version 4.30.1F running on ..."
 #   ArubaOS-CX  "ArubaOS-CX ... version 10.13.1000 ..."
 # We grab the first token after "version" and trim trailing punctuation.
-_VERSION_RE = re.compile(r"version\s+([^\s,;]+)", re.IGNORECASE)
+# Cisco / Arista / IOS style: "... Version 15.2(7)E, ..."
+_VERSION_KEYWORD_RE = re.compile(r"version\s+([^\s,;]+)", re.IGNORECASE)
+# Aruba AOS-CX style sysDescr has no "version" keyword; the build lives in a
+# trailing token like "FL.10.13.1150" / "PL.10.13.1150".
+_VERSION_TOKEN_RE = re.compile(r"\b([A-Z]{2}\.\d+(?:\.\d+)+)\b")
 
 
 def _parse_version_from_descr(descr: Optional[str]) -> str:
     """Best-effort version extraction from sysDescr. '' when nothing matches."""
     if not descr:
         return ""
-    m = _VERSION_RE.search(descr)
-    if not m:
-        return ""
-    return m.group(1).strip().rstrip(".,;")
+    m = _VERSION_KEYWORD_RE.search(descr)
+    if m:
+        return m.group(1).strip().rstrip(".,;")
+    m = _VERSION_TOKEN_RE.search(descr)
+    if m:
+        return m.group(1)
+    return ""
 
 
 class SwitchMonitor:
@@ -303,9 +310,12 @@ class SwitchMonitor:
         mode   = sw.monitor_mode or "auto"
         version = ""
 
-        # Aruba: prefer the API firmware string. snmp_ro / icmp hosts
-        # explicitly forbid vendor-driver sessions, so skip to sysDescr.
-        if vendor.startswith("aruba") and mode in ("snmp_rw", "auto"):
+        # Aruba: prefer the API firmware string. The REST session uses its
+        # own credentials (independent of SNMP RO/RW), so try it for any
+        # Aruba host that has a management plane. Only pure-ICMP hosts, which
+        # by definition expose no management API, are skipped. On login
+        # failure the driver returns "" and we fall through to sysDescr.
+        if vendor.startswith("aruba") and mode != "icmp":
             version = self._os_version_via_driver(vendor)
 
         # SNMP sysDescr fallback (and the primary path for Cisco/Arista).
