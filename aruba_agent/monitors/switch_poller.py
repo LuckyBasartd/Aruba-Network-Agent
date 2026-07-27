@@ -325,14 +325,39 @@ class SwitchMonitor:
                      self.name, self.host, version)
 
     def _os_version_via_driver(self, vendor_hint: str) -> str:
-        """Open a vendor driver session and read get_facts().os_version.
-        Returns '' on any failure — the caller falls back to sysDescr."""
+        """Open a vendor driver session and read the running firmware
+        version. Returns '' on any failure — the caller falls back to
+        SNMP sysDescr.
+
+        Aruba AOS-CX: the version lives at the REST ``/firmware``
+        endpoint (``current_version``), NOT ``/system`` — on 10.13 the
+        latter doesn't expose ``software_version`` at all. We reach it
+        through the session's get_firmware_status() helper. Other
+        vendors fall through to the generic get_facts().os_version.
+        """
         try:
             with driver_for(self.host, self._username, self._password,
                             verify_ssl=self._verify,
                             vendor_hint=vendor_hint or None) as drv:
                 if not getattr(drv, "logged_in", False):
                     return ""
+
+                # Aruba: prefer the firmware endpoint.
+                session = getattr(drv, "session", None)
+                if session is not None and hasattr(session, "get_firmware_status"):
+                    try:
+                        fw = session.get_firmware_status()
+                    except Exception as exc:
+                        log.debug("Firmware endpoint failed for %s: %s",
+                                  self.host, exc)
+                        fw = None
+                    if fw:
+                        ver = (fw.get("current_version")
+                               or fw.get("primary_version") or "")
+                        if ver:
+                            return ver
+
+                # Generic fallback (Cisco / Arista, or Aruba w/o firmware ep).
                 facts = drv.get_facts()
                 return (facts.os_version if facts else "") or ""
         except Exception as exc:
