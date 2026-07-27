@@ -66,6 +66,7 @@ class SwitchState:
     host:         str
     hostname:     str               = ""   # resolved from switch API, may differ from name/IP
     vendor:       str               = ""   # "aruba_cx" / "cisco_ios" / "arista_eos" / ...
+    os_version:   str               = ""   # firmware/software version (Aruba API, else SNMP sysDescr)
     snmp_profile: str               = ""   # name of SNMPv3 profile that works for this host
     # v3.0.3: per-host monitoring access level. One of
     #   "icmp"    — ping only (no SNMP, no driver, no backup)
@@ -159,6 +160,7 @@ class AgentState:
                     host         = host,
                     hostname     = entry.get("hostname",     "") or "",
                     vendor       = entry.get("vendor",       "") or "",
+                    os_version   = entry.get("os_version",   "") or "",
                     snmp_profile = entry.get("snmp_profile", "") or "",
                     monitor_mode = entry.get("monitor_mode", "auto") or "auto",
                     is_down      = bool(entry.get("is_down", False)),
@@ -216,6 +218,7 @@ class AgentState:
                     "host":         s.host,
                     "hostname":     s.hostname,
                     "vendor":       s.vendor,
+                    "os_version":   s.os_version,
                     "snmp_profile": s.snmp_profile,
                     "monitor_mode": s.monitor_mode,
                     "is_down":      s.is_down,
@@ -332,6 +335,42 @@ class AgentState:
             self._save()
             return True
 
+    def set_os_version(self, name: str, os_version: str) -> bool:
+        """
+        Record the firmware/OS version for a switch and persist it.
+
+        Called by the poller the first time it resolves a version
+        (Aruba via the AOS-CX API, other vendors via SNMP sysDescr).
+        Persists immediately — update_switch() only writes on UP/DOWN
+        flips, and we don't want to lose a resolved version on restart.
+        """
+        with self._lock:
+            sw = self.switches.get(name)
+            if sw is None:
+                return False
+            if (os_version or "") == sw.os_version:
+                return False
+            sw.os_version = os_version or ""
+            self._save()
+            return True
+
+    def remove_switch(self, name: str) -> bool:
+        """
+        Drop a switch from the registry entirely and persist.
+
+        Used by the dashboard "delete host" action for devices that
+        are no longer on the network. Note this only forgets the host;
+        if the same IP is later rediscovered by the scanner (or seeded
+        from ip_list.txt), a fresh SwitchState is registered again.
+        """
+        with self._lock:
+            if name not in self.switches:
+                return False
+            del self.switches[name]
+            self._save()
+        log.info("Switch removed from state: %s", name)
+        return True
+
     def get_hostname_for_host(self, host: str) -> str:
         """
         Return the SwitchState.hostname for a given IP / hostname,
@@ -418,6 +457,7 @@ class AgentState:
                         "host":         s.host,
                         "hostname":     s.hostname or s.name,
                         "vendor":       s.vendor or "",
+                        "os_version":   s.os_version or "",
                         "snmp_profile": s.snmp_profile or "",
                         "monitor_mode": s.monitor_mode or "auto",
                         "is_down":      s.is_down,

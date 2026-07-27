@@ -16,6 +16,7 @@ from __future__ import annotations
 import configparser
 import logging
 import random
+import re
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, List
@@ -29,7 +30,27 @@ from aruba_agent.state            import AgentState
 
 from typing import Optional
 
+
 log = logging.getLogger(__name__)
+
+# Pull a version token out of an SNMP sysDescr string. Works across the
+# vendors we monitor:
+#   Cisco IOS   "... Version 12.2(55)SE9, RELEASE SOFTWARE (fc1) ..."
+#   Cisco IOSXE "... Version 17.3.3, RELEASE SOFTWARE (fc7) ..."
+#   Arista EOS  "Arista Networks EOS version 4.30.1F running on ..."
+#   ArubaOS-CX  "ArubaOS-CX ... version 10.13.1000 ..."
+# We grab the first token after "version" and trim trailing punctuation.
+_VERSION_RE = re.compile(r"version\s+([^\s,;]+)", re.IGNORECASE)
+
+
+def _parse_version_from_descr(descr: Optional[str]) -> str:
+    """Best-effort version extraction from sysDescr. '' when nothing matches."""
+    if not descr:
+        return ""
+    m = _VERSION_RE.search(descr)
+    if not m:
+        return ""
+    return m.group(1).strip().rstrip(".,;")
 
 
 class SwitchMonitor:
@@ -222,6 +243,8 @@ class SwitchMonitor:
                 failures   = 0,
                 last_event = f"Reachable at {datetime.now().strftime('%H:%M:%S')}",
             )
+            # Resolve firmware/OS version once, lazily, on a healthy poll.
+            self._maybe_resolve_os_version(sw)
             if sw.is_down:
                 self.state.update_switch(self.name, is_down=False)
                 log.info("Switch RESTORED: %s (%s)", self.name, self.host)
@@ -260,6 +283,61 @@ class SwitchMonitor:
                         f"Interval : {self.poll_interval}s\n"
                     ),
                 )
+
+    def _maybe_resolve_os_version(self, sw) -> None:
+        """
+        Populate SwitchState.os_version the first time we can, then
+        never poll for it again (a switch's version only changes on a
+        firmware upgrade, which restarts the box and re-runs this).
+
+        Source per the operator's spec:
+          * Aruba  -> firmware via the AOS-CX REST API (driver get_facts),
+                      but only when the host's mode grants driver access.
+          * Cisco / Arista / everything else, or Aruba when the driver
+                      path is unavailable -> parse SNMP sysDescr.
+        """
+        if sw is None or sw.os_version:
+            return
+
+        vendor = sw.vendor or ""
+        mode   = sw.monitor_mode or "auto"
+        version = ""
+
+        # Aruba: prefer the API firmware string. snmp_ro / icmp hosts
+        # explicitly forbid vendor-driver sessions, so skip to sysDescr.
+        if vendor.startswith("aruba") and mode in ("snmp_rw", "auto"):
+            version = self._os_version_via_driver(vendor)
+
+        # SNMP sysDescr fallback (and the primary path for Cisco/Arista).
+        if not version and self._snmp is not None:
+            try:
+                descr = self._snmp.get_sys_descr(
+                    self.host, profile_name=sw.snmp_profile or None,
+                )
+            except Exception as exc:
+                log.debug("sysDescr fetch failed for %s: %s", self.host, exc)
+                descr = None
+            version = _parse_version_from_descr(descr)
+
+        if version:
+            self.state.set_os_version(self.name, version)
+            log.info("Resolved OS version for %s (%s): %s",
+                     self.name, self.host, version)
+
+    def _os_version_via_driver(self, vendor_hint: str) -> str:
+        """Open a vendor driver session and read get_facts().os_version.
+        Returns '' on any failure — the caller falls back to sysDescr."""
+        try:
+            with driver_for(self.host, self._username, self._password,
+                            verify_ssl=self._verify,
+                            vendor_hint=vendor_hint or None) as drv:
+                if not getattr(drv, "logged_in", False):
+                    return ""
+                facts = drv.get_facts()
+                return (facts.os_version if facts else "") or ""
+        except Exception as exc:
+            log.debug("Driver facts failed for %s: %s", self.host, exc)
+            return ""
 
     def _maybe_send_alert(self, kind: str, subject: str, body: str) -> None:
         """

@@ -2758,6 +2758,55 @@ def create_app(
             "profile": profile,
         })
 
+    @app.post("/api/switches/<switch_name>/delete")
+    @require_login
+    def api_delete_switch(switch_name: str):
+        """
+        Forget a host that's no longer on the network.
+
+        Removes it from the live dashboard/state and stops its monitor
+        thread immediately. If it was a manually-added host it's also
+        dropped from the manual-hosts registry, so main.py won't re-seed
+        it on the next restart. Scanner-discovered hosts that are truly
+        gone won't come back; if the same IP is later rediscovered by
+        the scanner it's re-added as a fresh host (per operator request).
+        """
+        sw = state.switches.get(switch_name)
+        if sw is None:
+            abort(404)
+        host_ip = sw.host
+
+        # Stop the live monitor first so an in-flight poll can't re-touch
+        # state immediately after we delete it.
+        if monitor_manager is not None:
+            try:
+                monitor_manager.remove(host_ip)
+            except AttributeError:
+                # Older managers may lack remove(); state delete still applies.
+                pass
+
+        # If this was a manually-added host, drop it from the registry too.
+        removed_manual = False
+        for h in manual_hosts.list_hosts():
+            if h.get("host") == host_ip or h.get("name") == switch_name:
+                if manual_hosts.remove(h["name"]):
+                    removed_manual = True
+                break
+
+        if not state.remove_switch(switch_name):
+            abort(404)
+
+        log.info("Web UI: host %s (%s) deleted by user=%s (manual=%s)",
+                 switch_name, host_ip, session.get("user"), removed_manual)
+        audit.record("switch.delete",
+                     user=session.get("user"), switch=switch_name,
+                     ip=request.remote_addr)
+        return jsonify({
+            "status":         "ok",
+            "switch":         switch_name,
+            "removed_manual": removed_manual,
+        })
+
     @app.post("/api/backup/trigger")
     @require_session_or_scope("backup.trigger")
     def api_backup_trigger():

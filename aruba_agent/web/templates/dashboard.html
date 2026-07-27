@@ -42,6 +42,13 @@
     .vendor-arista { background:#1f2937; color:#a78bfa; border-color:#5b21b6; }
     .vendor-unknown{ background:#0d1117; color:#8b949e; border-color:#30363d; }
 
+    /* OS/firmware version chip — muted monospace so it reads as data,
+       not a status. Sits in its own column next to the vendor chip. */
+    .os-chip { display:inline-block; padding:.05rem .45rem; border-radius:6px;
+               font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+               font-size:.72rem; color:#c9d1d9; background:#0d1117;
+               border:1px solid #30363d; white-space:nowrap; }
+
     /* v3.0.3: monitor-mode chip. icmp / snmp_ro / snmp_rw / auto.
        Render in muted colours next to the vendor chip so an operator
        can spot ping-only hosts at a glance without it shouting. */
@@ -180,14 +187,16 @@
                   <th>Status</th>
                   <th>Switch</th>
                   <th class="d-none d-md-table-cell">Vendor</th>
+                  <th class="d-none d-md-table-cell">OS Version</th>
                   <th class="d-none d-lg-table-cell">SNMP Profile</th>
                   <th>Host</th>
                   <th>Last Seen</th>
                   <th class="d-none d-xl-table-cell">Last Event</th>
+                  <th class="text-end">Actions</th>
                 </tr>
               </thead>
               <tbody id="switch-tbody">
-                <tr><td colspan="7" class="text-center text-muted py-3">Loading…</td></tr>
+                <tr><td colspan="9" class="text-center text-muted py-3">Loading…</td></tr>
               </tbody>
             </table>
           </div>
@@ -510,7 +519,7 @@
         msg = activeFilter === 'all' ? 'No switches configured.'
                                      : `No switches currently ${activeFilter.toUpperCase()}.`;
       }
-      $('switch-tbody').innerHTML = `<tr><td colspan="7" class="text-center text-muted py-3">${msg}</td></tr>`;
+      $('switch-tbody').innerHTML = `<tr><td colspan="9" class="text-center text-muted py-3">${msg}</td></tr>`;
       return;
     }
 
@@ -551,6 +560,20 @@
 
       const vendorCell = vendorChip + modeChip;
 
+      // OS / firmware version — resolved lazily by the poller (Aruba via
+      // the AOS-CX API, others via SNMP sysDescr). Shows a dash until known.
+      const osCell = sw.os_version
+        ? `<span class="os-chip" title="Firmware / OS version">${esc(sw.os_version)}</span>`
+        : `<span class="text-muted">—</span>`;
+
+      // Delete action. stopPropagation keeps the row's openBackups
+      // handler from firing when the operator just wants to remove a host.
+      const delCell = `<button class="btn btn-outline-danger btn-sm py-0 px-2 del-btn"
+            title="Delete host — stops monitoring and removes it from the dashboard"
+            onclick="event.stopPropagation(); deleteHost('${esc(sw.name)}','${esc(sw.hostname || sw.host)}')">
+            <i class="bi bi-trash"></i>
+          </button>`;
+
       // Profile chip — clickable to open the picker. The
       // event.stopPropagation() keeps the parent row's openBackups
       // click handler from firing when we just want to edit profile.
@@ -565,10 +588,12 @@
         <td><span class="status-dot ${dotCls}"></span>${badge}</td>
         <td class="fw-semibold">${esc(sw.hostname)}</td>
         <td class="d-none d-md-table-cell">${vendorCell}</td>
+        <td class="d-none d-md-table-cell">${osCell}</td>
         <td class="d-none d-lg-table-cell">${profileCell}</td>
         <td class="text-muted">${esc(sw.host)}</td>
         <td>${sw.last_seen ? fmtTime(sw.last_seen) : '<span class="text-muted">—</span>'}</td>
         <td class="d-none d-xl-table-cell last-event">${esc(sw.last_event)}</td>
+        <td class="text-end">${delCell}</td>
       </tr>`;
     }).join('');
   }
@@ -795,6 +820,33 @@
   async function triggerScan() {
     await fetch('/api/scanner/trigger', { method: 'POST' });
     showToast('Network scan started — check logs for progress.');
+  }
+
+  // ── delete a host that's no longer on the network ────────────────────────
+  async function deleteHost(name, label) {
+    const ok = confirm(
+      `Delete host "${label}"?\n\n` +
+      `This stops monitoring it and removes it from the dashboard. ` +
+      `If the scanner rediscovers the same IP later, it will be re-added.`
+    );
+    if (!ok) return;
+    try {
+      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/delete`,
+                            { method: 'POST' });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        // Drop it locally right away so the row disappears without waiting
+        // for the next poll, then force a refresh to reconcile.
+        allSwitches = allSwitches.filter(s => s.name !== name);
+        renderSwitches(allSwitches);
+        showToast(`Host "${label}" deleted.`);
+        fetchState();
+      } else {
+        showToast(`Delete failed: ${j.error || ('HTTP ' + r.status)}`);
+      }
+    } catch (e) {
+      showToast(`Delete error: ${e.message}`);
+    }
   }
 
   function showToast(msg) {
