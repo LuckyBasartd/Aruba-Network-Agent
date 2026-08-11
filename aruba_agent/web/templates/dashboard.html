@@ -49,6 +49,15 @@
                font-size:.72rem; color:#c9d1d9; background:#0d1117;
                border:1px solid #30363d; white-space:nowrap; }
 
+    /* Sortable column headers: click to sort, caret shows active column + dir. */
+    th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+    th.sortable:hover { color:#fff; }
+    .sort-caret { display:inline-block; width:.9em; margin-left:.15rem;
+                  font-size:.7rem; opacity:.35; }
+    th.sort-active .sort-caret { opacity:1; color:#58a6ff; }
+    th.sort-asc  .sort-caret::after { content:"\25B2"; }   /* ▲ */
+    th.sort-desc .sort-caret::after { content:"\25BC"; }   /* ▼ */
+
     /* v3.0.3: monitor-mode chip. icmp / snmp_ro / snmp_rw / auto.
        Render in muted colours next to the vendor chip so an operator
        can spot ping-only hosts at a glance without it shouting. */
@@ -183,15 +192,15 @@
           <div class="switch-scroll">
             <table class="table table-sm table-dark table-hover mb-0">
               <thead class="sticky-top" style="top:0; background:#21262d;">
-                <tr>
-                  <th>Status</th>
-                  <th>Switch</th>
-                  <th class="d-none d-md-table-cell">Vendor</th>
-                  <th class="d-none d-md-table-cell">OS Version</th>
-                  <th class="d-none d-lg-table-cell">SNMP Profile</th>
-                  <th>Host</th>
-                  <th>Last Seen</th>
-                  <th class="d-none d-xl-table-cell">Last Event</th>
+                <tr id="switch-head">
+                  <th class="sortable" data-sort="status">Status<span class="sort-caret"></span></th>
+                  <th class="sortable" data-sort="hostname">Switch<span class="sort-caret"></span></th>
+                  <th class="sortable d-none d-md-table-cell" data-sort="vendor">Vendor<span class="sort-caret"></span></th>
+                  <th class="sortable d-none d-md-table-cell" data-sort="os">OS Version<span class="sort-caret"></span></th>
+                  <th class="sortable d-none d-lg-table-cell" data-sort="profile">SNMP Profile<span class="sort-caret"></span></th>
+                  <th class="sortable" data-sort="host">Host<span class="sort-caret"></span></th>
+                  <th class="sortable" data-sort="last_seen">Last Seen<span class="sort-caret"></span></th>
+                  <th class="sortable d-none d-xl-table-cell" data-sort="last_event">Last Event<span class="sort-caret"></span></th>
                   <th class="text-end">Actions</th>
                 </tr>
               </thead>
@@ -370,6 +379,16 @@
   // Persisted in localStorage so a page reload doesn't drop the
   // operator's query mid-triage.
   let searchTerm   = (localStorage.getItem('switchSearch') || '').toLowerCase();
+
+  // Column sort. Restored from localStorage so a reload keeps the
+  // operator's chosen ordering. Default: hostname ascending (A-Z).
+  let sortState = (() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('switchSort') || 'null');
+      if (saved && saved.key) return { key: saved.key, dir: saved.dir === -1 ? -1 : 1 };
+    } catch (_) { /* ignore malformed */ }
+    return { key: 'hostname', dir: 1 };
+  })();
   let backupModal;
   let profileModal;
   let profilesCache  = null;       // {profiles: [...], default: '...'} from /api/snmp/profiles
@@ -387,6 +406,12 @@
       box.value = searchTerm;
       updateSearchUi();
     }
+
+    // Wire up click-to-sort on the switch-table headers.
+    document.querySelectorAll('#switch-head th.sortable').forEach(th => {
+      th.addEventListener('click', () => onSortClick(th.dataset.sort));
+    });
+    updateSortIndicators();
   });
 
   // ── helpers ──────────────────────────────────────────────────────────────
@@ -500,6 +525,69 @@
     $('stat-devices').textContent       = (data.scanner || {}).device_count ?? '—';
   }
 
+  // ── column sorting ─────────────────────────────────────────────────────────
+  // All client-side, over the same data /api/state already returned.
+  // Host sorts numerically by octet (so .2 < .20 < .100); Last Seen by
+  // timestamp; Status by up/down; everything else as a natural string.
+  function ipToNum(ip) {
+    const parts = String(ip || '').split('.');
+    if (parts.length !== 4) return -1;
+    let n = 0;
+    for (const part of parts) {
+      const o = parseInt(part, 10);
+      if (isNaN(o)) return -1;
+      n = n * 256 + o;
+    }
+    return n;
+  }
+
+  function sortValue(sw, key) {
+    switch (key) {
+      case 'status':     return sw.is_down ? 1 : 0;
+      case 'hostname':   return (sw.hostname || '').toLowerCase();
+      case 'vendor':     return (sw.vendor || '').toLowerCase();
+      case 'os':         return (sw.os_version || '').toLowerCase();
+      case 'profile':    return (sw.snmp_profile || 'auto').toLowerCase();
+      case 'host':       return ipToNum(sw.host);
+      case 'last_seen':  return sw.last_seen ? new Date(sw.last_seen).getTime() : 0;
+      case 'last_event': return (sw.last_event || '').toLowerCase();
+      default:           return '';
+    }
+  }
+
+  function applySort(list) {
+    const { key, dir } = sortState;
+    if (!key) return list;
+    return list.slice().sort((a, b) => {
+      const va = sortValue(a, key), vb = sortValue(b, key);
+      let c = (typeof va === 'number' && typeof vb === 'number')
+        ? va - vb
+        : String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: 'base' });
+      // Stable tiebreak on hostname so equal rows don't jitter on refresh.
+      if (c === 0) {
+        c = String(a.hostname || '').localeCompare(String(b.hostname || ''), undefined, { numeric: true });
+      }
+      return c * dir;
+    });
+  }
+
+  function updateSortIndicators() {
+    document.querySelectorAll('#switch-head th.sortable').forEach(th => {
+      const active = th.dataset.sort === sortState.key;
+      th.classList.toggle('sort-active', active);
+      th.classList.toggle('sort-asc',  active && sortState.dir === 1);
+      th.classList.toggle('sort-desc', active && sortState.dir === -1);
+    });
+  }
+
+  function onSortClick(key) {
+    if (sortState.key === key) sortState.dir = -sortState.dir;   // toggle direction
+    else                       sortState = { key, dir: 1 };      // new column, asc
+    localStorage.setItem('switchSort', JSON.stringify(sortState));
+    updateSortIndicators();
+    renderSwitches(allSwitches);
+  }
+
   function renderSwitches(switches) {
     // Status filter (UP/DOWN/all) comes first, then the free-text
     // search narrows whatever survives that. Doing status first keeps
@@ -536,7 +624,7 @@
       arista_eos: 'vendor-arista',
     };
 
-    $('switch-tbody').innerHTML = filtered.map(sw => {
+    $('switch-tbody').innerHTML = applySort(filtered).map(sw => {
       const dotCls = sw.is_down ? 'dot-down' : 'dot-up';
       const badge  = sw.is_down
         ? '<span class="badge badge-down">DOWN</span>'
