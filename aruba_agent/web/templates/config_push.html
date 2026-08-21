@@ -1,0 +1,277 @@
+{% extends "_settings_chrome.html" %}
+{% block title %}Batch Config{% endblock %}
+{% block icon %}bi-terminal{% endblock %}
+{% block heading %}Batch Configuration Changes{% endblock %}
+
+{% block extra_head %}
+<style>
+  .switch-pick { max-height: 320px; overflow-y: auto; border:1px solid #30363d; border-radius:6px; }
+  .switch-pick table { margin:0; }
+  .switch-pick tbody tr { cursor:pointer; }
+  .cmd-box { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.85rem; }
+  .vendor-pill input { display:none; }
+  .vendor-pill label { cursor:pointer; }
+  .res-out { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.78rem;
+             white-space:pre-wrap; background:#0d1117; border:1px solid #30363d;
+             border-radius:6px; padding:.5rem; max-height:240px; overflow:auto; }
+  .dot-ok   { color:#3fb950; }
+  .dot-fail { color:#f85149; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+  <!-- Left: vendor + switch selection -->
+  <div class="col-lg-5">
+    <div class="card p-3 mb-3">
+      <h6 class="mb-2">1. Vendor <span class="text-muted small">(one per batch)</span></h6>
+      <div class="btn-group vendor-pill" role="group" id="vendor-group">
+        {% for v in vendors %}
+        <input type="radio" class="btn-check" name="vendor" id="v-{{ v }}" value="{{ v }}"
+               {% if loop.first %}checked{% endif %}>
+        <label class="btn btn-outline-primary btn-sm" for="v-{{ v }}">
+          {% if v == 'aruba_cx' %}Aruba CX{% elif v == 'cisco_ios' %}Cisco IOS{% elif v == 'arista_eos' %}Arista EOS{% else %}{{ v }}{% endif %}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="card p-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0">2. Target switches</h6>
+        <span class="small text-muted"><span id="sel-count">0</span> selected</span>
+      </div>
+      <div class="d-flex gap-2 mb-2">
+        <button class="btn btn-outline-secondary btn-sm" id="btn-all" type="button">Select all</button>
+        <button class="btn btn-outline-secondary btn-sm" id="btn-none" type="button">Clear</button>
+      </div>
+      <div class="switch-pick">
+        <table class="table table-sm table-dark table-hover">
+          <tbody id="switch-rows"></tbody>
+        </table>
+      </div>
+      <div id="no-switches" class="text-muted small mt-2 d-none">
+        No switches of this vendor are known yet.
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: commands + templates -->
+  <div class="col-lg-7">
+    <div class="card p-3">
+      <h6 class="mb-2">3. Commands</h6>
+      <div class="row g-2 mb-2">
+        <div class="col-8">
+          <select class="form-select form-select-sm" id="tpl-select">
+            <option value="">— Load a saved template —</option>
+          </select>
+        </div>
+        <div class="col-4 d-flex gap-2">
+          <button class="btn btn-outline-secondary btn-sm flex-fill" id="btn-tpl-load" type="button">Load</button>
+          <button class="btn btn-outline-danger btn-sm" id="btn-tpl-del" type="button" title="Delete template">
+            <i class="bi bi-trash"></i>
+          </button>
+        </div>
+      </div>
+      <textarea class="form-control cmd-box" id="commands" rows="10"
+                placeholder="Enter CLI config commands, one per line. Example (Cisco):&#10;interface Gi1/0/1&#10; description uplink&#10; no shutdown"></textarea>
+
+      <div class="d-flex align-items-center gap-2 mt-2">
+        <input class="form-control form-control-sm" id="tpl-name" style="max-width:220px"
+               placeholder="Template name">
+        <button class="btn btn-outline-secondary btn-sm" id="btn-tpl-save" type="button">
+          <i class="bi bi-save me-1"></i>Save as template
+        </button>
+      </div>
+
+      <div class="alert alert-info py-2 mt-3 mb-2 small">
+        <i class="bi bi-info-circle me-1"></i>
+        On success the change is <strong>saved to startup-config</strong> automatically.
+      </div>
+      <button class="btn btn-primary" id="btn-preview" type="button">
+        <i class="bi bi-eye me-1"></i>Preview &amp; Apply
+      </button>
+    </div>
+
+    <div class="card p-3 mt-3 d-none" id="results-card">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0">Results</h6>
+        <span class="small" id="results-summary"></span>
+      </div>
+      <div id="results-body"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Preview / confirm modal -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content" style="background:#161b22;">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-exclamation-triangle text-warning me-2"></i>Confirm change</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2">Apply to <strong id="pv-count"></strong> <span id="pv-vendor"></span> switch(es), then save to startup-config:</p>
+        <ul id="pv-switches" class="small"></ul>
+        <p class="mb-1 mt-3">Commands:</p>
+        <pre class="res-out" id="pv-commands"></pre>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="btn-apply">
+          <i class="bi bi-lightning-charge me-1"></i>Apply to live switches
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  const SWITCHES  = {{ switches | tojson }};
+  const TEMPLATES = {{ templates | tojson }};
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  function currentVendor() {
+    const r = document.querySelector('input[name="vendor"]:checked');
+    return r ? r.value : '';
+  }
+  const vendorLabel = v => ({aruba_cx:'Aruba CX', cisco_ios:'Cisco IOS', arista_eos:'Arista EOS'}[v] || v);
+
+  // ── switch list ──
+  function renderSwitches() {
+    const v = currentVendor();
+    const rows = SWITCHES.filter(s => s.vendor === v);
+    const tb = $('switch-rows');
+    $('no-switches').classList.toggle('d-none', rows.length > 0);
+    tb.innerHTML = rows.map(s => `
+      <tr data-key="${esc(s.name)}">
+        <td style="width:2rem"><input type="checkbox" class="form-check-input sw-cb" value="${esc(s.name)}"></td>
+        <td class="fw-semibold">${esc(s.hostname)}</td>
+        <td class="text-muted">${esc(s.host)}</td>
+        <td>${s.is_down ? '<span class="badge bg-danger">DOWN</span>' : '<span class="badge bg-success">UP</span>'}</td>
+      </tr>`).join('');
+    tb.querySelectorAll('tr').forEach(tr => {
+      tr.addEventListener('click', e => {
+        if (e.target.tagName !== 'INPUT') {
+          const cb = tr.querySelector('.sw-cb'); cb.checked = !cb.checked;
+        }
+        updateCount();
+      });
+    });
+    updateCount();
+  }
+  function selectedKeys() {
+    return [...document.querySelectorAll('.sw-cb:checked')].map(cb => cb.value);
+  }
+  function updateCount() { $('sel-count').textContent = selectedKeys().length; }
+
+  // ── templates ──
+  function renderTemplates() {
+    const v = currentVendor();
+    const sel = $('tpl-select');
+    const mine = TEMPLATES.filter(t => t.vendor === v);
+    sel.innerHTML = '<option value="">— Load a saved template —</option>' +
+      mine.map(t => `<option value="${esc(t.name)}">${esc(t.name)}${t.description ? ' — ' + esc(t.description) : ''}</option>`).join('');
+  }
+  $('btn-tpl-load').addEventListener('click', () => {
+    const name = $('tpl-select').value;
+    const t = TEMPLATES.find(x => x.name === name && x.vendor === currentVendor());
+    if (t) { $('commands').value = t.commands; $('tpl-name').value = t.name; }
+  });
+  $('btn-tpl-save').addEventListener('click', async () => {
+    const name = $('tpl-name').value.trim();
+    const commands = $('commands').value;
+    if (!name)      { alert('Enter a template name.'); return; }
+    if (!commands.trim()) { alert('Enter some commands first.'); return; }
+    const r = await fetch('/api/config-templates', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name, vendor: currentVendor(), commands})
+    });
+    const j = await r.json();
+    if (!r.ok) { alert(j.error || 'Save failed.'); return; }
+    // update in-memory list + dropdown
+    const idx = TEMPLATES.findIndex(t => t.name === name);
+    const rec = {name, vendor: currentVendor(), commands, description:''};
+    if (idx >= 0) TEMPLATES[idx] = rec; else TEMPLATES.push(rec);
+    renderTemplates(); $('tpl-select').value = name;
+  });
+  $('btn-tpl-del').addEventListener('click', async () => {
+    const name = $('tpl-select').value;
+    if (!name) { alert('Pick a template to delete.'); return; }
+    if (!confirm(`Delete template "${name}"?`)) return;
+    const r = await fetch(`/api/config-templates/${encodeURIComponent(name)}/delete`, {method:'POST'});
+    if (!r.ok) { alert('Delete failed.'); return; }
+    const i = TEMPLATES.findIndex(t => t.name === name); if (i>=0) TEMPLATES.splice(i,1);
+    renderTemplates();
+  });
+
+  // ── vendor switch resets selection ──
+  document.querySelectorAll('input[name="vendor"]').forEach(r =>
+    r.addEventListener('change', () => { renderSwitches(); renderTemplates(); }));
+  $('btn-all').addEventListener('click', () => { document.querySelectorAll('.sw-cb').forEach(c=>c.checked=true); updateCount(); });
+  $('btn-none').addEventListener('click', () => { document.querySelectorAll('.sw-cb').forEach(c=>c.checked=false); updateCount(); });
+
+  // ── preview + apply ──
+  const modal = new bootstrap.Modal($('previewModal'));
+  $('btn-preview').addEventListener('click', () => {
+    const keys = selectedKeys();
+    const cmds = $('commands').value;
+    if (!keys.length)   { alert('Select at least one switch.'); return; }
+    if (!cmds.trim())   { alert('Enter some commands.'); return; }
+    const chosen = SWITCHES.filter(s => keys.includes(s.name));
+    $('pv-count').textContent = chosen.length;
+    $('pv-vendor').textContent = vendorLabel(currentVendor());
+    $('pv-switches').innerHTML = chosen.map(s => `<li>${esc(s.hostname)} <span class="text-muted">(${esc(s.host)})</span></li>`).join('');
+    $('pv-commands').textContent = cmds;
+    modal.show();
+  });
+
+  $('btn-apply').addEventListener('click', async () => {
+    const btn = $('btn-apply');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying…';
+    try {
+      const r = await fetch('/api/config-push/execute', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({vendor: currentVendor(), hosts: selectedKeys(), commands: $('commands').value})
+      });
+      const j = await r.json();
+      modal.hide();
+      if (!r.ok) { alert(j.error || 'Push failed.'); return; }
+      renderResults(j);
+    } finally {
+      btn.disabled = false; btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>Apply to live switches';
+    }
+  });
+
+  function renderResults(j) {
+    $('results-card').classList.remove('d-none');
+    $('results-summary').innerHTML =
+      `<span class="dot-ok">${j.ok} ok</span> · <span class="dot-fail">${j.failed} failed</span>`;
+    const rows = (j.results || []).sort((a,b)=> (a.ok===b.ok)?0:(a.ok?1:-1));
+    $('results-body').innerHTML = rows.map((r,i) => `
+      <div class="mb-2">
+        <div class="d-flex justify-content-between align-items-center">
+          <span>
+            <i class="bi ${r.ok ? 'bi-check-circle-fill dot-ok' : 'bi-x-circle-fill dot-fail'} me-1"></i>
+            <strong>${esc(r.name)}</strong> <span class="text-muted small">${esc(r.host)} · ${r.duration}s</span>
+          </span>
+          <button class="btn btn-outline-secondary btn-sm py-0" type="button"
+                  data-bs-toggle="collapse" data-bs-target="#out-${i}">output</button>
+        </div>
+        <div class="collapse" id="out-${i}">
+          <div class="res-out mt-1">${esc(r.error ? r.error : r.output) || '(no output)'}</div>
+        </div>
+      </div>`).join('');
+    $('results-card').scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+
+  // init
+  renderSwitches(); renderTemplates();
+</script>
+{% endblock %}

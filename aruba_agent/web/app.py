@@ -60,6 +60,8 @@ from aruba_agent.auth          import RadiusAuthenticator
 from aruba_agent.config_editor import ConfigEditor
 from aruba_agent.local_auth    import LocalAuthStore
 from aruba_agent.manual_hosts  import ManualHostsStore, VALID_MODES
+from aruba_agent.config_templates import ConfigTemplateStore, VALID_VENDORS as PUSH_VENDORS
+from aruba_agent.tasks.config_push import push_to_switches
 from aruba_agent.state         import AgentState
 
 
@@ -279,6 +281,13 @@ def create_app(
     # /var/lib/aruba-agent/ location if the caller didn't pin one.
     manual_hosts = ManualHostsStore(
         manual_hosts_path or "/var/lib/aruba-agent/manual_hosts.json"
+    )
+
+    # Batch config-change templates store (reusable CLI snippets).
+    config_templates = ConfigTemplateStore(
+        cfg.get("agent", "config_templates_file",
+                fallback="/var/lib/aruba-agent/config_templates.json")
+        if cfg is not None else "/var/lib/aruba-agent/config_templates.json"
     )
 
     if local_auth_enabled:
@@ -1162,6 +1171,140 @@ def create_app(
                      ip=request.remote_addr)
         flash(f"Host '{name}' removed.", "success")
         return redirect(url_for("settings_manual_hosts"))
+
+    # ── Batch config changes (multi-vendor CLI push) ───────────────────────
+    # Push a set of CLI config commands to selected switches of ONE vendor,
+    # always saving to startup on success. Preview + confirm happens in the
+    # browser; the server re-validates single-vendor before touching devices.
+
+    def _vendor_creds(vendor: str) -> dict:
+        """Resolve SSH creds for a vendor from config (decrypted)."""
+        base = cfg["credentials"] if (cfg is not None and "credentials" in cfg) else {}
+        user = base.get("username", "") if base else ""
+        pw   = secrets_store.decrypt(base.get("password", "")) if base else ""
+        if vendor == "cisco_ios" and cfg is not None and "credentials.cisco" in cfg:
+            c = cfg["credentials.cisco"]
+            return {
+                "username": (c.get("username", "") or user),
+                "password": (secrets_store.decrypt(c.get("password", "")) or pw),
+                "secret":   secrets_store.decrypt(c.get("enable_secret", "")),
+            }
+        if vendor == "arista_eos" and cfg is not None and "credentials.arista" in cfg:
+            a = cfg["credentials.arista"]
+            return {
+                "username": (a.get("username", "") or user),
+                "password": (secrets_store.decrypt(a.get("password", "")) or pw),
+            }
+        return {"username": user, "password": pw}
+
+    @app.get("/config-push")
+    @require_login
+    def config_push_page():
+        ctx = _settings_context()
+        live = state.to_dict().get("switches", [])
+        switches = [
+            {"name": s["name"], "host": s["host"],
+             "hostname": s.get("hostname") or s["name"],
+             "vendor": s.get("vendor", ""),
+             "is_down": bool(s.get("is_down"))}
+            for s in live if s.get("vendor") in PUSH_VENDORS
+        ]
+        switches.sort(key=lambda x: (x["vendor"], x["hostname"].lower()))
+        ctx.update({
+            "switches":  switches,
+            "templates": config_templates.list_templates(),
+            "vendors":   list(PUSH_VENDORS),
+            "errors":    get_flashed_messages(category_filter=["error"]),
+            "messages":  get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("config_push.html", **ctx)
+
+    @app.get("/api/config-templates")
+    @require_login
+    def api_config_templates():
+        return jsonify({"templates": config_templates.list_templates()})
+
+    @app.post("/api/config-templates")
+    @require_login
+    def api_config_templates_save():
+        d = request.get_json(silent=True) or request.form
+        if not config_templates.save_template(
+                (d.get("name") or "").strip(),
+                (d.get("vendor") or "").strip(),
+                d.get("commands") or "",
+                (d.get("description") or "").strip(),
+                added_by=session.get("user", "")):
+            return jsonify({"error": "Need a name, a supported vendor, and commands."}), 400
+        audit.record("config_template.save", user=session.get("user"),
+                     target=(d.get("name") or "").strip(),
+                     vendor=(d.get("vendor") or "").strip(), ip=request.remote_addr)
+        return jsonify({"status": "ok"})
+
+    @app.post("/api/config-templates/<name>/delete")
+    @require_login
+    def api_config_templates_delete(name: str):
+        if not config_templates.remove(name):
+            return jsonify({"error": "not found"}), 404
+        audit.record("config_template.delete", user=session.get("user"),
+                     target=name, ip=request.remote_addr)
+        return jsonify({"status": "ok"})
+
+    @app.post("/api/config-push/execute")
+    @require_login
+    def api_config_push_execute():
+        d = request.get_json(silent=True) or {}
+        vendor   = (d.get("vendor") or "").strip()
+        hosts_in = d.get("hosts") or []
+        commands = d.get("commands") or ""
+
+        if vendor not in PUSH_VENDORS:
+            return jsonify({"error": "Unsupported or missing vendor."}), 400
+        if not (commands or "").strip():
+            return jsonify({"error": "No commands provided."}), 400
+        if not hosts_in:
+            return jsonify({"error": "No target switches selected."}), 400
+
+        # Resolve selected identifiers (state key or IP) and ENFORCE that
+        # every target is the chosen vendor — the core safety invariant.
+        live = state.to_dict().get("switches", [])
+        by_key = {}
+        for sw in live:
+            by_key[sw["name"]] = sw
+            by_key[sw["host"]] = sw
+
+        targets, seen, bad = [], set(), []
+        for h in hosts_in:
+            sw = by_key.get(h)
+            if sw is None:
+                bad.append(h); continue
+            if sw.get("vendor") != vendor:
+                return jsonify({"error":
+                    f"{sw['name']} is {sw.get('vendor') or 'unknown'}, not {vendor}. "
+                    "One vendor per batch."}), 400
+            if sw["host"] in seen:
+                continue
+            seen.add(sw["host"])
+            targets.append({"name": sw["name"], "host": sw["host"]})
+
+        if bad:
+            return jsonify({"error": f"Unknown switch(es): {', '.join(bad)}"}), 400
+        if not targets:
+            return jsonify({"error": "No valid targets."}), 400
+
+        creds = _vendor_creds(vendor)
+        if not creds.get("username"):
+            return jsonify({"error": f"No credentials configured for {vendor}."}), 400
+
+        audit.record("config_push.execute", user=session.get("user"),
+                     vendor=vendor, count=len(targets),
+                     hosts=",".join(t["host"] for t in targets),
+                     ip=request.remote_addr)
+        results = push_to_switches(targets, vendor, commands, creds, save=True)
+        ok = sum(1 for r in results if r["ok"])
+        audit.record("config_push.result", user=session.get("user"),
+                     vendor=vendor, ok=ok, failed=len(results) - ok,
+                     ip=request.remote_addr)
+        return jsonify({"results": results, "ok": ok, "failed": len(results) - ok})
 
     # ── TOTP 2FA enrollment (T3.3) ─────────────────────────────────────────
     #

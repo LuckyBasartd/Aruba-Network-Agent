@@ -30,3 +30,7 @@ pysnmp>=5.0,<6.2
 # paramiko + ncclient. ~30 MB on disk; only required when you
 # actually have non-Aruba switches in the fleet.
 napalm>=4.0,<6.0
+
+# Batch config push (multi-vendor CLI over SSH). Ships transitively with
+# napalm; declared explicitly since the batch-config feature calls it directly.
+netmiko>=4.0
