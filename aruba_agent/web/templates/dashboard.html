@@ -23,6 +23,7 @@
     /* Status indicators */
     .badge-up   { background-color: #238636; }
     .badge-down { background-color: #da3633; }
+    .badge-warn { background-color: #9e6a03; color:#fff; margin-left:4px; cursor:help; }
     .status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
     .dot-up     { background:#3fb950; box-shadow: 0 0 6px #3fb950; }
     .dot-down   { background:#f85149; box-shadow: 0 0 6px #f85149; animation: blink 1s step-start infinite; }
@@ -633,6 +634,10 @@
       const badge  = sw.is_down
         ? '<span class="badge badge-down">DOWN</span>'
         : '<span class="badge badge-up">UP</span>';
+      // Reachable but SNMP not answering (ICMP+SSH fallback kept it UP).
+      const snmpWarn = (!sw.is_down && sw.snmp_ok === false)
+        ? '<span class="badge badge-warn" title="Reachable via SSH; SNMP not responding — check SNMP configuration">SNMP</span>'
+        : '';
       const vLabel = VENDOR_LABEL[sw.vendor] || (sw.vendor || '—');
       const vClass = VENDOR_CLASS[sw.vendor] || 'vendor-unknown';
       const vendorChip = sw.vendor
@@ -677,7 +682,7 @@
           >${esc(profileLabel)} <i class="bi bi-pencil-fill ms-1" style="font-size:.65rem;"></i></span>`;
 
       return `<tr class="sw-row" onclick="openBackups('${esc(sw.hostname)}','${esc(sw.host)}')" title="Click to view backup files">
-        <td><span class="status-dot ${dotCls}"></span>${badge}</td>
+        <td><span class="status-dot ${dotCls}"></span>${badge}${snmpWarn}</td>
         <td class="fw-semibold">${esc(sw.hostname)}</td>
         <td class="d-none d-md-table-cell">${vendorCell}</td>
         <td class="d-none d-md-table-cell">${osCell}</td>

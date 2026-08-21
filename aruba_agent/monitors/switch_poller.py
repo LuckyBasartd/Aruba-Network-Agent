@@ -17,6 +17,7 @@ import configparser
 import logging
 import random
 import re
+import socket
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, List
@@ -225,6 +226,43 @@ class SwitchMonitor:
             # Don't crash the monitor thread for this.
             return False
 
+    def _ssh_reachable(self, port: int = 22, timeout: float = 3.0) -> bool:
+        """Lightweight SSH liveness check: open a TCP connection to the
+        SSH port and confirm the server sends an ``SSH-`` identification
+        banner. Confirms the management plane is up without a full login
+        (a full auth every poll would be slow and risks lockouts)."""
+        try:
+            with socket.create_connection((self.host, port), timeout=timeout) as sock:
+                sock.settimeout(timeout)
+                banner = sock.recv(64)
+            return banner.startswith(b"SSH-")
+        except OSError:
+            return False
+
+    def _poll_reachability(self):
+        """SNMP-first reachability with ICMP + SSH fallback, for the
+        SNMP-polled modes (auto / snmp_ro / snmp_rw). Returns
+        ``(ok, snmp_ok)``.
+
+        Ladder (operator spec):
+          * SNMP ok                          -> UP  (snmp healthy)
+          * SNMP fail, ICMP fail             -> DOWN
+          * SNMP fail, ICMP ok, SSH fail     -> DOWN
+          * SNMP fail, ICMP ok, SSH ok       -> UP  (SNMP degraded)
+
+        This stops a switch whose SNMP is merely misconfigured — but is
+        pingable and SSH-reachable — from being flagged DOWN.
+        """
+        if self._poll_snmp():
+            return True, True
+        # SNMP failed. Is the box reachable at all?
+        if not self._poll_icmp():
+            return False, True
+        # Pings but SNMP is dead — confirm the management plane via SSH.
+        if self._ssh_reachable():
+            return True, False          # UP, but SNMP not answering
+        return False, True              # ICMP-only, no manageable plane -> DOWN
+
     def _poll(self) -> None:
         # v3.0.3: dispatch based on per-host monitor_mode.
         # The mode lives in AgentState — manual_hosts.py and the
@@ -232,10 +270,11 @@ class SwitchMonitor:
         sw_now = self.state.switches.get(self.name)
         mode   = (sw_now.monitor_mode if sw_now else "auto") or "auto"
 
+        snmp_ok = True   # only meaningful for SNMP-polled modes
         if mode == "icmp":
             ok = self._poll_icmp()
         elif self._snmp is not None and mode in ("snmp_ro", "snmp_rw", "auto"):
-            ok = self._poll_snmp()
+            ok, snmp_ok = self._poll_reachability()
         else:
             ok = self._poll_rest()
 
@@ -244,12 +283,23 @@ class SwitchMonitor:
             return
 
         if ok:
+            ts = datetime.now().strftime('%H:%M:%S')
+            event = (f"Reachable at {ts}" if snmp_ok
+                     else f"Reachable via SSH — SNMP not responding at {ts}")
             self.state.update_switch(
                 self.name,
                 last_seen  = datetime.now(),
                 failures   = 0,
-                last_event = f"Reachable at {datetime.now().strftime('%H:%M:%S')}",
+                last_event = event,
             )
+            # Flag / clear the "SNMP misconfigured" warning (persists on flip).
+            if self.state.set_snmp_health(self.name, snmp_ok):
+                if snmp_ok:
+                    log.info("Switch %s (%s): SNMP polling restored",
+                             self.name, self.host)
+                else:
+                    log.warning("Switch %s (%s): reachable via SSH but SNMP not "
+                                "responding — check SNMP config", self.name, self.host)
             # Resolve firmware/OS version once, lazily, on a healthy poll.
             self._maybe_resolve_os_version(sw)
             if sw.is_down:

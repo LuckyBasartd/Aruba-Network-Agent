@@ -81,6 +81,10 @@ class SwitchState:
     failures:     int               = 0
     last_seen:    Optional[datetime] = None
     last_event:   str               = "Initializing"
+    # v3.1: True when SNMP polling is healthy. Set False when a switch is
+    # only reachable via the ICMP+SSH fallback (SNMP misconfigured) so the
+    # dashboard can flag "reachable but SNMP not configured".
+    snmp_ok:      bool              = True
 
 
 @dataclass
@@ -164,6 +168,7 @@ class AgentState:
                     snmp_profile = entry.get("snmp_profile", "") or "",
                     monitor_mode = entry.get("monitor_mode", "auto") or "auto",
                     is_down      = bool(entry.get("is_down", False)),
+                    snmp_ok      = bool(entry.get("snmp_ok", True)),
                     failures     = int(entry.get("failures", 0)),
                     last_seen    = _parse_iso(entry.get("last_seen")),
                     last_event   = entry.get("last_event",
@@ -222,6 +227,7 @@ class AgentState:
                     "snmp_profile": s.snmp_profile,
                     "monitor_mode": s.monitor_mode,
                     "is_down":      s.is_down,
+                    "snmp_ok":      s.snmp_ok,
                     "failures":     s.failures,
                     "last_seen":    _iso(s.last_seen),
                     "last_event":   s.last_event,
@@ -354,6 +360,20 @@ class AgentState:
             self._save()
             return True
 
+    def set_snmp_health(self, name: str, snmp_ok: bool) -> bool:
+        """Record whether SNMP polling is healthy for a switch. Returns
+        True if the value changed (and was persisted). Only saves on a
+        flip so the every-poll healthy case doesn't churn the snapshot."""
+        with self._lock:
+            sw = self.switches.get(name)
+            if sw is None:
+                return False
+            if bool(snmp_ok) == sw.snmp_ok:
+                return False
+            sw.snmp_ok = bool(snmp_ok)
+            self._save()
+            return True
+
     def remove_switch(self, name: str) -> bool:
         """
         Drop a switch from the registry entirely and persist.
@@ -461,6 +481,7 @@ class AgentState:
                         "snmp_profile": s.snmp_profile or "",
                         "monitor_mode": s.monitor_mode or "auto",
                         "is_down":      s.is_down,
+                        "snmp_ok":      s.snmp_ok,
                         "failures":     s.failures,
                         "last_seen":    s.last_seen.isoformat() if s.last_seen else None,
                         "last_event":   s.last_event,
