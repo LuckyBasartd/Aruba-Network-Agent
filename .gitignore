@@ -23,3 +23,6 @@ firmware/
 
 # Generated snapshot (repomix)
 repomix-output.xml
+
+# Local nested clones / non-application working copies (kept on disk, never tracked)
+github/
