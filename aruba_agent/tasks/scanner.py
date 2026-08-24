@@ -1,7 +1,8 @@
 """
 Network Scanner Task — ported from network_scanner.py.
 
-ICMP-scans configured subnets via Scapy, compares against the last known
+ICMP-scans configured subnets via the OS ``ping`` (kernel routing),
+compares against the last known
 device CSV, alerts on new devices, and regenerates ip_list.txt for backup.
 
 Discovery decision tree for each pinged host
@@ -18,7 +19,9 @@ The slow path exists because the keyword filter silently drops Aruba
 switches with missing PTR records or non-matching naming conventions
 (6200/6400/8325/2930F units, hand-named stacks, etc.).
 
-Requires: scapy + CAP_NET_RAW capability (or root).
+Requires: /usr/bin/ping (unprivileged ping or CAP_NET_RAW). The OS ping
+respects the kernel routing table, so routed subnets resolve correctly —
+unlike the old scapy raw sweep, which broadcast and missed whole subnets.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import ipaddress
 import logging
 import os
 import socket
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -85,13 +89,29 @@ class NetworkScannerTask:
         self.monitor_manager = monitor_manager   # injected so scanner can register new switches
         self.state          = state
 
-    def _scan(self) -> Dict[str, str]:
+    def _ping_one(self, ip: str) -> Optional[str]:
+        """One OS ICMP echo (kernel routing). Returns ip if alive, else None.
+        Uses the same /usr/bin/ping path the poller uses — this is what
+        makes routed subnets work, unlike the old scapy raw sweep which
+        couldn't resolve next-hops and silently missed whole subnets."""
         try:
-            from scapy.all import IP, ICMP, sr  # type: ignore[import]
-        except ImportError:
-            log.error("Scanner: scapy not installed — run: pip install scapy")
-            return {}
+            r = subprocess.run(
+                ["ping", "-n", "-c", "1", "-W", str(self.icmp_timeout), ip],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=self.icmp_timeout + 2,
+            )
+            return ip if r.returncode == 0 else None
+        except (FileNotFoundError, subprocess.SubprocessError):
+            return None
 
+    def _scan(self) -> Dict[str, str]:
+        """Liveness sweep of every configured subnet via the OS ``ping``,
+        concurrently. Replaces the previous scapy raw sweep, which relied
+        on scapy resolving the next-hop MAC itself and came back empty for
+        routed subnets (the ``Using broadcast`` warnings) — silently
+        dropping whole subnets of switches from monitoring and backups."""
         devices: Dict[str, str] = {}
         for subnet in self.subnets:
             try:
@@ -103,18 +123,14 @@ class NetworkScannerTask:
                 if not targets:
                     continue
                 log.info("Scanner: pinging %d hosts in %s", len(targets), subnet)
-                answered, _ = sr(
-                    IP(dst=targets) / ICMP(),
-                    timeout=self.icmp_timeout,
-                    verbose=0,
-                )
-                for sent, received in answered:
-                    if received.haslayer(ICMP) and received.getlayer(ICMP).type == 0:
-                        ip = sent.dst
-                        if ip not in devices:
+                workers = min(128, max(1, len(targets)))
+                with ThreadPoolExecutor(max_workers=workers,
+                                        thread_name_prefix="scan-ping") as ex:
+                    for ip in ex.map(self._ping_one, targets):
+                        if ip and ip not in devices:
                             try:
                                 name = socket.gethostbyaddr(ip)[0]
-                            except socket.herror:
+                            except (socket.herror, socket.gaierror):
                                 name = "N/A"
                             devices[ip] = name
             except Exception as exc:
