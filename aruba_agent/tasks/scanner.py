@@ -67,6 +67,16 @@ class NetworkScannerTask:
         self.ip_list_output  = s.get("ip_list_output", "/var/lib/aruba-agent/ip_list.txt")
         self.icmp_timeout    = int(s.get("icmp_timeout", "3"))
 
+        # Coverage safeguard: a scan that suddenly discovers far fewer
+        # switches than last time almost always means a discovery regression
+        # (routing/DNS/credentials), not that switches vanished. Alert, and
+        # with coverage_guard on, keep the previous ip_list rather than
+        # letting monitoring/backup coverage silently collapse.
+        self.coverage_drop_pct = int(s.get("coverage_drop_alert_pct", "25"))
+        self.coverage_guard    = (
+            s.get("coverage_guard", "true").strip().lower() in ("1", "true", "yes", "on")
+        )
+
         # AOS-CX REST verification — recovers Aruba switches whose DNS names
         # don't match filter_keywords. Off only if the operator explicitly
         # disables it or no credentials are configured.
@@ -227,6 +237,42 @@ class NetworkScannerTask:
             list(keyword_hits.keys()) + list(rest_hits.keys()),
             key=lambda ip: ipaddress.ip_address(ip),
         )
+
+        # ── coverage safeguard ────────────────────────────────────────────
+        prev_count = 0
+        if os.path.exists(self.ip_list_output):
+            try:
+                with open(self.ip_list_output) as f:
+                    prev_count = sum(1 for ln in f if ln.strip())
+            except OSError:
+                prev_count = 0
+
+        new_count = len(all_ips)
+        if (self.coverage_drop_pct > 0 and prev_count >= 10
+                and new_count < prev_count * (1 - self.coverage_drop_pct / 100)):
+            drop = round((prev_count - new_count) / prev_count * 100)
+            summary = (f"Discovery coverage dropped sharply: this scan found "
+                       f"{new_count} switch(es) vs {prev_count} previously "
+                       f"(-{drop}%).")
+            if self.coverage_guard:
+                log.error("Scanner: %s Keeping previous ip_list; NOT overwriting.",
+                          summary)
+                self.notifier.send(
+                    "[Aruba] Discovery coverage drop — list preserved",
+                    summary + f"\n\nThe previous {prev_count}-switch list at "
+                    f"{self.ip_list_output} was preserved, so monitoring and "
+                    "backups are unchanged. Investigate discovery (routing, DNS, "
+                    "credentials) before the next scan.")
+                try:
+                    with open(self.ip_list_output) as f:
+                        return [ln.strip() for ln in f if ln.strip()]
+                except OSError:
+                    return all_ips
+            else:
+                log.error("Scanner: %s Overwriting anyway (coverage_guard off).",
+                          summary)
+                self.notifier.send("[Aruba] Discovery coverage drop", summary)
+
         os.makedirs(os.path.dirname(self.ip_list_output) or ".", exist_ok=True)
         with open(self.ip_list_output, "w") as f:
             f.writelines(ip + "\n" for ip in all_ips)

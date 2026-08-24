@@ -417,6 +417,13 @@ ip_list_output   = /var/lib/aruba-agent/ip_list.txt
 icmp_timeout     = 8        # raise if not all switches reply in time
 verify_via_api   = true     # REST-probe non-matching responders
 api_workers      = 16       # parallel REST logins during verify
+# Coverage safeguard: if a scan discovers sharply fewer switches than the
+# previous run, it's almost always a discovery regression (routing / DNS /
+# credentials), not switches actually disappearing.
+coverage_drop_alert_pct = 25    # % drop that triggers an alert (0 disables)
+coverage_guard          = true  # on breach, KEEP the previous ip_list instead
+                                #  of overwriting — prevents monitoring/backup
+                                #  coverage from silently collapsing
 
 
 # ------------------------------------------------------------
