@@ -192,15 +192,15 @@ class ArubaCXSession:
 
     # ------------------------------------------------------- raw HTTP helpers
 
-    def _get(self, endpoint: str, **kw) -> Optional[requests.Response]:
+    def _get(self, endpoint: str, *, timeout: int = 15, **kw) -> Optional[requests.Response]:
         if not self.base_url:
             return None
         try:
-            resp = self._session.get(self.base_url + endpoint, verify=False, timeout=15, **kw)
+            resp = self._session.get(self.base_url + endpoint, verify=False, timeout=timeout, **kw)
             if resp.status_code == 401:
                 self.logged_in = False
                 if self.login():
-                    resp = self._session.get(self.base_url + endpoint, verify=False, timeout=15, **kw)
+                    resp = self._session.get(self.base_url + endpoint, verify=False, timeout=timeout, **kw)
             return resp
         except requests.exceptions.RequestException as exc:
             # Redact: see comment in login(). urllib3/requests bake the
@@ -208,22 +208,22 @@ class ArubaCXSession:
             self.error = _redact(str(exc))
             return None
 
-    def _put(self, endpoint: str, **kw) -> Optional[requests.Response]:
+    def _put(self, endpoint: str, *, timeout: int = 15, **kw) -> Optional[requests.Response]:
         if not self.base_url:
             return None
         try:
-            return self._session.put(self.base_url + endpoint, verify=False, timeout=15, **kw)
+            return self._session.put(self.base_url + endpoint, verify=False, timeout=timeout, **kw)
         except requests.exceptions.RequestException as exc:
             # Redact: see comment in login(). urllib3/requests bake the
             # request URL into exception strings.
             self.error = _redact(str(exc))
             return None
 
-    def _post(self, endpoint: str, **kw) -> Optional[requests.Response]:
+    def _post(self, endpoint: str, *, timeout: int = 30, **kw) -> Optional[requests.Response]:
         if not self.base_url:
             return None
         try:
-            return self._session.post(self.base_url + endpoint, verify=False, timeout=30, **kw)
+            return self._session.post(self.base_url + endpoint, verify=False, timeout=timeout, **kw)
         except requests.exceptions.RequestException as exc:
             # Redact: see comment in login(). urllib3/requests bake the
             # request URL into exception strings.
@@ -242,16 +242,22 @@ class ArubaCXSession:
             return resp.json().get("hostname")
         return None
 
+    # Writing running-config to flash can take well over the default 15s on
+    # older or heavily-loaded (PoE/camera) 6000/6100 switches. Give the save
+    # and the config fetch a generous timeout so they don't false-fail.
+    _SAVE_TIMEOUT = 60
+
     def save_running_to_startup(self) -> bool:
         """Copy running-config → startup-config on the switch."""
         resp = self._put(
             "fullconfigs/startup-config",
             params={"from": f"/rest/{self.version}/fullconfigs/running-config"},
+            timeout=self._SAVE_TIMEOUT,
         )
         return resp is not None and resp.status_code in (200, 204)
 
     def get_startup_config(self) -> Optional[bytes]:
-        resp = self._get("fullconfigs/startup-config")
+        resp = self._get("fullconfigs/startup-config", timeout=self._SAVE_TIMEOUT)
         if resp and resp.status_code == 200 and resp.content:
             return resp.content
         return None
