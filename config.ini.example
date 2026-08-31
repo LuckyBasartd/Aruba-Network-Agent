@@ -50,6 +50,12 @@ master_key_file      = /etc/aruba-agent/master.key
 #                       per switch per 5 min. 0 disables (every flap
 #                       fires its own email).
 alert_dedup_minutes  = 5
+# alert_batch_seconds — coalesce simultaneous reachability events into one
+#                       email. When several switches drop at once (e.g. a
+#                       distro failure), the first event opens a collection
+#                       window and every down/restored within it joins the
+#                       same message. 0 = send one email per event.
+alert_batch_seconds  = 60
 # v3.0.3: manual_hosts_file — hosts outside the scanner's subnets that
 # operators add via Settings → Manual Hosts. Each entry carries a
 # monitor_mode (icmp / snmp_ro / snmp_rw / auto). Default location

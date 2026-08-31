@@ -28,6 +28,7 @@ from aruba_agent.notifier         import EmailNotifier
 from aruba_agent.secrets_store    import decrypt as _decrypt
 from aruba_agent.snmp             import SnmpAgent
 from aruba_agent.state            import AgentState
+from aruba_agent.alert_batcher    import AlertBatcher
 
 from typing import Optional
 
@@ -77,10 +78,12 @@ class SwitchMonitor:
         detector: Optional[VendorDetector] = None,
         alert_dedup_seconds: int = 300,
         monitor_mode: str      = "auto",
+        alert_batcher: "Optional[AlertBatcher]" = None,
     ) -> None:
         self.name              = name
         self.host              = host
         self.notifier          = notifier
+        self._batcher          = alert_batcher
         self.state             = state
         self.poll_interval     = poll_interval
         self.failure_threshold = failure_threshold
@@ -305,15 +308,17 @@ class SwitchMonitor:
             if sw.is_down:
                 self.state.update_switch(self.name, is_down=False)
                 log.info("Switch RESTORED: %s (%s)", self.name, self.host)
+                hostname = sw.hostname or self.name
                 self._maybe_send_alert(
                     "restored",
-                    f"[Aruba] Switch RESTORED: {self.name}",
+                    f"[Aruba] Switch RESTORED: {hostname}",
                     (
                         f"Switch Management Reachability — RESTORED\n"
-                        f"Switch : {self.name}\n"
-                        f"Host   : {self.host}\n"
-                        f"Status : Management plane reachable (HTTP 200)\n"
+                        f"Switch : {self.host}\n"
+                        f"Host   : {hostname}\n"
+                        f"Status : Management plane reachable\n"
                     ),
+                    label=hostname,
                 )
         else:
             new_failures = sw.failures + 1
@@ -329,16 +334,18 @@ class SwitchMonitor:
             if new_failures >= self.failure_threshold and not sw.is_down:
                 self.state.update_switch(self.name, is_down=True)
                 log.error("Switch DOWN: %s (%s)", self.name, self.host)
+                hostname = sw.hostname or self.name
                 self._maybe_send_alert(
                     "down",
-                    f"[Aruba] Switch DOWN: {self.name}",
+                    f"[Aruba] Switch DOWN: {hostname}",
                     (
                         f"Switch Management Reachability — DOWN\n"
-                        f"Switch   : {self.name}\n"
-                        f"Host     : {self.host}\n"
+                        f"Switch   : {self.host}\n"
+                        f"Host     : {hostname}\n"
                         f"Failures : {new_failures} consecutive\n"
                         f"Interval : {self.poll_interval}s\n"
                     ),
+                    label=hostname,
                 )
 
     def _maybe_resolve_os_version(self, sw) -> None:
@@ -424,7 +431,8 @@ class SwitchMonitor:
             log.debug("Driver facts failed for %s: %s", self.host, exc)
             return ""
 
-    def _maybe_send_alert(self, kind: str, subject: str, body: str) -> None:
+    def _maybe_send_alert(self, kind: str, subject: str, body: str,
+                          label: Optional[str] = None) -> None:
         """
         Send a reachability alert, unless we already sent one of the
         same kind ('down' or 'restored') within the dedup window.
@@ -458,7 +466,12 @@ class SwitchMonitor:
                     return
             self._last_alert[kind] = now
 
-        self.notifier.send(subject, body)
+        # Coalesce simultaneous events into one email when a batcher is
+        # wired in; otherwise send immediately (legacy behaviour).
+        if self._batcher is not None:
+            self._batcher.add(kind, label or self.name, body)
+        else:
+            self.notifier.send(subject, body)
 
     def start(self) -> None:
         def _run() -> None:
@@ -506,10 +519,12 @@ class SwitchMonitorManager:
         snmp:     Optional[SnmpAgent]      = None,
         detector: Optional[VendorDetector] = None,
         alert_dedup_seconds: int = 300,
+        alert_batcher: "Optional[AlertBatcher]" = None,
     ) -> None:
         self._username         = username
         self._password         = password
         self._notifier         = notifier
+        self._alert_batcher    = alert_batcher
         self._state            = state
         self._verify           = verify_ssl
         self._poll_interval    = poll_interval
@@ -552,6 +567,7 @@ class SwitchMonitorManager:
                 detector          = self._detector,
                 alert_dedup_seconds = self._alert_dedup_seconds,
                 monitor_mode      = monitor_mode or "auto",
+                alert_batcher     = self._alert_batcher,
             )
             m.start()
             self._monitors[host] = m
@@ -633,6 +649,14 @@ def start_all(
         dedup_minutes = 5
     dedup_seconds = max(0, dedup_minutes) * 60
 
+    # v3.3: coalesce simultaneous down/restored events into one email.
+    # [agent] alert_batch_seconds (default 60; 0 disables batching).
+    try:
+        batch_seconds = int(cfg.get("agent", "alert_batch_seconds", fallback="60"))
+    except (ValueError, TypeError):
+        batch_seconds = 60
+    alert_batcher = AlertBatcher(notifier, window_seconds=batch_seconds)
+
     manager = SwitchMonitorManager(
         username          = cfg.get("credentials", "username", fallback="admin"),
         password          = _decrypt(
@@ -646,9 +670,12 @@ def start_all(
         snmp              = snmp,
         detector          = detector,
         alert_dedup_seconds = dedup_seconds,
+        alert_batcher     = alert_batcher,
     )
-    log.info("Alert dedup window: %d minute(s) per host per alert kind",
-             dedup_minutes)
+    log.info("Alert dedup window: %d minute(s) per host per alert kind; "
+             "alert batching: %s",
+             dedup_minutes,
+             f"{batch_seconds}s window" if batch_seconds > 0 else "disabled")
 
     # Seed with any manually configured switches.
     # Per-switch passwords (rare but supported) may also be encrypted.
