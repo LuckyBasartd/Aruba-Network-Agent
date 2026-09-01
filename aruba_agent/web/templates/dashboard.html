@@ -418,6 +418,31 @@
     document.querySelectorAll('#switch-head th.sortable').forEach(th => {
       th.addEventListener('click', () => onSortClick(th.dataset.sort));
     });
+
+    // Actions menu (⋯) lives inside the scrollable switch table, whose
+    // overflow clips a normally-positioned dropdown. When one opens, re-pin
+    // its menu with position:fixed relative to the viewport so it escapes the
+    // scroll container (flipping upward near the bottom edge). Delegated on
+    // the tbody, which survives re-renders.
+    const tbody = $('switch-tbody');
+    if (tbody) {
+      tbody.addEventListener('shown.bs.dropdown', (e) => {
+        const toggle = e.target.closest('[data-bs-toggle="dropdown"]');
+        if (!toggle) return;
+        const menu = toggle.parentElement.querySelector('.dropdown-menu.show');
+        if (!menu) return;
+        const r = toggle.getBoundingClientRect();
+        menu.style.position = 'fixed';
+        menu.style.margin   = '0';
+        menu.style.zIndex   = '2000';
+        let top = r.bottom;
+        if (top + menu.offsetHeight > window.innerHeight) {
+          top = Math.max(0, r.top - menu.offsetHeight);   // flip up near bottom
+        }
+        menu.style.top  = top + 'px';
+        menu.style.left = Math.max(0, r.right - menu.offsetWidth) + 'px';
+      });
+    }
     updateSortIndicators();
   });
 
