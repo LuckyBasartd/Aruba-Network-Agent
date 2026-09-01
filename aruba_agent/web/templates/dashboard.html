@@ -292,6 +292,12 @@
         </h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
+      <div class="px-3 py-2 d-flex align-items-center flex-wrap gap-2"
+           style="border-bottom:1px solid #30363d; background:#0d1117;">
+        <span class="small text-muted">Maintenance:</span>
+        <div id="modal-maint-actions" class="d-flex flex-wrap gap-2"></div>
+        <span id="modal-maint-status" class="ms-auto small text-muted"></span>
+      </div>
       <div class="modal-body p-0" style="max-height:500px; overflow-y:auto;">
         <div id="modal-loading" class="text-center text-muted py-4">
           <div class="spinner-border spinner-border-sm me-2"></div>Loading backups…
@@ -419,35 +425,6 @@
       th.addEventListener('click', () => onSortClick(th.dataset.sort));
     });
 
-    // Actions menu (⋯) lives inside the scrollable switch table, whose
-    // overflow clips a normally-positioned dropdown. When one opens, re-pin
-    // its menu with position:fixed relative to the viewport so it escapes the
-    // scroll container (flipping upward near the bottom edge). Delegated on
-    // the tbody, which survives re-renders.
-    const tbody = $('switch-tbody');
-    if (tbody) {
-      tbody.addEventListener('shown.bs.dropdown', (e) => {
-        const toggle = e.target.closest('[data-bs-toggle="dropdown"]');
-        if (!toggle) return;
-        const menu = toggle.parentElement.querySelector('.dropdown-menu.show');
-        if (!menu) return;
-        // Clear Popper's own positioning (inset + transform) first, or our
-        // fixed top/left get offset by its translate and land off-screen.
-        menu.style.position  = 'fixed';
-        menu.style.inset     = 'auto';
-        menu.style.transform = 'none';
-        menu.style.margin    = '0';
-        menu.style.zIndex    = '2000';
-        const r = toggle.getBoundingClientRect();
-        const mw = menu.offsetWidth, mh = menu.offsetHeight;
-        let top = r.bottom;
-        if (top + mh > window.innerHeight) top = Math.max(0, r.top - mh);  // flip up
-        let left = r.right - mw;                       // right-align to the button
-        left = Math.max(4, Math.min(left, window.innerWidth - mw - 4));
-        menu.style.top  = top + 'px';
-        menu.style.left = left + 'px';
-      });
-    }
     updateSortIndicators();
   });
 
@@ -704,33 +681,13 @@
         ? `<span class="os-chip" title="Firmware / OS version">${esc(sw.os_version)}</span>`
         : `<span class="text-muted">—</span>`;
 
-      // Row actions menu: mute/unmute, unmanage/manage, delete. Every item
-      // stops propagation so the row's openBackups handler doesn't fire.
-      const _stop = "event.preventDefault();event.stopPropagation();";
-      const muteItems = isMuted
-        ? `<li><a class="dropdown-item" href="#" onclick="${_stop}unmuteHost('${esc(sw.name)}')"><i class="bi bi-bell me-2"></i>Unmute alerts</a></li>`
-        : `<li><h6 class="dropdown-header">Mute alerts</h6></li>
-           <li><a class="dropdown-item" href="#" onclick="${_stop}muteHost('${esc(sw.name)}',null)">Indefinite</a></li>
-           <li><a class="dropdown-item" href="#" onclick="${_stop}muteHost('${esc(sw.name)}',1)">1 hour</a></li>
-           <li><a class="dropdown-item" href="#" onclick="${_stop}muteHost('${esc(sw.name)}',8)">8 hours</a></li>
-           <li><a class="dropdown-item" href="#" onclick="${_stop}muteHost('${esc(sw.name)}',24)">24 hours</a></li>`;
-      const manageItem = sw.unmanaged
-        ? `<li><a class="dropdown-item" href="#" onclick="${_stop}manageHost('${esc(sw.name)}')"><i class="bi bi-play-circle me-2"></i>Resume monitoring</a></li>`
-        : `<li><a class="dropdown-item" href="#" onclick="${_stop}unmanageHost('${esc(sw.name)}')"><i class="bi bi-pause-circle me-2"></i>Unmanage (stop polling)</a></li>`;
-      const delCell = `
-        <div class="dropdown">
-          <button class="btn btn-outline-secondary btn-sm py-0 px-2" data-bs-toggle="dropdown"
-                  onclick="event.stopPropagation();" title="Actions" aria-expanded="false">
-            <i class="bi bi-three-dots"></i>
-          </button>
-          <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
-            ${muteItems}
-            <li><hr class="dropdown-divider"></li>
-            ${manageItem}
-            <li><hr class="dropdown-divider"></li>
-            <li><a class="dropdown-item text-danger" href="#" onclick="${_stop}deleteHost('${esc(sw.name)}','${esc(sw.hostname || sw.host)}')"><i class="bi bi-trash me-2"></i>Delete host</a></li>
-          </ul>
-        </div>`;
+      // Delete stays a plain row button (no dropdown to clip). Mute /
+      // unmanage live in the per-switch modal — click the row to open it.
+      const delCell = `<button class="btn btn-outline-danger btn-sm py-0 px-2"
+            title="Delete host — stops monitoring and removes it from the dashboard"
+            onclick="event.stopPropagation(); deleteHost('${esc(sw.name)}','${esc(sw.hostname || sw.host)}')">
+            <i class="bi bi-trash"></i>
+          </button>`;
 
       // Profile chip — clickable to open the picker. The
       // event.stopPropagation() keeps the parent row's openBackups
@@ -742,7 +699,7 @@
             onclick="event.stopPropagation(); openProfilePicker('${esc(sw.name)}','${esc(sw.hostname)}','${esc(sw.snmp_profile || '')}')"
           >${esc(profileLabel)} <i class="bi bi-pencil-fill ms-1" style="font-size:.65rem;"></i></span>`;
 
-      return `<tr class="sw-row" onclick="openBackups('${esc(sw.hostname)}','${esc(sw.host)}')" title="Click to view backup files">
+      return `<tr class="sw-row" onclick="openBackups('${esc(sw.hostname)}','${esc(sw.host)}','${esc(sw.name)}')" title="Click to view backups + maintenance actions">
         <td>${statusCell}</td>
         <td class="fw-semibold">${esc(sw.hostname)}</td>
         <td class="d-none d-md-table-cell">${vendorCell}</td>
@@ -840,8 +797,9 @@
   }
 
   // ── backup file modal ─────────────────────────────────────────────────────
-  async function openBackups(hostname, host) {
+  async function openBackups(hostname, host, name) {
     $('modal-switch-name').textContent = hostname || host;
+    renderMaint(name || hostname || host);
     $('modal-loading').style.display   = 'block';
     $('modal-empty').style.display     = 'none';
     $('modal-file-list').innerHTML     = '';
@@ -980,38 +938,68 @@
     showToast('Network scan started — check logs for progress.');
   }
 
-  // ── maintenance mute / unmanage ──────────────────────────────────────────
-  async function muteHost(name, hours) {
-    try {
-      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/mute`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(hours ? { hours } : {}),
-      });
-      if (r.ok) { showToast(hours ? `Alerts muted ${hours}h.` : 'Alerts muted.'); fetchState(); }
-      else      { showToast('Mute failed.'); }
-    } catch (e) { showToast('Mute error: ' + e.message); }
+  // ── maintenance mute / unmanage (rendered inside the backups modal) ──────
+  let modalSwitchName = null;
+
+  function renderMaint(name) {
+    modalSwitchName = name;
+    const acts = $('modal-maint-actions');
+    const stat = $('modal-maint-status');
+    if (!acts || !stat) return;
+    const sw = allSwitches.find(s => s.name === name);
+    if (!sw) { acts.innerHTML = ''; stat.textContent = ''; return; }
+    const isMuted = !!sw.alerts_muted && (!sw.mute_until || new Date(sw.mute_until) > new Date());
+    let html = '';
+    if (isMuted) {
+      html += `<button class="btn btn-outline-info btn-sm py-0" onclick="modalAction('unmute')"><i class="bi bi-bell me-1"></i>Unmute alerts</button>`;
+    } else {
+      html += `<div class="btn-group btn-group-sm" role="group" aria-label="Mute alerts">
+        <button class="btn btn-outline-warning py-0" onclick="modalAction('mute',null)" title="Mute until un-muted"><i class="bi bi-bell-slash me-1"></i>Mute</button>
+        <button class="btn btn-outline-warning py-0" onclick="modalAction('mute',1)">1h</button>
+        <button class="btn btn-outline-warning py-0" onclick="modalAction('mute',8)">8h</button>
+        <button class="btn btn-outline-warning py-0" onclick="modalAction('mute',24)">24h</button>
+      </div>`;
+    }
+    if (sw.unmanaged) {
+      html += `<button class="btn btn-outline-success btn-sm py-0" onclick="modalAction('manage')"><i class="bi bi-play-circle me-1"></i>Resume monitoring</button>`;
+    } else {
+      html += `<button class="btn btn-outline-secondary btn-sm py-0" onclick="modalAction('unmanage')"><i class="bi bi-pause-circle me-1"></i>Unmanage</button>`;
+    }
+    acts.innerHTML = html;
+    const parts = [];
+    if (isMuted)      parts.push(sw.mute_until ? 'Muted until ' + new Date(sw.mute_until).toLocaleString() : 'Muted (indefinite)');
+    if (sw.unmanaged) parts.push('Unmanaged — not polled');
+    stat.textContent = parts.join('  ·  ');
+    stat.className    = 'ms-auto small ' + (parts.length ? 'text-warning' : 'text-muted');
   }
-  async function unmuteHost(name) {
+
+  async function modalAction(kind, hours) {
+    const name = modalSwitchName;
+    if (!name) return;
+    if (kind === 'unmanage' &&
+        !confirm('Unmanage this switch? It stops being polled and won\'t alert until you resume monitoring.')) return;
+    const url  = `/api/switches/${encodeURIComponent(name)}/${kind}`;
+    const opts = { method: 'POST' };
+    if (kind === 'mute') {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body    = JSON.stringify(hours ? { hours } : {});
+    }
     try {
-      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/unmute`, { method: 'POST' });
-      if (r.ok) { showToast('Alerts un-muted.'); fetchState(); }
-      else      { showToast('Un-mute failed.'); }
-    } catch (e) { showToast('Un-mute error: ' + e.message); }
-  }
-  async function unmanageHost(name) {
-    if (!confirm(`Unmanage "${name}"?\n\nIt will stop being polled and won't alert until you resume monitoring.`)) return;
-    try {
-      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/unmanage`, { method: 'POST' });
-      if (r.ok) { showToast('Switch unmanaged (polling paused).'); fetchState(); }
-      else      { showToast('Unmanage failed.'); }
-    } catch (e) { showToast('Unmanage error: ' + e.message); }
-  }
-  async function manageHost(name) {
-    try {
-      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/manage`, { method: 'POST' });
-      if (r.ok) { showToast('Monitoring resumed.'); fetchState(); }
-      else      { showToast('Resume failed.'); }
-    } catch (e) { showToast('Resume error: ' + e.message); }
+      const r = await fetch(url, opts);
+      if (!r.ok) { showToast(kind + ' failed'); return; }
+      // Optimistic local update so the modal + row badge refresh instantly.
+      const sw = allSwitches.find(s => s.name === name);
+      if (sw) {
+        if (kind === 'mute')     { sw.alerts_muted = true;  sw.mute_until = hours ? new Date(Date.now() + hours*3600e3).toISOString() : null; }
+        if (kind === 'unmute')   { sw.alerts_muted = false; sw.mute_until = null; }
+        if (kind === 'unmanage') { sw.unmanaged = true; }
+        if (kind === 'manage')   { sw.unmanaged = false; }
+      }
+      renderMaint(name);
+      renderSwitches(allSwitches);
+      showToast('Updated.');
+      fetchState();
+    } catch (e) { showToast(kind + ' error: ' + e.message); }
   }
 
   // ── delete a host that's no longer on the network ────────────────────────
