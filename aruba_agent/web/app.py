@@ -31,7 +31,7 @@ import secrets
 import smtplib
 import subprocess
 import threading
-from datetime import timedelta
+from datetime import timedelta, datetime
 from email.message import EmailMessage
 from typing import Callable, List, Optional, Tuple
 
@@ -2949,6 +2949,59 @@ def create_app(
             "switch":         switch_name,
             "removed_manual": removed_manual,
         })
+
+    # ── maintenance mute / unmanage (SolarWinds-style suppression) ──────────
+    @app.post("/api/switches/<switch_name>/mute")
+    @require_login
+    def api_mute_switch(switch_name: str):
+        """Mute reachability emails for a switch (keep polling/status).
+        Optional JSON {"hours": N} sets an auto-expiry; omit for indefinite."""
+        if state.switches.get(switch_name) is None:
+            abort(404)
+        d = request.get_json(silent=True) or {}
+        until = None
+        if d.get("hours") not in (None, "", 0, "0"):
+            try:
+                until = datetime.now() + timedelta(hours=float(d["hours"]))
+            except (ValueError, TypeError):
+                return jsonify({"error": "invalid hours"}), 400
+        state.set_alert_mute(switch_name, True, until)
+        audit.record("switch.mute", user=session.get("user"), switch=switch_name,
+                     until=(until.isoformat() if until else "indefinite"),
+                     ip=request.remote_addr)
+        return jsonify({"status": "ok", "muted": True,
+                        "until": until.isoformat() if until else None})
+
+    @app.post("/api/switches/<switch_name>/unmute")
+    @require_login
+    def api_unmute_switch(switch_name: str):
+        if state.switches.get(switch_name) is None:
+            abort(404)
+        state.set_alert_mute(switch_name, False)
+        audit.record("switch.unmute", user=session.get("user"),
+                     switch=switch_name, ip=request.remote_addr)
+        return jsonify({"status": "ok", "muted": False})
+
+    @app.post("/api/switches/<switch_name>/unmanage")
+    @require_login
+    def api_unmanage_switch(switch_name: str):
+        """Stop polling + alerting for a switch until re-managed."""
+        if state.switches.get(switch_name) is None:
+            abort(404)
+        state.set_unmanaged(switch_name, True)
+        audit.record("switch.unmanage", user=session.get("user"),
+                     switch=switch_name, ip=request.remote_addr)
+        return jsonify({"status": "ok", "unmanaged": True})
+
+    @app.post("/api/switches/<switch_name>/manage")
+    @require_login
+    def api_manage_switch(switch_name: str):
+        if state.switches.get(switch_name) is None:
+            abort(404)
+        state.set_unmanaged(switch_name, False)
+        audit.record("switch.manage", user=session.get("user"),
+                     switch=switch_name, ip=request.remote_addr)
+        return jsonify({"status": "ok", "unmanaged": False})
 
     @app.post("/api/backup/trigger")
     @require_session_or_scope("backup.trigger")

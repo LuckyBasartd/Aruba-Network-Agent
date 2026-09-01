@@ -24,6 +24,8 @@
     .badge-up   { background-color: #238636; }
     .badge-down { background-color: #da3633; }
     .badge-warn { background-color: #9e6a03; color:#fff; margin-left:4px; cursor:help; }
+    .badge-muted     { background-color:#8957e5; color:#fff; margin-left:4px; cursor:help; }
+    .badge-unmanaged { background-color:#6e7681; color:#fff; }
     .status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
     .dot-up     { background:#3fb950; box-shadow: 0 0 6px #3fb950; }
     .dot-down   { background:#f85149; box-shadow: 0 0 6px #f85149; animation: blink 1s step-start infinite; }
@@ -638,6 +640,15 @@
       const snmpWarn = (!sw.is_down && sw.snmp_ok === false)
         ? '<span class="badge badge-warn" title="Reachable via SSH; SNMP not responding — check SNMP configuration">SNMP</span>'
         : '';
+      // Alert mute (maintenance) — effective if no expiry or expiry in future.
+      const isMuted = !!sw.alerts_muted && (!sw.mute_until || new Date(sw.mute_until) > new Date());
+      const mutedChip = isMuted
+        ? `<span class="badge badge-muted" title="Alerts muted${sw.mute_until ? ' until ' + new Date(sw.mute_until).toLocaleString() : ' (indefinite)'}">MUTED</span>`
+        : '';
+      // Unmanaged switches aren't polled, so show that instead of a stale up/down.
+      const statusCell = sw.unmanaged
+        ? '<span class="badge badge-unmanaged" title="Not being polled — unmanaged">UNMANAGED</span>'
+        : `<span class="status-dot ${dotCls}"></span>${badge}${snmpWarn}${mutedChip}`;
       const vLabel = VENDOR_LABEL[sw.vendor] || (sw.vendor || '—');
       const vClass = VENDOR_CLASS[sw.vendor] || 'vendor-unknown';
       const vendorChip = sw.vendor
@@ -663,13 +674,33 @@
         ? `<span class="os-chip" title="Firmware / OS version">${esc(sw.os_version)}</span>`
         : `<span class="text-muted">—</span>`;
 
-      // Delete action. stopPropagation keeps the row's openBackups
-      // handler from firing when the operator just wants to remove a host.
-      const delCell = `<button class="btn btn-outline-danger btn-sm py-0 px-2 del-btn"
-            title="Delete host — stops monitoring and removes it from the dashboard"
-            onclick="event.stopPropagation(); deleteHost('${esc(sw.name)}','${esc(sw.hostname || sw.host)}')">
-            <i class="bi bi-trash"></i>
-          </button>`;
+      // Row actions menu: mute/unmute, unmanage/manage, delete. Every item
+      // stops propagation so the row's openBackups handler doesn't fire.
+      const _stop = "event.preventDefault();event.stopPropagation();";
+      const muteItems = isMuted
+        ? `<li><a class="dropdown-item" href="#" onclick="${_stop}unmuteHost('${esc(sw.name)}')"><i class="bi bi-bell me-2"></i>Unmute alerts</a></li>`
+        : `<li><h6 class="dropdown-header">Mute alerts</h6></li>
+           <li><a class="dropdown-item" href="#" onclick="${_stop}muteHost('${esc(sw.name)}',null)">Indefinite</a></li>
+           <li><a class="dropdown-item" href="#" onclick="${_stop}muteHost('${esc(sw.name)}',1)">1 hour</a></li>
+           <li><a class="dropdown-item" href="#" onclick="${_stop}muteHost('${esc(sw.name)}',8)">8 hours</a></li>
+           <li><a class="dropdown-item" href="#" onclick="${_stop}muteHost('${esc(sw.name)}',24)">24 hours</a></li>`;
+      const manageItem = sw.unmanaged
+        ? `<li><a class="dropdown-item" href="#" onclick="${_stop}manageHost('${esc(sw.name)}')"><i class="bi bi-play-circle me-2"></i>Resume monitoring</a></li>`
+        : `<li><a class="dropdown-item" href="#" onclick="${_stop}unmanageHost('${esc(sw.name)}')"><i class="bi bi-pause-circle me-2"></i>Unmanage (stop polling)</a></li>`;
+      const delCell = `
+        <div class="dropdown">
+          <button class="btn btn-outline-secondary btn-sm py-0 px-2" data-bs-toggle="dropdown"
+                  onclick="event.stopPropagation();" title="Actions" aria-expanded="false">
+            <i class="bi bi-three-dots"></i>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+            ${muteItems}
+            <li><hr class="dropdown-divider"></li>
+            ${manageItem}
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item text-danger" href="#" onclick="${_stop}deleteHost('${esc(sw.name)}','${esc(sw.hostname || sw.host)}')"><i class="bi bi-trash me-2"></i>Delete host</a></li>
+          </ul>
+        </div>`;
 
       // Profile chip — clickable to open the picker. The
       // event.stopPropagation() keeps the parent row's openBackups
@@ -682,7 +713,7 @@
           >${esc(profileLabel)} <i class="bi bi-pencil-fill ms-1" style="font-size:.65rem;"></i></span>`;
 
       return `<tr class="sw-row" onclick="openBackups('${esc(sw.hostname)}','${esc(sw.host)}')" title="Click to view backup files">
-        <td><span class="status-dot ${dotCls}"></span>${badge}${snmpWarn}</td>
+        <td>${statusCell}</td>
         <td class="fw-semibold">${esc(sw.hostname)}</td>
         <td class="d-none d-md-table-cell">${vendorCell}</td>
         <td class="d-none d-md-table-cell">${osCell}</td>
@@ -917,6 +948,40 @@
   async function triggerScan() {
     await fetch('/api/scanner/trigger', { method: 'POST' });
     showToast('Network scan started — check logs for progress.');
+  }
+
+  // ── maintenance mute / unmanage ──────────────────────────────────────────
+  async function muteHost(name, hours) {
+    try {
+      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/mute`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(hours ? { hours } : {}),
+      });
+      if (r.ok) { showToast(hours ? `Alerts muted ${hours}h.` : 'Alerts muted.'); fetchState(); }
+      else      { showToast('Mute failed.'); }
+    } catch (e) { showToast('Mute error: ' + e.message); }
+  }
+  async function unmuteHost(name) {
+    try {
+      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/unmute`, { method: 'POST' });
+      if (r.ok) { showToast('Alerts un-muted.'); fetchState(); }
+      else      { showToast('Un-mute failed.'); }
+    } catch (e) { showToast('Un-mute error: ' + e.message); }
+  }
+  async function unmanageHost(name) {
+    if (!confirm(`Unmanage "${name}"?\n\nIt will stop being polled and won't alert until you resume monitoring.`)) return;
+    try {
+      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/unmanage`, { method: 'POST' });
+      if (r.ok) { showToast('Switch unmanaged (polling paused).'); fetchState(); }
+      else      { showToast('Unmanage failed.'); }
+    } catch (e) { showToast('Unmanage error: ' + e.message); }
+  }
+  async function manageHost(name) {
+    try {
+      const r = await fetch(`/api/switches/${encodeURIComponent(name)}/manage`, { method: 'POST' });
+      if (r.ok) { showToast('Monitoring resumed.'); fetchState(); }
+      else      { showToast('Resume failed.'); }
+    } catch (e) { showToast('Resume error: ' + e.message); }
   }
 
   // ── delete a host that's no longer on the network ────────────────────────

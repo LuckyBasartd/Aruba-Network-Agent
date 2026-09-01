@@ -271,6 +271,9 @@ class SwitchMonitor:
         # The mode lives in AgentState — manual_hosts.py and the
         # scanner both populate it via register_switch().
         sw_now = self.state.switches.get(self.name)
+        # Unmanaged: operator paused this switch — no polling, no alerts.
+        if sw_now is not None and sw_now.unmanaged:
+            return
         mode   = (sw_now.monitor_mode if sw_now else "auto") or "auto"
 
         snmp_ok = True   # only meaningful for SNMP-polled modes
@@ -447,6 +450,11 @@ class SwitchMonitor:
         burst of 20 transitions in 30 seconds still only emits ~2
         emails per dedup window, not 1+ per minute.
         """
+        # Maintenance mute: keep polling/status, but hold the email.
+        if self.state.alerts_suppressed(self.name):
+            log.info("Alert MUTED (%s): %s — email suppressed", kind, self.name)
+            return
+
         if self._alert_dedup_seconds > 0:
             last = self._last_alert.get(kind)
             now  = datetime.now()

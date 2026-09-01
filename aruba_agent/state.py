@@ -85,6 +85,13 @@ class SwitchState:
     # only reachable via the ICMP+SSH fallback (SNMP misconfigured) so the
     # dashboard can flag "reachable but SNMP not configured".
     snmp_ok:      bool              = True
+    # v3.4: alert mute (maintenance) + unmanage.
+    #   alerts_muted — keep polling/showing status, but suppress emails.
+    #   mute_until   — None = mute until manually cleared; else auto-expire.
+    #   unmanaged    — stop polling entirely until re-managed.
+    alerts_muted: bool              = False
+    mute_until:   Optional[datetime] = None
+    unmanaged:    bool              = False
 
 
 @dataclass
@@ -169,6 +176,9 @@ class AgentState:
                     monitor_mode = entry.get("monitor_mode", "auto") or "auto",
                     is_down      = bool(entry.get("is_down", False)),
                     snmp_ok      = bool(entry.get("snmp_ok", True)),
+                    alerts_muted = bool(entry.get("alerts_muted", False)),
+                    mute_until   = _parse_iso(entry.get("mute_until")),
+                    unmanaged    = bool(entry.get("unmanaged", False)),
                     failures     = int(entry.get("failures", 0)),
                     last_seen    = _parse_iso(entry.get("last_seen")),
                     last_event   = entry.get("last_event",
@@ -228,6 +238,9 @@ class AgentState:
                     "monitor_mode": s.monitor_mode,
                     "is_down":      s.is_down,
                     "snmp_ok":      s.snmp_ok,
+                    "alerts_muted": s.alerts_muted,
+                    "mute_until":   _iso(s.mute_until),
+                    "unmanaged":    s.unmanaged,
                     "failures":     s.failures,
                     "last_seen":    _iso(s.last_seen),
                     "last_event":   s.last_event,
@@ -374,6 +387,47 @@ class AgentState:
             self._save()
             return True
 
+    # ─── maintenance / unmanage ────────────────────────────────────────────
+    def set_alert_mute(self, name: str, muted: bool,
+                       until: "Optional[datetime]" = None) -> bool:
+        """Mute (or unmute) reachability emails for a switch. ``until`` is an
+        optional auto-expiry; None means muted until manually cleared."""
+        with self._lock:
+            sw = self.switches.get(name)
+            if sw is None:
+                return False
+            sw.alerts_muted = bool(muted)
+            sw.mute_until   = until if muted else None
+            self._save()
+        log.info("Alerts %s for %s%s", "MUTED" if muted else "UNMUTED", name,
+                 f" until {until.isoformat(timespec='minutes')}" if (muted and until) else "")
+        return True
+
+    def alerts_suppressed(self, name: str) -> bool:
+        """True if the switch's emails are currently muted. Auto-clears an
+        expired timed mute (and persists the clear)."""
+        with self._lock:
+            sw = self.switches.get(name)
+            if sw is None or not sw.alerts_muted:
+                return False
+            if sw.mute_until is not None and datetime.now() >= sw.mute_until:
+                sw.alerts_muted = False
+                sw.mute_until   = None
+                self._save()
+                return False
+            return True
+
+    def set_unmanaged(self, name: str, unmanaged: bool) -> bool:
+        """Unmanage (stop polling) or re-manage a switch."""
+        with self._lock:
+            sw = self.switches.get(name)
+            if sw is None:
+                return False
+            sw.unmanaged = bool(unmanaged)
+            self._save()
+        log.info("Switch %s: %s", name, "UNMANAGED" if unmanaged else "MANAGED")
+        return True
+
     def remove_switch(self, name: str) -> bool:
         """
         Drop a switch from the registry entirely and persist.
@@ -482,6 +536,9 @@ class AgentState:
                         "monitor_mode": s.monitor_mode or "auto",
                         "is_down":      s.is_down,
                         "snmp_ok":      s.snmp_ok,
+                        "alerts_muted": s.alerts_muted,
+                        "mute_until":   _iso(s.mute_until),
+                        "unmanaged":    s.unmanaged,
                         "failures":     s.failures,
                         "last_seen":    s.last_seen.isoformat() if s.last_seen else None,
                         "last_event":   s.last_event,
