@@ -3058,6 +3058,68 @@ def create_app(
         Run Now buttons next to the last_run timestamps."""
         return jsonify({"locations": sorted(arp_fns.keys()) if arp_fns else []})
 
+    @app.get("/api/jobs")
+    @require_login
+    def api_jobs():
+        """Aggregate the scheduled tasks (backup, discovery, ARP) with their
+        enabled/schedule config and last/next-run for the Jobs page."""
+        from datetime import datetime as _dt, timedelta as _td
+
+        def _next(hhmm):
+            try:
+                h, m = (int(x) for x in str(hhmm).split(":"))
+            except Exception:
+                return None
+            now = _dt.now()
+            nxt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if nxt <= now:
+                nxt += _td(days=1)
+            return nxt.isoformat()
+
+        live = state.to_dict()
+        jobs = []
+        if cfg is not None and "backup" in cfg:
+            b = live.get("backup") or {}
+            en = cfg.getboolean("backup", "enabled", fallback=False)
+            sc = cfg.get("backup", "schedule", fallback="02:00")
+            jobs.append({
+                "id": "backup", "name": "Config backup",
+                "type": "Download configs from devices", "enabled": en, "schedule": sc,
+                "last_run": b.get("timestamp"),
+                "last_status": (f"{b.get('success_count', 0)} ok / {b.get('failed_count', 0)} failed"
+                                if b.get("timestamp") else "—"),
+                "next_run": _next(sc) if en else None,
+                "trigger": "/api/backup/trigger", "edit": url_for("settings_backup"),
+            })
+        if cfg is not None and "scanner" in cfg:
+            sc_state = live.get("scanner") or {}
+            en = cfg.getboolean("scanner", "enabled", fallback=False)
+            sc = cfg.get("scanner", "schedule", fallback="00:00")
+            jobs.append({
+                "id": "scanner", "name": "Network discovery",
+                "type": "Ping sweep + REST probe", "enabled": en, "schedule": sc,
+                "last_run": sc_state.get("last_run"),
+                "last_status": (f"{sc_state.get('device_count', '—')} devices"
+                                if sc_state.get("last_run") else "—"),
+                "next_run": _next(sc) if en else None,
+                "trigger": "/api/scanner/trigger", "edit": url_for("settings_scanner"),
+            })
+        arp_runs = live.get("arp_last_run") or {}
+        for sec in (cfg.sections() if cfg is not None else []):
+            if not sec.startswith("arp."):
+                continue
+            loc = sec[len("arp."):]
+            en = cfg.getboolean(sec, "enabled", fallback=True)
+            sc = cfg.get(sec, "schedule", fallback="01:00")
+            jobs.append({
+                "id": f"arp.{loc}", "name": f"ARP discovery — {loc}",
+                "type": "ARP table pull", "enabled": en, "schedule": sc,
+                "last_run": arp_runs.get(loc), "last_status": "—",
+                "next_run": _next(sc) if en else None,
+                "trigger": f"/api/arp/{loc}/trigger", "edit": url_for("settings_arp"),
+            })
+        return jsonify({"jobs": jobs})
+
     # Match the same name validation used elsewhere in the agent —
     # locations are alphanumeric plus . _ -
     _ARP_LOCATION_NAME = re.compile(r"^[a-zA-Z0-9._-]+$")
