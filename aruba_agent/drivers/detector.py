@@ -77,6 +77,8 @@ _PREFIX_TO_VENDOR: Tuple[Tuple[str, str], ...] = tuple(sorted(
 _DESCR_KEYWORDS: Tuple[Tuple[str, str], ...] = (
     ("ArubaOS-CX",        VENDOR_ARUBA_CX),
     ("Aruba JL",          VENDOR_ARUBA_CX),    # 6300/6400 hostname patterns
+    ("ProCurve",          VENDOR_ARUBA_OS),    # HP ProCurve / ArubaOS-Switch (2530, 2930F, ...)
+    ("HP J",              VENDOR_ARUBA_OS),    # ProCurve part numbers, e.g. "HP J9774A"
     ("Aruba",             VENDOR_ARUBA_OS),    # generic — last resort
     ("Cisco IOS",         VENDOR_CISCO_IOS),
     ("Cisco Internetwork",VENDOR_CISCO_IOS),
