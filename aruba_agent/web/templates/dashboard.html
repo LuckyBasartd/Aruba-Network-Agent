@@ -431,16 +431,21 @@
         if (!toggle) return;
         const menu = toggle.parentElement.querySelector('.dropdown-menu.show');
         if (!menu) return;
+        // Clear Popper's own positioning (inset + transform) first, or our
+        // fixed top/left get offset by its translate and land off-screen.
+        menu.style.position  = 'fixed';
+        menu.style.inset     = 'auto';
+        menu.style.transform = 'none';
+        menu.style.margin    = '0';
+        menu.style.zIndex    = '2000';
         const r = toggle.getBoundingClientRect();
-        menu.style.position = 'fixed';
-        menu.style.margin   = '0';
-        menu.style.zIndex   = '2000';
+        const mw = menu.offsetWidth, mh = menu.offsetHeight;
         let top = r.bottom;
-        if (top + menu.offsetHeight > window.innerHeight) {
-          top = Math.max(0, r.top - menu.offsetHeight);   // flip up near bottom
-        }
+        if (top + mh > window.innerHeight) top = Math.max(0, r.top - mh);  // flip up
+        let left = r.right - mw;                       // right-align to the button
+        left = Math.max(4, Math.min(left, window.innerWidth - mw - 4));
         menu.style.top  = top + 'px';
-        menu.style.left = Math.max(0, r.right - menu.offsetWidth) + 'px';
+        menu.style.left = left + 'px';
       });
     }
     updateSortIndicators();
