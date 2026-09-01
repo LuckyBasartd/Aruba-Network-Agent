@@ -34,6 +34,23 @@
 
     /* Switch table — 10 rows then scroll */
     .switch-scroll { max-height: 360px; overflow-y: auto; }
+    .metric-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;}
+    .metric-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .15s;}
+    .metric-card:hover{border-color:#58a6ff;}
+    .metric-card.active{border-color:#58a6ff;box-shadow:inset 0 0 0 1px #58a6ff;}
+    .metric-num{font-size:26px;font-weight:600;line-height:1.1;}
+    .metric-label{font-size:13px;color:#8b949e;margin-top:2px;}
+    #switch-grouped{padding:4px 0;}
+    .grp-vendor{border-bottom:1px solid #21262d;}
+    .grp-vendor>summary{padding:10px 14px;cursor:pointer;font-weight:600;color:#e6edf3;}
+    .grp-vname{margin-right:6px;}
+    details>summary.grp-status{padding:6px 14px 6px 28px;cursor:pointer;font-size:13px;color:#8b949e;}
+    .grp-row{display:grid;grid-template-columns:150px 1fr 150px 110px;gap:10px;align-items:center;
+      padding:6px 14px 6px 42px;cursor:pointer;border-top:1px solid #1b1f24;font-size:13px;}
+    .grp-row:hover{background:#21262d;}
+    .grp-name{color:#58a6ff;}
+    .grp-host{color:#8b949e;font-family:ui-monospace,Menlo,monospace;font-size:12px;}
+    .grp-seen{color:#8b949e;font-size:12px;}
 
     /* Vendor chips. Soft-tinted backgrounds picked to read on the
        dark dashboard without competing with the UP/DOWN badges. */
@@ -115,31 +132,23 @@
 
 <div class="container-fluid py-4 px-4">
 
-  <!-- ── Row 1: Summary cards ─────────────────────────────────────────── -->
-  <div class="row g-3 mb-4">
-    <div class="col-sm-6 col-md-4">
-      <div class="card h-100 stat-card" id="card-up" onclick="setFilter('up')" title="Click to show UP switches only">
-        <div class="card-body text-center">
-          <div class="display-6 fw-bold text-success" id="stat-switches-up">—</div>
-          <div class="small text-muted">Switches UP <i class="bi bi-funnel ms-1" style="font-size:.7rem"></i></div>
-        </div>
-      </div>
+  <!-- ── Row 1: Metric cards ──────────────────────────────────────────── -->
+  <div class="metric-row mb-4">
+    <div class="metric-card" id="card-all" onclick="setFilter('all')" title="Show all">
+      <div class="metric-num" id="stat-total">—</div>
+      <div class="metric-label">Monitored</div>
     </div>
-    <div class="col-sm-6 col-md-4">
-      <div class="card h-100 stat-card" id="card-down" onclick="setFilter('down')" title="Click to show DOWN switches only">
-        <div class="card-body text-center">
-          <div class="display-6 fw-bold text-danger" id="stat-switches-down">—</div>
-          <div class="small text-muted">Switches DOWN <i class="bi bi-funnel ms-1" style="font-size:.7rem"></i></div>
-        </div>
-      </div>
+    <div class="metric-card" id="card-up" onclick="setFilter('up')" title="Show UP only">
+      <div class="metric-num text-success" id="stat-switches-up">—</div>
+      <div class="metric-label">Up</div>
     </div>
-    <div class="col-sm-6 col-md-4">
-      <div class="card h-100">
-        <div class="card-body text-center">
-          <div class="display-6 fw-bold text-info" id="stat-devices">—</div>
-          <div class="small text-muted">Devices in Inventory</div>
-        </div>
-      </div>
+    <div class="metric-card" id="card-down" onclick="setFilter('down')" title="Show DOWN only">
+      <div class="metric-num text-danger" id="stat-switches-down">—</div>
+      <div class="metric-label">Down</div>
+    </div>
+    <div class="metric-card" id="card-unmanaged" onclick="setFilter('unmanaged')" title="Show unmanaged only">
+      <div class="metric-num" style="color:#8b949e;" id="stat-unmanaged">—</div>
+      <div class="metric-label">Unmanaged</div>
     </div>
   </div>
 
@@ -157,6 +166,10 @@
                Filtering runs over the data /api/state already returns — no extra
                round-trip, results update as the operator types. -->
           <div class="d-flex align-items-center gap-2 ms-auto">
+            <div class="btn-group btn-group-sm" role="group" aria-label="View mode">
+              <button class="btn btn-outline-secondary active" id="view-table" type="button" onclick="setView('table')" title="Table view"><i class="bi bi-list-ul"></i></button>
+              <button class="btn btn-outline-secondary" id="view-group" type="button" onclick="setView('group')" title="Group by vendor"><i class="bi bi-diagram-3"></i></button>
+            </div>
             <div class="input-group input-group-sm" style="width:18rem;">
               <span class="input-group-text bg-dark text-light border-secondary">
                 <i class="bi bi-search"></i>
@@ -178,7 +191,7 @@
           </div>
         </div>
         <div class="card-body p-0">
-          <div class="switch-scroll">
+          <div class="switch-scroll" id="switch-table-wrap">
             <table class="table table-sm table-dark table-hover mb-0">
               <thead class="sticky-top" style="top:0; background:#21262d;">
                 <tr id="switch-head">
@@ -198,6 +211,7 @@
               </tbody>
             </table>
           </div>
+          <div class="switch-scroll" id="switch-grouped" style="display:none;"></div>
         </div>
       </div>
     </div>
@@ -370,6 +384,9 @@
   let timer;
   let activeFilter = 'all';   // 'all' | 'up' | 'down'
   let allSwitches  = [];
+  const VENDOR_LABEL = { aruba_cx:'Aruba CX', aruba_os:'Aruba', cisco_ios:'Cisco', arista_eos:'Arista' };
+  const VENDOR_CLASS = { aruba_cx:'vendor-aruba', aruba_os:'vendor-aruba', cisco_ios:'vendor-cisco', arista_eos:'vendor-arista' };
+  let viewMode = localStorage.getItem('switchView') || 'table';
   // v3.0.1: free-text filter applied on top of the status filter.
   // Persisted in localStorage so a page reload doesn't drop the
   // operator's query mid-triage.
@@ -408,6 +425,7 @@
     });
 
     updateSortIndicators();
+    setView(viewMode);
   });
 
   // ── helpers ──────────────────────────────────────────────────────────────
@@ -475,10 +493,10 @@
     if (activeFilter === f) f = 'all';   // toggle off
     activeFilter = f;
 
-    // Update card highlight
-    ['card-up','card-down'].forEach(id => $( id).classList.remove('active-filter'));
-    if (f === 'up')   $('card-up').classList.add('active-filter');
-    if (f === 'down') $('card-down').classList.add('active-filter');
+    // Update metric-card highlight
+    ['card-all','card-up','card-down','card-unmanaged'].forEach(id => { const el=$(id); if(el) el.classList.remove('active'); });
+    const cardId = {all:'card-all', up:'card-up', down:'card-down', unmanaged:'card-unmanaged'}[f];
+    if (cardId && $(cardId)) $(cardId).classList.add('active');
 
     // Show/hide clear button and badge
     const badge = $('filter-badge');
@@ -493,6 +511,75 @@
     }
 
     renderSwitches(allSwitches);
+  }
+
+  // ── status filter + view mode (table / grouped-by-vendor) ────────────────
+  function applyStatusFilter(list) {
+    if (activeFilter === 'up')        return list.filter(s => !s.is_down && !s.unmanaged);
+    if (activeFilter === 'down')      return list.filter(s =>  s.is_down && !s.unmanaged);
+    if (activeFilter === 'unmanaged') return list.filter(s =>  s.unmanaged);
+    return list;
+  }
+
+  function setView(mode) {
+    viewMode = mode;
+    localStorage.setItem('switchView', mode);
+    const t = $('view-table'), g = $('view-group');
+    if (t) t.classList.toggle('active', mode === 'table');
+    if (g) g.classList.toggle('active', mode === 'group');
+    const tw = $('switch-table-wrap'), gw = $('switch-grouped');
+    if (tw) tw.style.display = mode === 'table' ? '' : 'none';
+    if (gw) gw.style.display = mode === 'group' ? '' : 'none';
+    renderSwitches(allSwitches);
+  }
+
+  function statusPill(sw) {
+    if (sw.unmanaged) return '<span class="badge badge-unmanaged">UNMANAGED</span>';
+    return sw.is_down ? '<span class="badge badge-down">DOWN</span>'
+                      : '<span class="badge badge-up">UP</span>';
+  }
+
+  function groupedRow(sw) {
+    const muted = (!sw.is_down && !sw.unmanaged && sw.alerts_muted &&
+                   (!sw.mute_until || new Date(sw.mute_until) > new Date()))
+      ? '<span class="badge badge-muted">MUTED</span>' : '';
+    return `<div class="grp-row" onclick="openBackups('${esc(sw.hostname)}','${esc(sw.host)}','${esc(sw.name)}')" title="Click for backups + actions">
+      <span>${statusPill(sw)}${muted}</span>
+      <span class="grp-name">${esc(sw.hostname)}</span>
+      <span class="grp-host">${esc(sw.host)}</span>
+      <span class="grp-seen">${sw.last_seen ? fmtTime(sw.last_seen) : '—'}</span>
+    </div>`;
+  }
+
+  function renderGrouped(list) {
+    const box = $('switch-grouped');
+    if (!box) return;
+    if (!list.length) {
+      box.innerHTML = '<div class="text-muted text-center py-3">No switches match.</div>';
+      return;
+    }
+    const groups = {};
+    list.forEach(sw => {
+      const v = VENDOR_LABEL[sw.vendor] || (sw.vendor || 'Unknown');
+      (groups[v] = groups[v] || []).push(sw);
+    });
+    const sub = (label, arr, cls, open) => arr.length ? `
+      <details ${open}>
+        <summary class="grp-status"><span class="badge ${cls}">${label}</span> <span class="text-muted">${arr.length}</span></summary>
+        ${arr.slice().sort((a,b)=>String(a.hostname||'').localeCompare(String(b.hostname||''),undefined,{numeric:true})).map(groupedRow).join('')}
+      </details>` : '';
+    box.innerHTML = Object.keys(groups).sort().map(v => {
+      const rows = groups[v];
+      const down = rows.filter(s => s.is_down && !s.unmanaged);
+      const up   = rows.filter(s => !s.is_down && !s.unmanaged);
+      const unm  = rows.filter(s => s.unmanaged);
+      return `<details open class="grp-vendor">
+        <summary><span class="grp-vname">${esc(v)}</span> <span class="text-muted">${rows.length}</span></summary>
+        ${sub('Down', down, 'badge-down', 'open')}
+        ${sub('Up', up, 'badge-up', '')}
+        ${sub('Unmanaged', unm, 'badge-unmanaged', '')}
+      </details>`;
+    }).join('');
   }
 
   // ── fetch & render ───────────────────────────────────────────────────────
@@ -514,11 +601,13 @@
     renderScanner(data.scanner || {});
     renderArp(data.arp_last_run || {});
 
-    const swUp   = allSwitches.filter(s => !s.is_down).length;
-    const swDown = allSwitches.filter(s =>  s.is_down).length;
+    const unm    = allSwitches.filter(s => s.unmanaged).length;
+    const swUp   = allSwitches.filter(s => !s.is_down && !s.unmanaged).length;
+    const swDown = allSwitches.filter(s =>  s.is_down && !s.unmanaged).length;
+    $('stat-total').textContent         = allSwitches.length;
     $('stat-switches-up').textContent   = swUp;
     $('stat-switches-down').textContent = swDown;
-    $('stat-devices').textContent       = (data.scanner || {}).device_count ?? '—';
+    $('stat-unmanaged').textContent     = unm;
   }
 
   // ── column sorting ─────────────────────────────────────────────────────────
@@ -589,9 +678,9 @@
     // search narrows whatever survives that. Doing status first keeps
     // the active-filter card highlight semantics intuitive — "search
     // within DOWN switches" is the obvious read of both being active.
-    let filtered = activeFilter === 'all' ? switches
-                 : switches.filter(s => activeFilter === 'down' ? s.is_down : !s.is_down);
+    let filtered = applyStatusFilter(switches);
     if (searchTerm) filtered = filtered.filter(matchesSearch);
+    if (viewMode === 'group') { renderGrouped(filtered); return; }
 
     if (!filtered.length) {
       let msg;
@@ -606,19 +695,6 @@
       $('switch-tbody').innerHTML = `<tr><td colspan="9" class="text-center text-muted py-3">${msg}</td></tr>`;
       return;
     }
-
-    const VENDOR_LABEL = {
-      aruba_cx:   'Aruba CX',
-      aruba_os:   'Aruba',
-      cisco_ios:  'Cisco',
-      arista_eos: 'Arista',
-    };
-    const VENDOR_CLASS = {
-      aruba_cx:   'vendor-aruba',
-      aruba_os:   'vendor-aruba',
-      cisco_ios:  'vendor-cisco',
-      arista_eos: 'vendor-arista',
-    };
 
     $('switch-tbody').innerHTML = applySort(filtered).map(sw => {
       const dotCls = sw.is_down ? 'dot-down' : 'dot-up';
