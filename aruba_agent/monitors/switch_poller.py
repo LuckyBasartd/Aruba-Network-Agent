@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 
 from aruba_agent.drivers          import driver_for
-from aruba_agent.drivers.detector import VendorDetector
+from aruba_agent.drivers.detector import VendorDetector, vendor_for_oid, _DESCR_KEYWORDS
 from aruba_agent.notifier         import EmailNotifier
 from aruba_agent.secrets_store    import decrypt as _decrypt
 from aruba_agent.snmp             import SnmpAgent
@@ -306,7 +306,9 @@ class SwitchMonitor:
                 else:
                     log.warning("Switch %s (%s): reachable via SSH but SNMP not "
                                 "responding — check SNMP config", self.name, self.host)
-            # Resolve firmware/OS version once, lazily, on a healthy poll.
+            # Backfill vendor (empty when a profile was pinned manually) and
+            # resolve firmware/OS version — both once, lazily, on a healthy poll.
+            self._maybe_resolve_vendor(sw)
             self._maybe_resolve_os_version(sw)
             if sw.is_down:
                 self.state.update_switch(self.name, is_down=False)
@@ -350,6 +352,34 @@ class SwitchMonitor:
                     ),
                     label=hostname,
                 )
+
+    def _maybe_resolve_vendor(self, sw) -> None:
+        """Classify + set SwitchState.vendor when it's empty (e.g. the SNMP
+        profile was pinned manually, so the detector's classify step was
+        skipped). Uses the pinned profile's sysObjectID, falling back to a
+        sysDescr keyword match, so the dashboard vendor tag fills in."""
+        if sw is None or sw.vendor or self._snmp is None:
+            return
+        profile = sw.snmp_profile or None
+        vendor = None
+        try:
+            oid = self._snmp.get_sys_object_id(self.host, profile_name=profile)
+            if oid:
+                vendor = vendor_for_oid(oid)
+            if not vendor:
+                descr = self._snmp.get_sys_descr(self.host, profile_name=profile)
+                if descr:
+                    low = descr.lower()
+                    for kw, v in _DESCR_KEYWORDS:
+                        if kw.lower() in low:
+                            vendor = v
+                            break
+        except Exception as exc:                       # noqa: BLE001
+            log.debug("Vendor backfill failed for %s: %s", self.host, exc)
+            return
+        if vendor:
+            self.state.update_switch(self.name, vendor=vendor)
+            log.info("Vendor resolved for %s (%s): %s", self.name, self.host, vendor)
 
     def _maybe_resolve_os_version(self, sw) -> None:
         """
