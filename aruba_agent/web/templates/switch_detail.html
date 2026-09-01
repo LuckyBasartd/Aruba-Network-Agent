@@ -32,7 +32,7 @@
   <a href="{{ url_for('dashboard') }}">Dashboard</a><span class="sep">/</span>{{ sw.hostname or sw.name }}
 </div>
 
-{% set vlabel = {'aruba_cx':'Aruba CX','aruba_os':'Aruba','cisco_ios':'Cisco','arista_eos':'Arista'}.get(sw.vendor, sw.vendor or '—') %}
+{% set vlabel = {'aruba_cx':'Aruba CX','aruba_os':'Aruba OS-S','cisco_ios':'Cisco','arista_eos':'Arista'}.get(sw.vendor, sw.vendor or '—') %}
 
 <div class="container-fluid py-4 px-4" data-switch="{{ sw.name }}" data-host="{{ sw.hostname }}">
   <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">

@@ -386,7 +386,7 @@
   let timer;
   let activeFilter = 'all';   // 'all' | 'up' | 'down'
   let allSwitches  = [];
-  const VENDOR_LABEL = { aruba_cx:'Aruba CX', aruba_os:'Aruba', cisco_ios:'Cisco', arista_eos:'Arista' };
+  const VENDOR_LABEL = { aruba_cx:'Aruba CX', aruba_os:'Aruba OS-S', cisco_ios:'Cisco', arista_eos:'Arista' };
   const VENDOR_CLASS = { aruba_cx:'vendor-aruba', aruba_os:'vendor-aruba', cisco_ios:'vendor-cisco', arista_eos:'vendor-arista' };
   let viewMode = localStorage.getItem('switchView') || 'table';
   // v3.0.1: free-text filter applied on top of the status filter.
