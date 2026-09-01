@@ -800,6 +800,13 @@ def create_app(
     def settings_page():
         return render_template("settings.html", **_settings_context())
 
+    @app.get("/jobs")
+    @require_login
+    def jobs_page():
+        # Phase 1 stub: the Jobs hub (Backups / Discovery / Alerts) lands here.
+        # Full scheduling UI arrives in a later phase.
+        return render_template("jobs.html", **_settings_context())
+
     # ── Restart now ─────────────────────────────────────────────────────────
 
     @app.post("/api/settings/restart")
@@ -1790,7 +1797,7 @@ def create_app(
             return jsonify({"error": "host and at least one recipient required"}), 400
 
         msg = EmailMessage()
-        msg["Subject"] = "[Aruba] SMTP test message"
+        msg["Subject"] = "[Network Agent] SMTP test message"
         msg["From"]    = sender
         msg["To"]      = ", ".join(recipients)
         msg.set_content(

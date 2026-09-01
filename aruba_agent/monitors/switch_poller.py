@@ -314,7 +314,7 @@ class SwitchMonitor:
                 hostname = sw.hostname or self.name
                 self._maybe_send_alert(
                     "restored",
-                    f"[Aruba] Switch RESTORED: {hostname}",
+                    f"[Network Agent] Switch RESTORED: {hostname}",
                     (
                         f"Switch Management Reachability — RESTORED\n"
                         f"Switch : {self.host}\n"
@@ -340,7 +340,7 @@ class SwitchMonitor:
                 hostname = sw.hostname or self.name
                 self._maybe_send_alert(
                     "down",
-                    f"[Aruba] Switch DOWN: {hostname}",
+                    f"[Network Agent] Switch DOWN: {hostname}",
                     (
                         f"Switch Management Reachability — DOWN\n"
                         f"Switch   : {self.host}\n"

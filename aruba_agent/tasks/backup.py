@@ -290,7 +290,7 @@ class BackupTask:
                 f"  {f['ip']:16s}  {f['hostname']:24s}  {f['issue']}" for f in failed
             )
         self.notifier.send(
-            f"[Aruba] Config Backup Report — {datetime.now().strftime('%Y-%m-%d')}",
+            f"[Network Agent] Config Backup Report — {datetime.now().strftime('%Y-%m-%d')}",
             body,
         )
 

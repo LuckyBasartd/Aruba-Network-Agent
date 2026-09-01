@@ -1,0 +1,36 @@
+{# Shared modern top navigation. Include at the top of <body>.
+   Context: active_nav ('dashboard'|'jobs'|'settings'), current_user. #}
+<style>
+  .na-topnav{display:flex;align-items:center;gap:22px;background:#161b22;
+    border-bottom:1px solid #30363d;padding:10px 20px;position:sticky;top:0;z-index:1030;}
+  .na-brand{display:flex;align-items:center;gap:8px;font-weight:600;color:#e6edf3;
+    text-decoration:none;font-size:15px;letter-spacing:.01em;}
+  .na-brand .bi{color:#58a6ff;font-size:19px;}
+  .na-tabs{display:flex;gap:4px;}
+  .na-tabs a{display:flex;align-items:center;gap:7px;padding:6px 13px;border-radius:7px;
+    color:#8b949e;text-decoration:none;font-size:14px;transition:background .15s,color .15s;}
+  .na-tabs a:hover{color:#e6edf3;background:#21262d;}
+  .na-tabs a.active{color:#58a6ff;background:rgba(88,166,255,.12);}
+  .na-right{margin-left:auto;display:flex;align-items:center;gap:14px;}
+  .na-user{color:#8b949e;font-size:13px;display:flex;align-items:center;gap:6px;}
+  .na-logout{color:#8b949e;text-decoration:none;font-size:15px;}
+  .na-logout:hover{color:#f85149;}
+  .na-crumb{font-size:13px;color:#6e7681;padding:14px 20px 0;}
+  .na-crumb a{color:#8b949e;text-decoration:none;}
+  .na-crumb a:hover{color:#58a6ff;}
+  .na-crumb .sep{margin:0 7px;opacity:.6;}
+</style>
+<nav class="na-topnav">
+  <a class="na-brand" href="{{ url_for('dashboard') }}"><i class="bi bi-router"></i>Network Agent</a>
+  <div class="na-tabs">
+    <a href="{{ url_for('dashboard') }}"     class="{{ 'active' if active_nav == 'dashboard' }}"><i class="bi bi-speedometer2"></i>Dashboard</a>
+    <a href="{{ url_for('jobs_page') }}"      class="{{ 'active' if active_nav == 'jobs' }}"><i class="bi bi-list-check"></i>Jobs</a>
+    <a href="{{ url_for('settings_page') }}"  class="{{ 'active' if active_nav == 'settings' }}"><i class="bi bi-gear"></i>Settings</a>
+  </div>
+  <div class="na-right">
+    {% if current_user %}
+    <span class="na-user"><i class="bi bi-person-circle"></i>{{ current_user }}{% if auth_method %} <span style="opacity:.7">({{ auth_method }})</span>{% endif %}</span>
+    <a class="na-logout" href="{{ url_for('logout') }}" title="Sign out"><i class="bi bi-box-arrow-right"></i></a>
+    {% endif %}
+  </div>
+</nav>

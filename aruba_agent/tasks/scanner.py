@@ -258,7 +258,7 @@ class NetworkScannerTask:
                 log.error("Scanner: %s Keeping previous ip_list; NOT overwriting.",
                           summary)
                 self.notifier.send(
-                    "[Aruba] Discovery coverage drop — list preserved",
+                    "[Network Agent] Discovery coverage drop — list preserved",
                     summary + f"\n\nThe previous {prev_count}-switch list at "
                     f"{self.ip_list_output} was preserved, so monitoring and "
                     "backups are unchanged. Investigate discovery (routing, DNS, "
@@ -271,7 +271,7 @@ class NetworkScannerTask:
             else:
                 log.error("Scanner: %s Overwriting anyway (coverage_guard off).",
                           summary)
-                self.notifier.send("[Aruba] Discovery coverage drop", summary)
+                self.notifier.send("[Network Agent] Discovery coverage drop", summary)
 
         os.makedirs(os.path.dirname(self.ip_list_output) or ".", exist_ok=True)
         with open(self.ip_list_output, "w") as f:
@@ -303,7 +303,7 @@ class NetworkScannerTask:
             body = "New devices discovered on the network:\n\n" + "\n".join(
                 f"  {ip:16s}  {name}" for ip, name in sorted_new
             )
-            self.notifier.send("[Aruba] New Devices Discovered", body)
+            self.notifier.send("[Network Agent] New Devices Discovered", body)
 
         self._save_devices(current)
         switch_ips = self._write_ip_list(current)

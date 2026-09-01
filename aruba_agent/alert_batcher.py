@@ -81,5 +81,5 @@ class AlertBatcher:
     def _subject(kind: str, labels: List[str]) -> str:
         word = "RESTORED" if kind == "restored" else "DOWN"
         if len(labels) == 1:
-            return f"[Aruba] Switch {word}: {labels[0]}"
-        return f"[Aruba] {len(labels)} switches {word}"
+            return f"[Network Agent] Switch {word}: {labels[0]}"
+        return f"[Network Agent] {len(labels)} switches {word}"

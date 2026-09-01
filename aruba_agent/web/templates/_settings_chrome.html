@@ -20,7 +20,7 @@
          of the body so all settings-page Test buttons / AJAX actions
          carry X-CSRFToken automatically. -->
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>{% block title %}Settings{% endblock %} — Aruba Network Agent</title>
+    <title>{% block title %}Settings{% endblock %} — Network Agent</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <style>
@@ -41,26 +41,12 @@
 </head>
 <body>
 
-<nav class="navbar navbar-dark" style="background:#161b22; border-bottom:1px solid #21262d;">
-  <div class="container-fluid">
-    <span class="navbar-brand">
-      <i class="bi bi-router me-2 text-primary"></i>Aruba Network Agent
-    </span>
-    <div class="d-flex align-items-center gap-2">
-      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings_page') }}">
-        <i class="bi bi-arrow-left"></i> Settings
-      </a>
-      {% if current_user %}
-      <span class="text-muted small ms-3 d-none d-md-inline">
-        <i class="bi bi-person-circle me-1"></i>{{ current_user }}
-      </span>
-      <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}">
-        <i class="bi bi-box-arrow-right"></i> Logout
-      </a>
-      {% endif %}
-    </div>
-  </div>
-</nav>
+{% set active_nav = 'settings' %}
+{% include "_topnav.html" with context %}
+<div class="na-crumb">
+  <a href="{{ url_for('dashboard') }}"><i class="bi bi-house-door"></i> Home</a><span class="sep">/</span>
+  <a href="{{ url_for('settings_page') }}">Settings</a><span class="sep">/</span>{% block crumb %}{{ self.heading() }}{% endblock %}
+</div>
 
 <div class="container-fluid py-4 px-4">
 
