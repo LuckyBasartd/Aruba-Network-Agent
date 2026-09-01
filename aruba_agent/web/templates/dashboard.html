@@ -42,6 +42,27 @@
     .metric-label{font-size:13px;color:#8b949e;margin-top:2px;}
     .sw-name-link{color:#e6edf3;text-decoration:none;}
     .sw-name-link:hover{color:#58a6ff;text-decoration:underline;}
+    .attn-chips{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;border-bottom:1px solid #21262d;}
+    .attn-chip{font-size:12px;padding:4px 10px;border-radius:20px;background:#21262d;color:#8b949e;}
+    .attn-chip .n{font-weight:600;}
+    .attn-chip.down{background:rgba(218,54,51,.15);color:#f85149;}
+    .attn-chip.warn{background:rgba(158,106,3,.20);color:#e3b341;}
+    .attn-chip.muted{background:rgba(137,87,229,.20);color:#a371f7;}
+    .attn-chip.unm{background:rgba(110,118,129,.22);color:#adbac7;}
+    .attn-list{max-height:300px;overflow-y:auto;}
+    .attn-item{display:grid;grid-template-columns:1fr 130px;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid #1b1f24;}
+    .attn-item .an{color:#58a6ff;text-decoration:none;}
+    .attn-item .an:hover{text-decoration:underline;}
+    .attn-item .ah{color:#8b949e;font-family:ui-monospace,Menlo,monospace;font-size:12px;text-align:right;}
+    .attn-empty{padding:18px 14px;color:#3fb950;font-size:13px;}
+    .fleet-sec{margin-bottom:14px;}
+    .fleet-sec h6{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;}
+    .frow{display:grid;grid-template-columns:96px 1fr 34px;gap:8px;align-items:center;font-size:13px;margin-bottom:6px;}
+    .fbar{height:8px;background:#21262d;border-radius:6px;overflow:hidden;}
+    .fbar>span{display:block;height:100%;background:#58a6ff;}
+    .fnum{text-align:right;color:#e6edf3;}
+    .fstat{display:flex;justify-content:space-between;font-size:13px;padding:6px 0;border-top:1px solid #21262d;}
+    .fstat .k{color:#8b949e;}
     #switch-grouped{padding:4px 0;}
     .grp-vendor{border-bottom:1px solid #21262d;}
     .grp-vendor>summary{padding:10px 14px;cursor:pointer;font-weight:600;color:#e6edf3;}
@@ -219,60 +240,21 @@
     </div>
   </div>
 
-  <!-- ── Row 3: Backup + Scanner + ARP ────────────────────────────────── -->
+  <!-- ── Row 3: Needs attention + Fleet overview ─────────────────────── -->
   <div class="row g-3">
-    <div class="col-md-4">
+    <div class="col-lg-7">
       <div class="card h-100">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <span><i class="bi bi-cloud-arrow-down me-2"></i>Config Backup</span>
-          <button class="btn btn-outline-primary btn-trigger" onclick="triggerBackup()">
-            <i class="bi bi-play-fill"></i> Run Now
-          </button>
-        </div>
-        <div class="card-body">
-          <dl class="row mb-0 small">
-            <dt class="col-5 text-muted">Last Run</dt>
-            <dd class="col-7 mb-1" id="backup-ts">—</dd>
-            <dt class="col-5 text-muted">Successful</dt>
-            <dd class="col-7 mb-1 text-success fw-bold" id="backup-ok">—</dd>
-            <dt class="col-5 text-muted">Failed</dt>
-            <dd class="col-7 mb-1 text-danger fw-bold" id="backup-fail">—</dd>
-          </dl>
-          <div id="backup-failures" class="mt-2"></div>
+        <div class="card-header"><i class="bi bi-exclamation-triangle me-2 text-warning"></i>Needs attention</div>
+        <div class="card-body p-0">
+          <div id="attn-chips" class="attn-chips"></div>
+          <div id="attn-list" class="attn-list"></div>
         </div>
       </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-lg-5">
       <div class="card h-100">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <span><i class="bi bi-binoculars me-2"></i>Network Scanner</span>
-          <button class="btn btn-outline-primary btn-trigger" onclick="triggerScan()">
-            <i class="bi bi-play-fill"></i> Run Now
-          </button>
-        </div>
-        <div class="card-body">
-          <dl class="row mb-0 small">
-            <dt class="col-5 text-muted">Last Scan</dt>
-            <dd class="col-7 mb-1" id="scan-ts">—</dd>
-            <dt class="col-5 text-muted">Devices Found</dt>
-            <dd class="col-7 mb-1 fw-bold" id="scan-count">—</dd>
-          </dl>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-4">
-      <div class="card h-100">
-        <div class="card-header">
-          <i class="bi bi-diagram-3 me-2"></i>ARP Discovery
-        </div>
-        <div class="card-body">
-          <table class="table table-sm table-dark mb-0">
-            <thead><tr><th>Location</th><th>Last Run</th><th></th></tr></thead>
-            <tbody id="arp-tbody">
-              <tr><td colspan="3" class="text-muted text-center">—</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <div class="card-header"><i class="bi bi-bar-chart-line me-2 text-primary"></i>Fleet overview</div>
+        <div class="card-body" id="fleet-body"><div class="text-muted small">Loading…</div></div>
       </div>
     </div>
   </div>
@@ -584,6 +566,57 @@
     }).join('');
   }
 
+  // ── home panels: needs-attention + fleet overview ───────────────────────
+  function isMutedEff(sw){ return !!sw.alerts_muted && (!sw.mute_until || new Date(sw.mute_until) > new Date()); }
+
+  function renderNeedsAttention(list, backup){
+    const down = list.filter(s => s.is_down && !s.unmanaged);
+    const deg  = list.filter(s => !s.is_down && !s.unmanaged && s.snmp_ok === false);
+    const muted= list.filter(isMutedEff);
+    const unm  = list.filter(s => s.unmanaged);
+    const bf   = (backup && backup.failed_devices) ? backup.failed_devices.length : 0;
+    const chip = (cls,label,n) => `<span class="attn-chip ${cls}">${label} <span class="n">${n}</span></span>`;
+    $('attn-chips').innerHTML =
+      chip('down','Down',down.length) + chip('warn','SNMP',deg.length) +
+      chip('muted','Muted',muted.length) + chip('unm','Unmanaged',unm.length) +
+      chip('','Backup fails',bf);
+    const items = [...down.map(s=>[s,'DOWN','badge-down']), ...deg.map(s=>[s,'SNMP','badge-warn'])];
+    if (!items.length){
+      $('attn-list').innerHTML = '<div class="attn-empty"><i class="bi bi-check-circle me-1"></i>Everything looks healthy.</div>';
+      return;
+    }
+    $('attn-list').innerHTML = items.map(([s,tag,cls]) => `
+      <div class="attn-item">
+        <span><a class="an" href="/switch/${encodeURIComponent(s.name)}">${esc(s.hostname||s.host)}</a>
+          <span class="badge ${cls}" style="font-size:10px;">${tag}</span></span>
+        <span class="ah">${esc(s.host)}</span>
+      </div>`).join('');
+  }
+
+  function renderFleet(list, backup, scanner){
+    const counts = {};
+    list.forEach(s => { const v = VENDOR_LABEL[s.vendor] || (s.vendor || 'Unknown'); counts[v] = (counts[v]||0)+1; });
+    const entries = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    const max = Math.max(1, ...entries.map(e=>e[1]));
+    const vbars = entries.map(([v,n]) => `
+      <div class="frow"><span>${esc(v)}</span><div class="fbar"><span style="width:${Math.round(n/max*100)}%"></span></div><span class="fnum">${n}</span></div>`).join('');
+    const up=list.filter(s=>!s.is_down&&!s.unmanaged).length;
+    const dn=list.filter(s=>s.is_down&&!s.unmanaged).length;
+    const um=list.filter(s=>s.unmanaged).length;
+    const bk=(backup&&backup.timestamp)?`${backup.success_count} ok / ${backup.failed_count} failed`:'—';
+    $('fleet-body').innerHTML = `
+      <div class="fleet-sec"><h6>By vendor</h6>${vbars || '<div class="text-muted small">No switches.</div>'}</div>
+      <div class="fleet-sec"><h6>Status</h6>
+        <div class="fstat"><span class="k">Up</span><span class="text-success">${up}</span></div>
+        <div class="fstat"><span class="k">Down</span><span class="text-danger">${dn}</span></div>
+        <div class="fstat"><span class="k">Unmanaged</span><span>${um}</span></div>
+      </div>
+      <div class="fleet-sec"><h6>Latest</h6>
+        <div class="fstat"><span class="k">Last backup</span><span>${bk}</span></div>
+        <div class="fstat"><span class="k">Discovery</span><span>${(scanner&&scanner.device_count)??'—'} devices</span></div>
+      </div>`;
+  }
+
   // ── fetch & render ───────────────────────────────────────────────────────
   async function fetchState() {
     try {
@@ -599,9 +632,8 @@
   function render(data) {
     allSwitches = data.switches || [];
     renderSwitches(allSwitches);
-    renderBackup(data.backup || {});
-    renderScanner(data.scanner || {});
-    renderArp(data.arp_last_run || {});
+    renderNeedsAttention(allSwitches, data.backup || {});
+    renderFleet(allSwitches, data.backup || {}, data.scanner || {});
 
     const unm    = allSwitches.filter(s => s.unmanaged).length;
     const swUp   = allSwitches.filter(s => !s.is_down && !s.unmanaged).length;
