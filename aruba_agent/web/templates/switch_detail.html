@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <title>{{ sw.hostname or sw.name }} — Network Agent</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body{background:#0d1117;color:#c9d1d9;}
+    .d-card{background:#161b22;border:1px solid #30363d;border-radius:12px;}
+    .d-card .hdr{padding:12px 16px;border-bottom:1px solid #30363d;font-weight:600;color:#e6edf3;}
+    .d-card .bdy{padding:6px 16px;}
+    .d-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid #21262d;font-size:14px;}
+    .d-row:last-child{border-bottom:none;}
+    .d-row .k{color:#8b949e;}
+    .d-row .v{color:#e6edf3;text-align:right;}
+    .badge-up{background:#238636;}.badge-down{background:#da3633;}
+    .badge-warn{background:#9e6a03;}.badge-muted{background:#8957e5;}.badge-unmanaged{background:#6e7681;}
+    .mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;}
+    .bk-item{display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid #21262d;font-size:13px;}
+    .bk-item:last-child{border-bottom:none;}
+    .maint-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#0d1117;
+      border:1px solid #30363d;border-radius:10px;padding:10px 14px;margin-bottom:16px;}
+  </style>
+</head>
+<body>
+{% include "_topnav.html" with context %}
+<div class="na-crumb">
+  <a href="{{ url_for('dashboard') }}"><i class="bi bi-house-door"></i> Home</a><span class="sep">/</span>
+  <a href="{{ url_for('dashboard') }}">Dashboard</a><span class="sep">/</span>{{ sw.hostname or sw.name }}
+</div>
+
+{% set vlabel = {'aruba_cx':'Aruba CX','aruba_os':'Aruba','cisco_ios':'Cisco','arista_eos':'Arista'}.get(sw.vendor, sw.vendor or '—') %}
+
+<div class="container-fluid py-4 px-4" data-switch="{{ sw.name }}" data-host="{{ sw.hostname }}">
+  <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+    <h2 class="mb-0"><i class="bi bi-hdd-network me-2 text-primary"></i>{{ sw.hostname or sw.name }}</h2>
+    <span id="d-status">
+      {% if sw.unmanaged %}<span class="badge badge-unmanaged">UNMANAGED</span>
+      {% elif sw.is_down %}<span class="badge badge-down">DOWN</span>
+      {% else %}<span class="badge badge-up">UP</span>{% endif %}
+      {% if not sw.is_down and not sw.snmp_ok %}<span class="badge badge-warn" title="Reachable via SSH; SNMP not responding">SNMP</span>{% endif %}
+      {% if sw.alerts_muted %}<span class="badge badge-muted">MUTED</span>{% endif %}
+    </span>
+    <span class="text-muted mono ms-auto">{{ sw.host }}</span>
+  </div>
+
+  <div class="maint-bar">
+    <span class="small text-muted">Maintenance:</span>
+    {% if sw.alerts_muted %}
+      <button class="btn btn-outline-info btn-sm py-0" onclick="act('unmute')"><i class="bi bi-bell me-1"></i>Unmute alerts</button>
+    {% else %}
+      <div class="btn-group btn-group-sm">
+        <button class="btn btn-outline-warning py-0" onclick="act('mute')" title="Mute until un-muted"><i class="bi bi-bell-slash me-1"></i>Mute</button>
+        <button class="btn btn-outline-warning py-0" onclick="act('mute',1)">1h</button>
+        <button class="btn btn-outline-warning py-0" onclick="act('mute',8)">8h</button>
+        <button class="btn btn-outline-warning py-0" onclick="act('mute',24)">24h</button>
+      </div>
+    {% endif %}
+    {% if sw.unmanaged %}
+      <button class="btn btn-outline-success btn-sm py-0" onclick="act('manage')"><i class="bi bi-play-circle me-1"></i>Resume monitoring</button>
+    {% else %}
+      <button class="btn btn-outline-secondary btn-sm py-0" onclick="act('unmanage')"><i class="bi bi-pause-circle me-1"></i>Unmanage</button>
+    {% endif %}
+    <span class="ms-auto small text-muted"><span id="d-refresh">Auto-refreshing</span></span>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-4">
+      <div class="d-card">
+        <div class="hdr"><i class="bi bi-activity me-2"></i>Status</div>
+        <div class="bdy">
+          <div class="d-row"><span class="k">State</span><span class="v" id="d-state">{{ sw.status }}</span></div>
+          <div class="d-row"><span class="k">SNMP polling</span><span class="v" id="d-snmp">{{ 'OK' if sw.snmp_ok else 'Not responding' }}</span></div>
+          <div class="d-row"><span class="k">Last seen</span><span class="v" id="d-lastseen">{{ sw.last_seen or '—' }}</span></div>
+          <div class="d-row"><span class="k">Last event</span><span class="v" id="d-lastevent">{{ sw.last_event or '—' }}</span></div>
+          <div class="d-row"><span class="k">Failures</span><span class="v" id="d-failures">{{ sw.failures }}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="d-card">
+        <div class="hdr"><i class="bi bi-info-circle me-2"></i>Identity</div>
+        <div class="bdy">
+          <div class="d-row"><span class="k">Hostname</span><span class="v">{{ sw.hostname or '—' }}</span></div>
+          <div class="d-row"><span class="k">IP</span><span class="v mono">{{ sw.host }}</span></div>
+          <div class="d-row"><span class="k">Vendor</span><span class="v">{{ vlabel }}</span></div>
+          <div class="d-row"><span class="k">OS version</span><span class="v mono">{{ sw.os_version or '—' }}</span></div>
+          <div class="d-row"><span class="k">SNMP profile</span><span class="v">{{ sw.snmp_profile or 'auto' }}</span></div>
+          <div class="d-row"><span class="k">Monitor mode</span><span class="v">{{ sw.monitor_mode or 'auto' }}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="d-card">
+        <div class="hdr"><i class="bi bi-archive me-2"></i>Config backups</div>
+        <div class="bdy" id="d-backups"><div class="text-muted small py-2">Loading…</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const NAME = "{{ sw.name }}", HOST = "{{ sw.hostname }}";
+  const CSRF = (document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  async function act(kind, hours){
+    if(kind==='unmanage' && !confirm('Unmanage this switch? It stops being polled and won\'t alert until you resume.')) return;
+    const opts={method:'POST',headers:{'X-CSRFToken':CSRF}};
+    if(kind==='mute'){opts.headers['Content-Type']='application/json';opts.body=JSON.stringify(hours?{hours}:{});}
+    const r=await fetch(`/api/switches/${encodeURIComponent(NAME)}/${kind}`,opts);
+    if(r.ok) location.reload(); else alert(kind+' failed');
+  }
+
+  async function loadBackups(){
+    try{
+      const files=await (await fetch(`/api/backups/${encodeURIComponent(HOST)}`)).json();
+      const box=document.getElementById('d-backups');
+      if(!files.length){box.innerHTML='<div class="text-muted small py-2">No backups yet.</div>';return;}
+      box.innerHTML=files.map(f=>{
+        const m=f.match(/(\d{4}-\d{2}-\d{2}_\d{6})\.cfg/);
+        let label=f; if(m){label=new Date(m[1].replace('_','T').replace(/(\d{2})(\d{2})(\d{2})$/,'$1:$2:$3')).toLocaleString();}
+        const url=`/api/backups/${encodeURIComponent(HOST)}/${encodeURIComponent(f)}`;
+        return `<div class="bk-item"><span><i class="bi bi-file-earmark-text me-2 text-muted"></i>${esc(label)}</span>
+          <a class="btn btn-outline-success btn-sm py-0 px-2" href="${url}" download="${esc(f)}"><i class="bi bi-download"></i></a></div>`;
+      }).join('');
+    }catch(e){document.getElementById('d-backups').innerHTML='<div class="text-danger small py-2">Failed to load.</div>';}
+  }
+
+  async function refresh(){
+    try{
+      const data=await (await fetch('/api/state')).json();
+      const sw=(data.switches||[]).find(s=>s.name===NAME);
+      if(!sw) return;
+      const pill = sw.unmanaged?'<span class="badge badge-unmanaged">UNMANAGED</span>'
+        :(sw.is_down?'<span class="badge badge-down">DOWN</span>':'<span class="badge badge-up">UP</span>')
+        + (!sw.is_down&&!sw.snmp_ok?' <span class="badge badge-warn">SNMP</span>':'')
+        + (sw.alerts_muted?' <span class="badge badge-muted">MUTED</span>':'');
+      document.getElementById('d-status').innerHTML=pill;
+      document.getElementById('d-state').textContent = sw.unmanaged?'UNMANAGED':(sw.is_down?'DOWN':'UP');
+      document.getElementById('d-snmp').textContent = sw.snmp_ok?'OK':'Not responding';
+      document.getElementById('d-lastseen').textContent = sw.last_seen ? new Date(sw.last_seen).toLocaleString() : '—';
+      document.getElementById('d-lastevent').textContent = sw.last_event || '—';
+      document.getElementById('d-failures').textContent = sw.failures ?? 0;
+    }catch(e){}
+  }
+
+  loadBackups(); refresh(); setInterval(refresh, 30000);
+</script>
+</body>
+</html>

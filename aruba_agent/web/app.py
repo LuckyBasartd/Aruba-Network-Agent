@@ -807,6 +807,18 @@ def create_app(
         # Full scheduling UI arrives in a later phase.
         return render_template("jobs.html", **_settings_context())
 
+    @app.get("/switch/<switch_name>")
+    @require_login
+    def switch_detail(switch_name: str):
+        if state.switches.get(switch_name) is None:
+            abort(404)
+        live = state.to_dict().get("switches", [])
+        sw = next((x for x in live if x["name"] == switch_name), None)
+        if sw is None:
+            abort(404)
+        return render_template("switch_detail.html", sw=sw,
+                               current_user=session.get("user"), active_nav="dashboard")
+
     # ── Restart now ─────────────────────────────────────────────────────────
 
     @app.post("/api/settings/restart")
