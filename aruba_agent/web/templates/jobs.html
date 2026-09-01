@@ -8,11 +8,13 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
   <style>
     body{background:#0d1117;color:#c9d1d9;}
-    .na-card{display:block;background:#161b22;border:1px solid #30363d;border-radius:12px;
-      padding:18px 20px;text-decoration:none;color:inherit;transition:border-color .15s,transform .05s;}
+    .na-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;}
+    .na-card{display:flex;flex-direction:column;min-height:150px;background:#161b22;
+      border:1px solid #30363d;border-radius:12px;padding:18px 20px;text-decoration:none;
+      color:inherit;transition:border-color .15s;}
     .na-card:hover{border-color:#58a6ff;}
     .na-card .bi{font-size:24px;color:#58a6ff;}
-    .na-card h5{margin:10px 0 4px;font-size:15px;font-weight:600;color:#e6edf3;}
+    .na-card h5{margin:12px 0 6px;font-size:15px;font-weight:600;color:#e6edf3;}
     .na-card p{margin:0;font-size:13px;color:#8b949e;line-height:1.5;}
     .soon{font-size:11px;background:#30363d;color:#8b949e;border-radius:20px;padding:2px 9px;}
   </style>
@@ -27,34 +29,33 @@
     <span class="soon">Scheduling UI coming soon</span>
   </div>
 
-  <div class="row g-3">
-    <div class="col-md-4">
-      <a class="na-card" href="{{ url_for('settings_backup') }}">
-        <i class="bi bi-device-floppy"></i>
-        <h5>Config backups</h5>
-        <p>Nightly running/startup config saves. Schedule, retention, and on-demand runs.</p>
-      </a>
-    </div>
-    <div class="col-md-4">
-      <a class="na-card" href="{{ url_for('settings_scanner') }}">
-        <i class="bi bi-radar"></i>
-        <h5>Discovery</h5>
-        <p>Network scan + ARP discovery. Subnets, filters, and schedules.</p>
-      </a>
-    </div>
-    <div class="col-md-4">
-      <a class="na-card" href="{{ url_for('settings_email') }}">
-        <i class="bi bi-bell"></i>
-        <h5>Alerts</h5>
-        <p>Reachability alerts, batching, and email delivery.</p>
-      </a>
-    </div>
+  <div class="na-grid">
+    <a class="na-card" href="{{ url_for('settings_backup') }}">
+      <i class="bi bi-device-floppy"></i>
+      <h5>Config backups</h5>
+      <p>Nightly running/startup config saves. Schedule, retention, and on-demand runs.</p>
+    </a>
+    <a class="na-card" href="{{ url_for('settings_scanner') }}">
+      <i class="bi bi-radar"></i>
+      <h5>Discovery</h5>
+      <p>Network scan and ARP discovery. Subnets, filters, and schedules.</p>
+    </a>
+    <a class="na-card" href="{{ url_for('settings_email') }}">
+      <i class="bi bi-bell"></i>
+      <h5>Alerts</h5>
+      <p>Reachability alerts, batching, and email delivery.</p>
+    </a>
+    <a class="na-card" href="{{ url_for('config_push_page') }}">
+      <i class="bi bi-terminal"></i>
+      <h5>Batch config</h5>
+      <p>Push CLI config to selected switches, with saved templates and preview.</p>
+    </a>
   </div>
 
   <p class="text-muted small mt-4">
     <i class="bi bi-info-circle me-1"></i>
-    A unified job scheduler — last run, next run, enable/disable, and history for every task —
-    will live here. For now these cards jump to each area's settings.
+    A unified scheduler — last run, next run, enable/disable, and history for every task —
+    will live here. For now these cards jump to each area.
   </p>
 </div>
 </body>
