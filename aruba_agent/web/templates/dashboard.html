@@ -45,6 +45,10 @@
     .attn-chips{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;border-bottom:1px solid #21262d;}
     .attn-chip{font-size:12px;padding:4px 10px;border-radius:20px;background:#21262d;color:#8b949e;}
     .attn-chip .n{font-weight:600;}
+    .attn-chip{cursor:pointer;transition:filter .1s;}
+    .attn-chip:hover{filter:brightness(1.2);}
+    .attn-chip.active{box-shadow:inset 0 0 0 1px currentColor;filter:brightness(1.25);}
+    .attn-item .issue{color:#8b949e;font-size:12px;margin-top:2px;}
     .attn-chip.down{background:rgba(218,54,51,.15);color:#f85149;}
     .attn-chip.warn{background:rgba(158,106,3,.20);color:#e3b341;}
     .attn-chip.muted{background:rgba(137,87,229,.20);color:#a371f7;}
@@ -569,26 +573,54 @@
   // ── home panels: needs-attention + fleet overview ───────────────────────
   function isMutedEff(sw){ return !!sw.alerts_muted && (!sw.mute_until || new Date(sw.mute_until) > new Date()); }
 
-  function renderNeedsAttention(list, backup){
-    const down = list.filter(s => s.is_down && !s.unmanaged);
-    const deg  = list.filter(s => !s.is_down && !s.unmanaged && s.snmp_ok === false);
-    const muted= list.filter(isMutedEff);
-    const unm  = list.filter(s => s.unmanaged);
-    const bf   = (backup && backup.failed_devices) ? backup.failed_devices.length : 0;
-    const chip = (cls,label,n) => `<span class="attn-chip ${cls}">${label} <span class="n">${n}</span></span>`;
-    $('attn-chips').innerHTML =
-      chip('down','Down',down.length) + chip('warn','SNMP',deg.length) +
-      chip('muted','Muted',muted.length) + chip('unm','Unmanaged',unm.length) +
-      chip('','Backup fails',bf);
-    const items = [...down.map(s=>[s,'DOWN','badge-down']), ...deg.map(s=>[s,'SNMP','badge-warn'])];
-    if (!items.length){
-      $('attn-list').innerHTML = '<div class="attn-empty"><i class="bi bi-check-circle me-1"></i>Everything looks healthy.</div>';
+  let attnTab  = localStorage.getItem('attnTab') || 'down';
+  let attnData = { list: [], backup: {} };
+  const ATTN = {
+    down:      { label:'Down',        cls:'down',  badge:'badge-down',      tag:'DOWN' },
+    snmp:      { label:'SNMP',        cls:'warn',  badge:'badge-warn',      tag:'SNMP' },
+    muted:     { label:'Muted',       cls:'muted', badge:'badge-muted',     tag:'MUTED' },
+    unmanaged: { label:'Unmanaged',   cls:'unm',   badge:'badge-unmanaged', tag:'UNMANAGED' },
+    backup:    { label:'Backup fails', cls:'',     badge:'',                tag:'' },
+  };
+
+  function attnBuckets(list, backup){
+    return {
+      down:      list.filter(s => s.is_down && !s.unmanaged),
+      snmp:      list.filter(s => !s.is_down && !s.unmanaged && s.snmp_ok === false),
+      muted:     list.filter(isMutedEff),
+      unmanaged: list.filter(s => s.unmanaged),
+      backup:    (backup && backup.failed_devices) ? backup.failed_devices : [],
+    };
+  }
+
+  function renderNeedsAttention(list, backup){ attnData = { list, backup }; drawAttn(); }
+
+  function setAttnTab(t){ attnTab = t; localStorage.setItem('attnTab', t); drawAttn(); }
+
+  function drawAttn(){
+    const { list, backup } = attnData;
+    const b = attnBuckets(list, backup);
+    $('attn-chips').innerHTML = Object.keys(ATTN).map(k =>
+      `<span class="attn-chip ${ATTN[k].cls}${attnTab===k?' active':''}" onclick="setAttnTab('${k}')">${ATTN[k].label} <span class="n">${b[k].length}</span></span>`
+    ).join('');
+    const box = $('attn-list');
+    if (attnTab === 'backup'){
+      const rows = b.backup;
+      if (!rows.length){ box.innerHTML = '<div class="attn-empty"><i class="bi bi-check-circle me-1"></i>No backup failures.</div>'; return; }
+      box.innerHTML = rows.map(d => {
+        const sw = list.find(s => s.host === d.ip);
+        const name = sw ? `<a class="an" href="/switch/${encodeURIComponent(sw.name)}">${esc(d.hostname||d.ip)}</a>` : esc(d.hostname||d.ip);
+        return `<div class="attn-item"><span>${name}<div class="issue">${esc(d.issue||'')}</div></span><span class="ah">${esc(d.ip)}</span></div>`;
+      }).join('');
       return;
     }
-    $('attn-list').innerHTML = items.map(([s,tag,cls]) => `
+    const arr = b[attnTab] || [];
+    if (!arr.length){ box.innerHTML = '<div class="attn-empty"><i class="bi bi-check-circle me-1"></i>None right now.</div>'; return; }
+    const m = ATTN[attnTab];
+    box.innerHTML = arr.map(s => `
       <div class="attn-item">
         <span><a class="an" href="/switch/${encodeURIComponent(s.name)}">${esc(s.hostname||s.host)}</a>
-          <span class="badge ${cls}" style="font-size:10px;">${tag}</span></span>
+          <span class="badge ${m.badge}" style="font-size:10px;">${m.tag}</span></span>
         <span class="ah">${esc(s.host)}</span>
       </div>`).join('');
   }
