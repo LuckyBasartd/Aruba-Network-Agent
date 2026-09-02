@@ -57,6 +57,11 @@ class BackupTask:
         # password becomes the key's passphrase ("" for unencrypted).
         self.cisco_key_file = (cc.get("key_file", "") or "").strip()
 
+        ao = cfg["credentials.aruba_os"] if "credentials.aruba_os" in cfg else {}
+        self.arubaos_username = (ao.get("username", "") or "").strip()
+        self.arubaos_password = _decrypt(ao.get("password", ""))
+        self.arubaos_enable   = _decrypt(ao.get("enable_secret", ""))
+
         ac = cfg["credentials.arista"] if "credentials.arista" in cfg else {}
         self.arista_username = (ac.get("username", "") or "").strip()
         self.arista_password = _decrypt(ac.get("password", ""))
@@ -152,6 +157,9 @@ class BackupTask:
                     arista_enable_password  = self.arista_enable,
                     arista_transport        = self.arista_transport,
                     arista_port             = self.arista_port,
+                    arubaos_username        = self.arubaos_username,
+                    arubaos_password        = self.arubaos_password,
+                    arubaos_enable          = self.arubaos_enable,
                 ) as drv:
                     if not drv.logged_in:
                         failed.append({"ip": ip, "hostname": hostname,

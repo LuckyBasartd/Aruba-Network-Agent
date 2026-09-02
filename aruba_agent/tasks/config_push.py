@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 # SwitchState.vendor  ->  netmiko device_type
 NETMIKO_DEVICE_TYPE: Dict[str, str] = {
     "aruba_cx":   "aruba_aoscx",
-    "aruba_os":   "aruba_aoscx",   # tolerate either label for AOS-CX
+    "aruba_os":   "hp_procurve",   # ProCurve / ArubaOS-Switch (SSH CLI)
     "cisco_ios":  "cisco_ios",
     "arista_eos": "arista_eos",
 }

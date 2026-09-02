@@ -66,6 +66,11 @@ def driver_for(
     arista_enable_password: str = "",
     arista_transport:       str = "https",
     arista_port:            Optional[int] = None,
+    # Aruba OS-S (ProCurve) SSH overrides; ignored unless the resolved
+    # vendor is aruba_os. If empty, fall back to username / password.
+    arubaos_username:       str = "",
+    arubaos_password:       str = "",
+    arubaos_enable:         str = "",
 ) -> SwitchDriver:
     """
     Return a SwitchDriver instance ready for `with driver_for(...) as drv`.
@@ -114,12 +119,18 @@ def driver_for(
         )
 
     if vendor_hint == VENDOR_ARUBA_OS:
-        log.warning("driver_for: %s detected as legacy Aruba — using "
-                    "AOS-CX driver as best-effort fallback", host)
+        # ProCurve / ArubaOS-Switch: no REST API — drive over SSH CLI.
+        from aruba_agent.drivers.aruba_os import ArubaOSDriver
+        return ArubaOSDriver(
+            host          = host,
+            username      = arubaos_username or username,
+            password      = arubaos_password or password,
+            enable_secret = arubaos_enable,
+        )
 
     # Default / AOS-CX path
     _ = vendor_hint  # accepted but unused beyond the routing above
-    if vendor_hint not in (None, VENDOR_ARUBA_CX, VENDOR_ARUBA_OS, VENDOR_ARISTA):
+    if vendor_hint not in (None, VENDOR_ARUBA_CX, VENDOR_ARISTA):
         log.warning("driver_for: unrecognized vendor_hint=%r for %s — "
                     "defaulting to AOS-CX", vendor_hint, host)
     return ArubaCXDriver(
