@@ -28,7 +28,10 @@
 <div class="container-fluid py-4 px-4">
   <div class="d-flex align-items-center justify-content-between mb-4">
     <h2 class="mb-0"><i class="bi bi-list-check me-2 text-primary"></i>Jobs</h2>
-    <button class="btn btn-outline-secondary btn-sm" onclick="loadJobs()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    <div class="d-flex gap-2">
+      <a class="btn btn-primary btn-sm" href="{{ url_for('config_push_page') }}"><i class="bi bi-terminal me-1"></i>Batch config</a>
+      <button class="btn btn-outline-secondary btn-sm" onclick="loadJobs()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    </div>
   </div>
 
   <div class="jobs-card">
