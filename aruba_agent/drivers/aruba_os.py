@@ -110,6 +110,14 @@ class ArubaOSDriver:
                 log.debug("Aruba OS-S enable() on %s: %s", self.host, exc)
 
         self._net = net
+        # ProCurve / Aruba OS-S session prep (terminal width / no page)
+        # can leave a harmless "Invalid input: width" echo in the read
+        # buffer on 6000/6100-class boxes. Flush it so the first real
+        # command's output isn't contaminated (this bit save detection).
+        try:
+            net.clear_buffer()
+        except Exception:
+            pass
         return True
 
     def logout(self) -> None:
@@ -191,16 +199,23 @@ class ArubaOSDriver:
 
     def save_running_to_startup(self) -> bool:
         """``write memory`` copies running-config → startup-config on
-        ProCurve / Aruba OS-S."""
+        ProCurve / Aruba OS-S. The "Copying configuration" spinner can
+        run 10-20s, so use send_command (waits for the prompt) with a
+        generous timeout rather than _timing, which would also scoop up
+        stale session-prep output."""
         if self._net is None:
             return False
-        out = self._send("write memory", timing=True)
+        out = self._send("write memory", read_timeout=120)
         if out is None:
             return False
-        # ProCurve is silent on success; treat an error-ish reply as a
-        # failure so the backup report is honest.
-        if any(w in out.lower() for w in ("invalid", "incomplete", "unable", "error")):
-            self.error = out.strip()
+        low = out.lower()
+        if "success" in low:                       # 6000/6100 print "[Success]"
+            return True
+        # Older 2530/2930F are silent on success — only fail on a clear
+        # rejection of the write-memory command itself.
+        if any(w in low for w in ("invalid input", "unknown command",
+                                   "incomplete", "not found")):
+            self.error = " ".join(out.split())[:200]
             return False
         return True
 
