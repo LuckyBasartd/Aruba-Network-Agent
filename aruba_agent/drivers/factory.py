@@ -54,6 +54,8 @@ def driver_for(
     cisco_password: str = "",
     cisco_enable:   str = "",
     cisco_napalm_driver: str = "ios",
+    cisco_read_timeout:  int = 60,
+    cisco_delay_factor:  float = 2.0,
     # v3.0.3: SSH public-key auth for Cisco (NAPALM via netmiko). When
     # set, NAPALM uses the key instead of cisco_password — leave
     # cisco_password empty for unencrypted keys, or set it to the
@@ -105,6 +107,8 @@ def driver_for(
             enable_secret = cisco_enable,
             napalm_driver = cisco_napalm_driver,
             key_file      = cisco_key_file,
+            read_timeout        = cisco_read_timeout,
+            global_delay_factor = cisco_delay_factor,
         )
 
     if vendor_hint == VENDOR_ARISTA:

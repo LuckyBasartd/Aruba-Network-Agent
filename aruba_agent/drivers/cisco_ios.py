@@ -62,6 +62,8 @@ class CiscoIOSDriver:
         napalm_driver: str = "ios",
         timeout: int = 30,
         key_file: str = "",
+        read_timeout: int = 60,
+        global_delay_factor: float = 2.0,
     ) -> None:
         self.host          = host
         self._username     = username
@@ -76,6 +78,13 @@ class CiscoIOSDriver:
         # Falls back to password auth when key_file is empty so
         # existing deployments keep working unchanged.
         self._key_file     = (key_file or "").strip()
+        # Slow 2960CX/3560-class gear can take longer than netmiko's
+        # default read window to echo session-prep commands, finish a
+        # `write memory`, or dump a long running-config — surfacing as
+        # "Pattern not detected". Widen the read timeout and slow the
+        # command cadence so those devices get the time they need.
+        self._read_timeout = int(read_timeout)
+        self._delay_factor = float(global_delay_factor)
         self._device       = None     # napalm device instance, set after login
         self.error: str    = ""
 
@@ -106,7 +115,11 @@ class CiscoIOSDriver:
             log.warning(self.error)
             return False
 
-        optional: dict = {}
+        optional: dict = {
+            "global_delay_factor":  self._delay_factor,
+            "read_timeout_override": self._read_timeout,
+            "fast_cli":             False,
+        }
         if self._enable:
             optional["secret"] = self._enable
         # SSH key auth: NAPALM looks for use_keys + key_file in

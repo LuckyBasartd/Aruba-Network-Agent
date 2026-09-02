@@ -56,6 +56,14 @@ class BackupTask:
         # v3.0.3: optional SSH key file for Cisco. When set, the
         # password becomes the key's passphrase ("" for unencrypted).
         self.cisco_key_file = (cc.get("key_file", "") or "").strip()
+        try:
+            self.cisco_read_timeout = int(cc.get("read_timeout", "60") or "60")
+        except ValueError:
+            self.cisco_read_timeout = 60
+        try:
+            self.cisco_delay_factor = float(cc.get("global_delay_factor", "2") or "2")
+        except ValueError:
+            self.cisco_delay_factor = 2.0
 
         ao = cfg["credentials.aruba_os"] if "credentials.aruba_os" in cfg else {}
         self.arubaos_username = (ao.get("username", "") or "").strip()
@@ -152,6 +160,8 @@ class BackupTask:
                     cisco_enable            = self.cisco_enable,
                     cisco_napalm_driver     = self.cisco_napalm,
                     cisco_key_file          = self.cisco_key_file,
+                    cisco_read_timeout      = self.cisco_read_timeout,
+                    cisco_delay_factor      = self.cisco_delay_factor,
                     arista_username         = self.arista_username,
                     arista_password         = self.arista_password,
                     arista_enable_password  = self.arista_enable,
