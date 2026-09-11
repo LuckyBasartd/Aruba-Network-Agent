@@ -586,7 +586,15 @@ class SnmpAgent:
                 if err_stat:
                     self.last_error = "pdu_error"; self.last_detail = err_stat.prettyPrint()
                     break
-                for name, val in var_binds:
+                for vb in var_binds:
+                    # Index rather than unpack: a varbind is an ObjectType that
+                    # is [oid, value], but across pysnmp versions unpacking with
+                    # "for name, val in ..." can raise "too many values to
+                    # unpack". vb[0]/vb[1] is stable.
+                    try:
+                        name, val = vb[0], vb[1]
+                    except (TypeError, IndexError, ValueError):
+                        continue
                     # Force the NUMERIC OID — pysnmp may prettyPrint the name as a
                     # symbolic MIB string (IF-MIB::ifName.1) which never matches
                     # our numeric bases.
