@@ -30,6 +30,9 @@ Migrate the JSON state snapshot into MongoDB (before backend=mongo):
 Run one interface poll cycle and print a summary:
   python main.py [/path/to/config.ini] --interfaces-poll-once
 
+Probe interfaces on a SINGLE switch (fast; for tuning/debugging):
+  python main.py [/path/to/config.ini] --interfaces-poll-once --host 10.40.0.6
+
 Decrypt a single backup file to stdout for restore:
   python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
@@ -167,6 +170,14 @@ def main() -> None:
     # --decrypt-backup <path> is a two-token flag; the next positional
     # is the backup file path. Extract it now so the path doesn't get
     # mis-parsed as config_path below.
+    # --host <ip> scopes --interfaces-poll-once to a single switch (fast probe).
+    iface_host: Optional[str] = None
+    if "--host" in args:
+        _hidx = args.index("--host")
+        if _hidx + 1 < len(args):
+            iface_host = args[_hidx + 1]
+            args = args[:_hidx] + args[_hidx + 2:]
+
     decrypt_path: Optional[str] = None
     if "--decrypt-backup" in args:
         idx = args.index("--decrypt-backup")
@@ -402,6 +413,29 @@ def main() -> None:
             sys.exit(2)
         task = InterfacePollTask(cfg, _once_state, snmp_agent2, _once_store)
         task.enabled = True
+
+        # Single-switch probe: python main.py <cfg> --interfaces-poll-once --host <ip>
+        if iface_host:
+            from aruba_agent import interfaces as _ifc
+            prof = _once_state.get_snmp_profile_for_host(iface_host) or None
+            print(f"interfaces: probing {iface_host} "
+                  f"profile={prof or '(default)'} physical_only={task.physical_only} ...")
+            import time as _t
+            t0 = _t.time()
+            rows = _ifc.collect(snmp_agent2, iface_host, profile_name=prof,
+                                physical_only=task.physical_only)
+            dt = _t.time() - t0
+            if rows is None:
+                print(f"  FAILED in {dt:.1f}s — snmp last_error="
+                      f"{snmp_agent2.last_error!r} detail={snmp_agent2.last_detail!r}")
+                sys.exit(2)
+            print(f"  {len(rows)} interface(s) in {dt:.1f}s:")
+            for idx in sorted(rows, key=lambda x: (0, int(x)) if x.isdigit() else (1, x))[:60]:
+                r = rows[idx]
+                print(f"    {r['name']:<16} admin={r['admin']:<4} oper={r['oper']:<4} "
+                      f"speed={r['speed_mbps']}M in={r['hc_in']} out={r['hc_out']}")
+            sys.exit(0)
+
         elig = task.eligible()
         print(f"interfaces: polling {len(elig)} eligible switch(es) "
               f"(physical_only={task.physical_only}) ...")
