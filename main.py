@@ -362,14 +362,21 @@ def main() -> None:
         except Exception as exc:
             print(f"--import-state-to-mongo: {exc}", file=sys.stderr)
             sys.exit(2)
+        src_n = len(snapshot.get("switches", []))
         mongo.save(snapshot)
         back = mongo.load() or {}
         ndev = len(back.get("switches", []))
         mongo.close()
-        print(f"--import-state-to-mongo: imported {len(snapshot.get('switches', []))} "
-              f"device(s); Mongo now reports {ndev}. Set [store] backend = mongo "
-              f"and restart to cut over.")
-        sys.exit(0 if ndev else 2)
+        if ndev >= src_n and ndev > 0:
+            print(f"--import-state-to-mongo: OK — imported {src_n} device(s); "
+                  f"Mongo now reports {ndev}. You can set [store] backend = mongo "
+                  f"and restart to cut over.")
+            sys.exit(0)
+        print(f"--import-state-to-mongo: FAILED — source had {src_n} device(s) but "
+              f"Mongo reports {ndev}. MongoDB is likely not running / not reachable "
+              f"(see the errors above). DO NOT set backend = mongo until this "
+              f"succeeds — the agent would start with empty state.", file=sys.stderr)
+        sys.exit(2)
 
     # Audit log — append-only file separate from journald.
     # Operator-controllable path with the same [agent] block as the
