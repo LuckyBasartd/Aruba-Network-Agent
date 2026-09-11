@@ -420,4 +420,4 @@ Encrypted at rest, decrypt-in-memory (same model as backups):
 
 ## 14. Other docs
 `README.md`, `STRUCTURE.md`, `INSTALL.md`, `INSTALL-AlmaLinux-10.md`,
-`DISASTER-RECOVERY.md`, `config.ini.example`, `ROADMAP.md` (architecture + SolarWinds/AirWave roadmap).
+`DISASTER-RECOVERY.md`, `config.ini.example`, `ROADMAP.md` (architecture + SolarWinds/AirWave roadmap), `DATA_LAYER_SPEC.md` (store abstraction + Mongo migration plan).
