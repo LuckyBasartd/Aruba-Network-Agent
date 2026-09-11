@@ -34,7 +34,7 @@ left alone (only cosmetic/branding was renamed).
 - `origin`     → https://github.com/LuckyBasartd/Aruba-Network-Agent.git  (**dev / personal**)
 - `production` → https://github.sandiego.edu/NISS/Network-Agent.git       (**USD enterprise / prod**)
 
-**Versioning:** annotated tags `vX.Y.Z`. Current line: **v3.5.0** (see §9).
+**Versioning:** annotated tags `vX.Y.Z`. Current line: **v3.5.0** — LIVE in prod (see §9).
 `aruba_agent/__init__.py __version__` is a separate internal string ("1.0.0")
 and is NOT the release version — the git tag is the source of truth.
 
@@ -258,16 +258,23 @@ New / notable keys:
 
 ## 9. Current state (as of v3.5.0)
 
-`v3.5.0` on dev `main` bundles: full UI redesign (modern shell/nav, Home,
-breadcrumbs, rebrand to "Network Agent"); dashboard metric cards + grouped
-reachability view + `/switch/<name>` detail + live `/jobs` page; vendor
+`v3.5.0` bundles: full UI redesign (modern shell/nav, Home, breadcrumbs,
+rebrand to "Network Agent"); dashboard metric cards + grouped reachability view
++ `/switch/<name>` detail + live `/jobs` page (with Batch-config link); vendor
 backfill for pinned profiles; ProCurve → "Aruba OS-S" labeling; maintenance
 mode (mute/unmanage); coalesced hostname alert emails; dashboard
 Needs-attention (tabbed) + Fleet-overview panels; **ProCurve SSH backup driver
-+ save-detection fix**; **Cisco read-timeout tolerance**; Jobs Batch-config link.
++ save-detection fix**; **Cisco read-timeout tolerance**; **subnet-health job +
+GUI + ignore-list** (§11); **AOS-8 Mobility controllers backup+monitor + GUI**
+and **VPN web-server watchdog + GUI** (§12); **in-app encrypted Help page** (§13);
+`Scheduler.add_interval` for sub-daily jobs; and the `EmailNotifier`
+startup-crash hotfix.
 
-**Deploy status:** all of the above is on dev. **v3.5.0 has NOT yet been pushed
-to production** — promote per §2 when the user is ready.
+**Deploy status:** **v3.5.0 is LIVE in production** (deployed via `deploy.sh`,
+verified) and on dev. The controllers / webserver_health / subnet_health
+features were configured + enabled on prod by the user and tested individually.
+Next change starts a new tag (e.g. v3.6.0) — don't assume prod == dev going
+forward; check `git log origin/main` vs `production/main` if unsure.
 
 **Backup failures triage** (from a full prod run): ProCurve (aruba_os) and slow
 Cisco failures are FIXED in code. Remaining are **environmental**, needing
