@@ -421,17 +421,26 @@ def main() -> None:
             print(f"interfaces: probing {iface_host} "
                   f"profile={prof or '(default)'} physical_only={task.physical_only} ...")
             import time as _t
+            # Raw per-column dump first, so we can see exactly what SNMP returns.
             t0 = _t.time()
-            rows = _ifc.collect(snmp_agent2, iface_host, profile_name=prof,
-                                physical_only=task.physical_only)
+            raw = snmp_agent2.bulk_walk(iface_host, [_ifc.OIDS[k] for k in _ifc.WALK_KEYS],
+                                        profile_name=prof)
             dt = _t.time() - t0
-            if rows is None:
-                print(f"  FAILED in {dt:.1f}s — snmp last_error="
+            if raw is None:
+                print(f"  bulk_walk FAILED in {dt:.1f}s — last_error="
                       f"{snmp_agent2.last_error!r} detail={snmp_agent2.last_detail!r}")
                 sys.exit(2)
-            print(f"  {len(rows)} interface(s) in {dt:.1f}s:")
-            for idx in sorted(rows, key=lambda x: (0, int(x)) if x.isdigit() else (1, x))[:60]:
-                r = rows[idx]
+            print(f"  bulk_walk OK in {dt:.1f}s; per-column entry counts:")
+            for k in _ifc.WALK_KEYS:
+                col = raw.get(_ifc.OIDS[k], {})
+                sample = list(col.items())[:3]
+                print(f"    {k:<11} base={_ifc.OIDS[k]:<26} count={len(col):<4} sample={sample}")
+            rows_all = _ifc.collect(snmp_agent2, iface_host, profile_name=prof, physical_only=False)
+            rows_phy = _ifc.collect(snmp_agent2, iface_host, profile_name=prof, physical_only=True)
+            print(f"  assembled rows: physical_only=False -> {len(rows_all or {})}, "
+                  f"True -> {len(rows_phy or {})}")
+            for idx in sorted((rows_phy or {}), key=lambda x: (0, int(x)) if x.isdigit() else (1, x))[:8]:
+                r = rows_phy[idx]
                 print(f"    {r['name']:<16} admin={r['admin']:<4} oper={r['oper']:<4} "
                       f"speed={r['speed_mbps']}M in={r['hc_in']} out={r['hc_out']}")
             sys.exit(0)
