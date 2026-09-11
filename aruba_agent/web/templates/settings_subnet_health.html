@@ -1,0 +1,177 @@
+{% extends "_settings_chrome.html" %}
+{% block title %}Subnet Health{% endblock %}
+{% block icon %}bi-reception-4{% endblock %}
+{% block heading %}Subnet Health{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-9">
+    <div class="card">
+      <div class="card-body">
+        <p class="text-muted small">
+          Once a night, SSH to the wireless distribution switches, read their ARP
+          tables, and count active host IPs per subnet. Emails you when a subnet
+          drops below the low watermark (likely an IP-helper / DHCP problem) or
+          rises above the high watermark (pool nearly exhausted).
+        </p>
+
+        <form method="POST" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-5">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="enabled" name="enabled" {% if enabled %}checked{% endif %}>
+                <label class="form-check-label" for="enabled">
+                  <strong>Run scheduled check</strong>
+                </label>
+                <div class="form-text"><em>Run now</em> below works regardless.</div>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label" for="schedule">Schedule (HH:MM)</label>
+              <input type="text" class="form-control" id="schedule" name="schedule"
+                     value="{{ schedule }}" pattern="^\d{1,2}:\d{2}$" placeholder="03:00" required>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label" for="device_type">Distro type (SSH)</label>
+              <select class="form-select" id="device_type" name="device_type">
+                {% for dt in ["aruba_aoscx", "hp_procurve", "cisco_ios"] %}
+                <option value="{{ dt }}" {% if device_type == dt %}selected{% endif %}>{{ dt }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text">netmiko device type for the distros.</div>
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label" for="distros">Distribution switches (IPs)</label>
+              <input type="text" class="form-control" id="distros" name="distros"
+                     value="{{ distros }}" placeholder="10.253.0.30, 10.253.0.31">
+              <div class="form-text">Comma or space separated.</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label" for="arp_command">ARP command</label>
+              <input type="text" class="form-control" id="arp_command" name="arp_command"
+                     value="{{ arp_command }}" placeholder="show arp">
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <label class="form-label" for="low_pct">Low watermark (%)</label>
+              <input type="number" step="0.1" min="0" max="100" class="form-control"
+                     id="low_pct" name="low_pct" value="{{ low_pct }}">
+              <div class="form-text">Alert below this.</div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label" for="high_pct">High watermark (%)</label>
+              <input type="number" step="0.1" min="0" max="100" class="form-control"
+                     id="high_pct" name="high_pct" value="{{ high_pct }}">
+              <div class="form-text">Alert above this.</div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label" for="usable_per_subnet">Usable IPs / subnet</label>
+              <input type="number" min="1" class="form-control"
+                     id="usable_per_subnet" name="usable_per_subnet" value="{{ usable }}">
+              <div class="form-text">254 for a /24.</div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="ignore">Ignore list</label>
+            <input type="text" class="form-control" id="ignore" name="ignore"
+                   value="{{ ignore }}" placeholder="vlan806, 172.18.250.0/24">
+            <div class="form-text">
+              Subnets to never alert on (chronically quiet / special-purpose).
+              Match by VLAN label or CIDR, comma separated.
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="subnets_file">Subnet list file</label>
+            <input type="text" class="form-control" id="subnets_file" name="subnets_file"
+                   value="{{ subnets_file }}">
+            <div class="form-text">
+              Written by this page — must be under a path the agent can write
+              (e.g. <code class="path">/etc/aruba-agent/</code>).
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="subnets_text">
+              Subnets — one <code>label CIDR</code> per line
+            </label>
+            <textarea class="form-control font-monospace" id="subnets_text" name="subnets_text"
+                      rows="14" spellcheck="false"
+                      placeholder="vlan500 172.18.0.0/24&#10;vlan501 172.18.1.0/24">{{ subnets_text }}</textarea>
+          </div>
+
+          <button type="submit" class="btn btn-primary" {% if not editor_writable %}disabled{% endif %}>
+            <i class="bi bi-save me-1"></i>Save
+          </button>
+          <button type="button" class="btn btn-outline-info ms-2" id="run-btn" onclick="runCheck()">
+            <i class="bi bi-play-circle me-1"></i>Run now
+          </button>
+          <span class="text-muted small ms-2">Save first; Run now uses saved settings. Restart to apply the schedule.</span>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mt-3 d-none" id="results-card">
+      <div class="card-body">
+        <h5 class="card-title"><i class="bi bi-clipboard-data me-2"></i>Last run</h5>
+        <div id="results"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function runCheck() {
+  const btn = document.getElementById('run-btn');
+  const card = document.getElementById('results-card');
+  const out = document.getElementById('results');
+  btn.disabled = true;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Reading ARP over SSH…';
+  card.classList.remove('d-none');
+  out.innerHTML = '<span class="text-muted">Working… this can take 10–30s.</span>';
+  try {
+    const r = await fetch('/api/settings/subnet-health/run', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { out.innerHTML = '<div class="alert alert-danger py-2 mb-0">' + (d.error || 'Failed') + '</div>'; return; }
+    if (!d.ok) {
+      out.innerHTML = '<div class="alert alert-warning py-2">' + (d.message || 'No ARP data collected.') +
+        '</div>' + (d.errors && d.errors.length ? '<pre class="small mb-0">' + d.errors.join('\n') + '</pre>' : '');
+      return;
+    }
+    const rows = (list, cls, tag) => list.map(x =>
+      '<tr><td><span class="badge ' + cls + '">' + tag + '</span></td><td>' + (x.label||'') +
+      '</td><td class="font-monospace">' + x.cidr + '</td><td class="text-end">' + x.count + '/' + x.usable +
+      '</td><td class="text-end">' + x.pct + '%</td></tr>').join('');
+    let html = '<p class="small text-muted">' + d.active + ' active IPs across ' + d.subnets +
+      ' subnets — ' + d.low.length + ' low, ' + d.high.length + ' high.</p>';
+    if (!d.low.length && !d.high.length) {
+      html += '<div class="alert alert-success py-2 mb-0"><i class="bi bi-check-circle me-1"></i>All subnets within range.</div>';
+    } else {
+      html += '<table class="table table-sm"><thead><tr><th></th><th>VLAN</th><th>Subnet</th>' +
+              '<th class="text-end">Used</th><th class="text-end">%</th></tr></thead><tbody>' +
+              rows(d.low.sort((a,b)=>a.pct-b.pct), 'bg-danger', 'LOW') +
+              rows(d.high.sort((a,b)=>b.pct-a.pct), 'bg-warning text-dark', 'HIGH') +
+              '</tbody></table>';
+    }
+    if (d.errors && d.errors.length) html += '<pre class="small text-warning mb-0">' + d.errors.join('\n') + '</pre>';
+    out.innerHTML = html;
+  } catch (e) {
+    out.innerHTML = '<div class="alert alert-danger py-2 mb-0">' + e.message + '</div>';
+  } finally {
+    btn.disabled = false; btn.innerHTML = orig;
+  }
+}
+</script>
+{% endblock %}

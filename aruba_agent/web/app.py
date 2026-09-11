@@ -2513,6 +2513,140 @@ def create_app(
         flash("Scanner settings saved. Restart the agent to apply.", "success")
         return redirect(url_for("settings_scanner"))
 
+    # ── Subnet Health (wireless distro ARP utilization) ───────────────────
+
+    _DEFAULT_SUBNETS_FILE = "/etc/aruba-agent/wireless_subnets.txt"
+
+    def _read_subnets_file(path: str) -> str:
+        try:
+            with open(path) as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+    @app.get("/settings/subnet-health")
+    @require_login
+    def settings_subnet_health():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        sh = live["subnet_health"] if live.has_section("subnet_health") else {}
+        subnets_file = sh.get("subnets_file", _DEFAULT_SUBNETS_FILE)
+        ctx = _settings_context()
+        ctx.update({
+            "enabled":       sh.get("enabled", "false").lower() == "true",
+            "schedule":      sh.get("schedule", "03:00"),
+            "distros":       sh.get("distros", ""),
+            "device_type":   sh.get("device_type", "aruba_aoscx"),
+            "arp_command":   sh.get("arp_command", "show arp"),
+            "low_pct":       sh.get("low_pct", "10"),
+            "high_pct":      sh.get("high_pct", "90"),
+            "usable":        sh.get("usable_per_subnet", "254"),
+            "ignore":        sh.get("ignore", ""),
+            "subnets_file":  subnets_file,
+            "subnets_text":  _read_subnets_file(subnets_file),
+            "errors":        get_flashed_messages(category_filter=["error"]),
+            "messages":      get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_subnet_health.html", **ctx)
+
+    @app.post("/settings/subnet-health")
+    @require_login
+    def settings_subnet_health_post():
+        guard = _editor_required()
+        if guard is not None: return guard
+        f = request.form
+
+        sched = _validate_hhmm(f.get("schedule") or "")
+        if sched is None:
+            flash("Schedule must be HH:MM (24-hour).", "error")
+            return redirect(url_for("settings_subnet_health"))
+
+        ok, bad = _validate_ips(f.get("distros") or "")
+        if not ok:
+            flash(f"Invalid distro IP(s): {', '.join(bad)}", "error")
+            return redirect(url_for("settings_subnet_health"))
+
+        try:
+            low  = float(f.get("low_pct")  or "10")
+            high = float(f.get("high_pct") or "90")
+            usable = int(f.get("usable_per_subnet") or "254")
+            if not (0 <= low < high <= 100) or usable < 1:
+                raise ValueError
+        except ValueError:
+            flash("Thresholds must satisfy 0 <= low < high <= 100 and usable > 0.", "error")
+            return redirect(url_for("settings_subnet_health"))
+
+        # Validate + persist the subnet list to the subnets file.
+        subnets_file = (f.get("subnets_file") or _DEFAULT_SUBNETS_FILE).strip()
+        raw_lines = (f.get("subnets_text") or "").splitlines()
+        clean, bad_subnets = [], []
+        for line in raw_lines:
+            t = line.strip()
+            if not t or t.startswith("#"):
+                clean.append(line.rstrip())
+                continue
+            parts = t.split()
+            cidr = parts[1] if len(parts) >= 2 else parts[0]
+            try:
+                ipaddress.ip_network(cidr, strict=False)
+            except ValueError:
+                bad_subnets.append(cidr)
+                continue
+            clean.append(t)
+        if bad_subnets:
+            flash(f"Invalid subnet(s): {', '.join(bad_subnets[:10])}", "error")
+            return redirect(url_for("settings_subnet_health"))
+
+        try:
+            tmp = subnets_file + ".tmp"
+            with open(tmp, "w") as fh:
+                fh.write("\n".join(clean) + "\n")
+            os.replace(tmp, subnets_file)
+        except OSError as exc:
+            flash(f"Could not write {subnets_file}: {exc}", "error")
+            return redirect(url_for("settings_subnet_health"))
+
+        editor.update_section("subnet_health", {
+            "enabled":           "true" if f.get("enabled") == "on" else "false",
+            "schedule":          sched,
+            "distros":           ", ".join(_csv((f.get("distros") or "").replace(" ", ","))),
+            "device_type":       (f.get("device_type") or "aruba_aoscx").strip(),
+            "arp_command":       (f.get("arp_command") or "show arp").strip(),
+            "low_pct":           str(low).rstrip("0").rstrip(".") if "." in str(low) else str(low),
+            "high_pct":          str(high).rstrip("0").rstrip(".") if "." in str(high) else str(high),
+            "usable_per_subnet": str(usable),
+            "ignore":            ", ".join(_csv((f.get("ignore") or "").replace(" ", ","))),
+            "subnets_file":      subnets_file,
+        })
+        log.info("Web UI: subnet_health settings updated by user=%s", session.get("user"))
+        _audit_save("subnet_health")
+        flash("Subnet-health settings saved. Restart the agent to apply the schedule.", "success")
+        return redirect(url_for("settings_subnet_health"))
+
+    @app.post("/api/settings/subnet-health/run")
+    @require_login
+    def settings_subnet_health_run():
+        """Run the check once against the saved config and return results as
+        JSON (does NOT send email — this is for on-demand inspection)."""
+        if editor is None:
+            return jsonify({"error": "settings editor disabled"}), 503
+        from aruba_agent.tasks.subnet_health import SubnetHealthTask
+        live = editor.read()
+        task = SubnetHealthTask(live, None)
+        subnets = task._load_subnets()
+        if not task.distros or not subnets:
+            return jsonify({"error": "Configure distros and a subnet list first."}), 400
+        active, errors = task._collect_active_ips()
+        if not active:
+            return jsonify({"ok": False, "active": 0, "errors": errors,
+                            "low": [], "high": [],
+                            "message": "No ARP data collected from the distros."})
+        res = task.evaluate(active, subnets)
+        return jsonify({"ok": True, "active": len(active), "errors": errors,
+                        "subnets": len(subnets),
+                        "low": res["low"], "high": res["high"]})
+
     # ── Config Backup ─────────────────────────────────────────────────────
 
     @app.get("/settings/backup")

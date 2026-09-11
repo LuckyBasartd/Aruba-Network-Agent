@@ -507,8 +507,12 @@ low_pct = 10
 high_pct = 90
 usable_per_subnet = 254
 # One "<label> <CIDR>" per line. Ships in the repo as wireless_subnets.txt and
-# is deployed with the code, so edit it in git and push — no manual copy needed.
-subnets_file = /opt/aruba-agent/wireless_subnets.txt
+# is editable from the web GUI (Settings -> Subnet Health), which writes it
+# to this path. The repo copy (wireless_subnets.txt) is the initial seed.
+subnets_file = /etc/aruba-agent/wireless_subnets.txt
+# Subnets to never alert on (chronically quiet / special-purpose).
+# Match by CIDR or by label, comma/space separated. Editable in the GUI.
+ignore =
 # Optional inline subnets instead of / in addition to the file:
 # subnets = vlan500 172.18.0.0/24, vlan501 172.18.1.0/24
 # Credentials: blank = reuse the [credentials] monitoring account.

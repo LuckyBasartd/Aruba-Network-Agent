@@ -83,6 +83,12 @@ class SubnetHealthTask:
         self.subnets_file = (sh.get("subnets_file", "") or "").strip()
         self._inline      = sh.get("subnets", "") or ""
 
+        # Subnets to never flag (chronically-quiet / special-purpose ones).
+        # Match by CIDR string or by label, case-insensitive.
+        self.ignore = {t.strip().lower()
+                       for t in re.split(r"[,\s]+", sh.get("ignore", "") or "")
+                       if t.strip()}
+
     # -- subnet list ----------------------------------------------------------
 
     def _load_subnets(self) -> List[Tuple[str, "ipaddress.IPv4Network"]]:
@@ -191,6 +197,8 @@ class SubnetHealthTask:
         low: list = []
         high: list = []
         for label, net in subnets:
+            if str(net).lower() in self.ignore or (label or "").lower() in self.ignore:
+                continue
             count = sum(1 for ip in parsed if ip in net)
             pct   = (count / self.usable * 100.0) if self.usable else 0.0
             row   = {"label": label, "cidr": str(net), "count": count,
