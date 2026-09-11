@@ -360,7 +360,12 @@ def main() -> None:
         "agent", "state_file",
         fallback="/var/lib/aruba-agent/state.json",
     )
-    state    = AgentState(snapshot_path=state_file)
+    # Persistence backend (data-layer abstraction). Default "json" reproduces
+    # the historical state.json behavior exactly; "mongo" arrives in Phase 1.
+    from aruba_agent.store import make_store
+    store_backend = cfg.get("store", "backend", fallback="json") if cfg.has_section("store") else "json"
+    _store = make_store(store_backend, snapshot_path=state_file, cfg=cfg)
+    state    = AgentState(store=_store)
     notifier = EmailNotifier(cfg)
 
     # ── on-demand firmware update ────────────────────────────────────────────

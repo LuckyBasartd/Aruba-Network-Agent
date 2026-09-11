@@ -1,0 +1,60 @@
+"""JSON file backend — the historical state.json persistence, extracted verbatim.
+
+Atomic write: temp file in the same directory, fsync, then os.replace over the
+target. A path of None makes the store ephemeral (load -> None, save -> no-op),
+preserving AgentState's "no snapshot_path = in-memory only" behavior.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import tempfile
+from pathlib import Path
+from typing import Optional
+
+log = logging.getLogger(__name__)
+
+
+class JsonStore:
+    def __init__(self, path: Optional[str]) -> None:
+        self.path: Optional[Path] = Path(path) if path else None
+
+    def load(self) -> Optional[dict]:
+        path = self.path
+        if path is None or not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning("JsonStore: could not load %s (%s) — starting empty",
+                        path, exc)
+            return None
+
+    def save(self, payload: dict) -> None:
+        path = self.path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(prefix=".state-", suffix=".tmp",
+                                            dir=str(path.parent))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+                    json.dump(payload, tmp, indent=2, sort_keys=True)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                os.replace(tmp_name, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            log.warning("JsonStore: could not persist state to %s: %s", path, exc)
+
+    def close(self) -> None:
+        pass

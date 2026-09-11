@@ -565,3 +565,11 @@ command = show web-server statistics
 device_type = aruba_os
 # Substrings (lower-cased, comma-separated) that mean "web-server is down".
 fail_patterns = not responding, error in fetching
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [store] — persistence backend (data-layer abstraction, see DATA_LAYER_SPEC.md)
+# ─────────────────────────────────────────────────────────────────────────────
+# "json"  = state stored in [agent] state_file (default; current behavior).
+# "mongo" = MongoDB backend (Phase 1 — not yet implemented; will add uri/db/tls).
+[store]
+backend = json

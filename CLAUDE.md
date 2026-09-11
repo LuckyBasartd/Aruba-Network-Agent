@@ -111,6 +111,9 @@ aruba_agent/
   audit.py / metrics.py      audit log + /metrics
   auth.py local_auth.py passkeys.py api_tokens.py   login, 2FA, WebAuthn, tokens
   monitors/
+  store/                     persistence backends (data-layer abstraction)
+    base.py                  Store Protocol (load/save/close) + make_store()
+    json_store.py            JSON file backend (historical state.json behavior)
     switch_poller.py         reachability ladder, vendor/os backfill, mute checks
   drivers/
     base.py                  SwitchDriver Protocol + Facts/ArpEntry dataclasses
@@ -273,8 +276,11 @@ startup-crash hotfix.
 **Deploy status:** **v3.5.0 is LIVE in production** (deployed via `deploy.sh`,
 verified) and on dev. The controllers / webserver_health / subnet_health
 features were configured + enabled on prod by the user and tested individually.
-Next change starts a new tag (e.g. v3.6.0) — don't assume prod == dev going
-forward; check `git log origin/main` vs `production/main` if unsure.
+**v3.6.0 (dev, in progress):** data-layer Phase 0 — `AgentState` now persists
+through a swappable `Store` (`aruba_agent/store/`); default JsonStore reproduces
+state.json exactly; `[store] backend` selects it; MongoDB chosen for Phase 1
+(MongoStore not built yet — `make_store('mongo')` raises). Prod is still v3.5.0;
+check `git log production/main` before assuming parity.
 
 **Backup failures triage** (from a full prod run): ProCurve (aruba_os) and slow
 Cisco failures are FIXED in code. Remaining are **environmental**, needing

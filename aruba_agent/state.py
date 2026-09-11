@@ -116,9 +116,18 @@ class AgentState:
         (test / dev) use.
     """
 
-    def __init__(self, snapshot_path: Optional[str] = None) -> None:
+    def __init__(self, snapshot_path: Optional[str] = None, store=None) -> None:
         self._lock = threading.RLock()
 
+        # Persistence backend (Phase 0 data-layer abstraction, see
+        # DATA_LAYER_SPEC.md). Callers may pass a Store directly; otherwise we
+        # build a JsonStore from snapshot_path, preserving the historical
+        # on-disk behavior byte-for-byte.
+        if store is not None:
+            self._store = store
+        else:
+            from aruba_agent.store.json_store import JsonStore
+            self._store = JsonStore(snapshot_path)
         self._snapshot_path: Optional[Path] = (
             Path(snapshot_path) if snapshot_path else None
         )
@@ -136,9 +145,8 @@ class AgentState:
         # ARP discovery — per-location last-run timestamps
         self.arp_last_run: Dict[str, Optional[datetime]] = {}
 
-        # Rehydrate if a snapshot exists
-        if self._snapshot_path is not None:
-            self._load()
+        # Rehydrate from the store (returns None / empty when nothing stored).
+        self._load()
 
     # ─── persistence ──────────────────────────────────────────────────────────
 
@@ -147,16 +155,10 @@ class AgentState:
         Best-effort load. Never raises — a missing or corrupt snapshot
         just means we start with empty state.
         """
-        path = self._snapshot_path
-        if path is None or not path.exists():
-            log.info("No snapshot at %s — starting with empty state", path)
-            return
-
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            log.warning("Could not load snapshot %s (%s) — starting empty", path, exc)
+        data = self._store.load()
+        if not data:
+            log.info("No prior state in %s — starting empty",
+                     type(self._store).__name__)
             return
 
         try:
@@ -205,11 +207,11 @@ class AgentState:
             }
 
             log.info(
-                "Restored snapshot from %s (%d switches, %d devices)",
-                path, len(self.switches), len(self.device_inventory),
+                "Restored state (%d switches, %d devices)",
+                len(self.switches), len(self.device_inventory),
             )
         except Exception as exc:  # pragma: no cover
-            log.warning("Snapshot %s was malformed (%s) — starting empty", path, exc)
+            log.warning("Persisted state was malformed (%s) — starting empty", exc)
             # wipe whatever was partially populated to keep things consistent
             self.switches.clear()
             self.backup            = BackupRun()
@@ -218,14 +220,9 @@ class AgentState:
             self.arp_last_run      = {}
 
     def _save(self) -> None:
-        """
-        Atomic save: write to a temp file in the same directory, then
-        rename over the target. Caller already holds self._lock.
-        """
-        path = self._snapshot_path
-        if path is None:
-            return
-
+        """Persist the current state via the configured Store. Caller
+        already holds self._lock. Durability/atomicity is the Store's
+        responsibility (JsonStore does temp-file + fsync + rename)."""
         payload = {
             "switches": [
                 {
@@ -260,29 +257,7 @@ class AgentState:
             },
         }
 
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            # NamedTemporaryFile in the same dir guarantees rename is atomic.
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=".state-",
-                suffix=".tmp",
-                dir=str(path.parent),
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-                    json.dump(payload, tmp, indent=2, sort_keys=True)
-                    tmp.flush()
-                    os.fsync(tmp.fileno())
-                os.replace(tmp_name, path)
-            except Exception:
-                # mkstemp succeeded but write/rename failed — clean up
-                try:
-                    os.unlink(tmp_name)
-                except OSError:
-                    pass
-                raise
-        except OSError as exc:
-            log.warning("Could not persist state to %s: %s", path, exc)
+        self._store.save(payload)
 
     # -------------------------------------------------------- switch helpers
 

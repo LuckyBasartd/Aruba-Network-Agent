@@ -1,6 +1,6 @@
 # Spec: Data-Access Layer + MongoDB Migration
 
-Status: **DRAFT / approved to start Phase 0.** Companion to `ROADMAP.md` §2.
+Status: **Phase 0 COMPLETE (JsonStore behind the Store interface). MongoDB chosen for Phase 1.** Companion to `ROADMAP.md` §2.
 Goal: replace the single `state.json` snapshot with a swappable persistence
 layer that (a) changes nothing functionally on day one, (b) unblocks history +
 scale, and (c) makes MongoDB (or Postgres) a backend choice rather than a
@@ -111,12 +111,15 @@ in `config.ini` (Fernet). Mongo runs with auth + TLS.
 
 ## 5. Migration phases
 
-### Phase 0 — Store abstraction + JsonStore  ⬅ START HERE (DB-agnostic, zero-risk)
+### Phase 0 — Store abstraction + JsonStore  ✅ DONE (DB-agnostic, zero-risk)
 - Add `aruba_agent/store/` : `base.py` (Protocol), `json_store.py`.
 - Refactor `state.py` to delegate persistence to a `Store` (default JsonStore
   pointed at the existing `state.json`). **No behavior change.**
 - Contract test-suite that runs against any Store impl; JsonStore passes.
-- Ship dev → prod. Nothing observable changes; we've just decoupled storage.
+- ✅ Shipped: `aruba_agent/store/` (base/json_store + make_store), `state.py`
+  delegates persistence to the Store (payload byte-identical), `[store]
+  backend` config, `main.py` builds it via make_store, contract +
+  AgentState persistence tests (tests/test_store.py, test_state_persistence.py).
 
 ### Phase 1 — MongoStore (opt-in)
 - `[store] backend = json | mongo` (+ `uri`, `db`, TLS/auth opts). Default `json`.
@@ -167,7 +170,7 @@ in `config.ini` (Fernet). Mongo runs with auth + TLS.
 ---
 
 ## 9. Open questions
-- ❓ Mongo SSPL licensing OK under USD policy? Who runs/patches/backs it up?
+- ✅ MongoDB chosen. (Confirm who runs/patches/backs up the instance.)
 - ❓ Mongo on the app host (argos-2026) or a separate DB host?
 - ❓ Metrics retention windows + downsampling (e.g. 15s raw 14d, 5m 90d, 1h 2y)?
 - ❓ Config blobs: keep encrypted-on-disk (recommended) vs GridFS?
