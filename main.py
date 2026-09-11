@@ -399,6 +399,12 @@ def main() -> None:
     if interfaces_once_mode:
         # This CLI handler runs before the daemon's state/store are built, so
         # construct our own (hydrating the device list from the store).
+        # pysnmp's sync bulkCmd leaves an asyncio timeout task pending on the
+        # loop that only gets GC'd at interpreter exit, which asyncio logs as
+        # "Task was destroyed but it is pending!". Harmless on a one-shot run;
+        # quiet it so the diagnostic output isn't buried in teardown noise.
+        import logging as _logging
+        _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
         from aruba_agent.store import make_store
         from aruba_agent.tasks.interface_poll import InterfacePollTask
         _sb = (cfg.get("store", "backend", fallback="json")
@@ -438,11 +444,11 @@ def main() -> None:
             g_desc = snmp_agent2.get(iface_host, "1.3.6.1.2.1.2.2.1.2.1", profile_name=prof)
             print(f"  GET ifName.1={g_name!r} (err={snmp_agent2.last_error!r}) "
                   f"ifDescr.1={g_desc!r}")
-            print(f"  bulk_walk OK in {dt:.1f}s; per-column entry counts:")
-            for k in _ifc.WALK_KEYS:
-                col = raw.get(_ifc.OIDS[k], {})
-                sample = list(col.items())[:3]
-                print(f"    {k:<11} base={_ifc.OIDS[k]:<26} count={len(col):<4} sample={sample}")
+            counts = {k: len(raw.get(_ifc.OIDS[k], {})) for k in _ifc.WALK_KEYS}
+            lo, hi = (min(counts.values()), max(counts.values())) if counts else (0, 0)
+            uneven = "" if lo == hi else "  (UNEVEN across columns — investigate)"
+            print(f"  bulk_walk OK in {dt:.1f}s; {len(_ifc.WALK_KEYS)} columns, "
+                  f"{lo}-{hi} rows/column{uneven}")
             rows_all = _ifc.collect(snmp_agent2, iface_host, profile_name=prof, physical_only=False)
             rows_phy = _ifc.collect(snmp_agent2, iface_host, profile_name=prof, physical_only=True)
             print(f"  assembled rows: physical_only=False -> {len(rows_all or {})}, "
