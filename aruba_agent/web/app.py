@@ -2647,6 +2647,208 @@ def create_app(
                         "subnets": len(subnets),
                         "low": res["low"], "high": res["high"]})
 
+    # -- Controllers (AOS-8 wireless + VPN) --------------------------------
+
+    def _parse_controllers(raw):
+        """Parse a 'name:ip' per-line/comma list -> [(name, ip), ...]."""
+        import re as _re
+        out = []
+        for tok in [t for t in _re.split(r"[,\n]+", raw or "") if t.strip()]:
+            t = tok.strip().replace("=", ":")
+            if ":" in t:
+                nm, ip = t.split(":", 1)
+                nm, ip = nm.strip(), ip.strip()
+            else:
+                nm = ip = t.strip()
+            if ip:
+                out.append((nm, ip))
+        return out
+
+    @app.get("/settings/controllers")
+    @require_login
+    def settings_controllers():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        c = live["controllers"] if live.has_section("controllers") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "enabled":      c.get("enabled", "false").lower() == "true",
+            "hosts":        c.get("hosts", ""),
+            "monitor":      c.get("monitor", "true").lower() == "true",
+            "monitor_mode": c.get("monitor_mode", "auto"),
+            "backup":       c.get("backup", "true").lower() == "true",
+            "backup_mode":  c.get("backup_mode", "running-config"),
+            "errors":       get_flashed_messages(category_filter=["error"]),
+            "messages":     get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_controllers.html", **ctx)
+
+    @app.post("/settings/controllers")
+    @require_login
+    def settings_controllers_post():
+        guard = _editor_required()
+        if guard is not None:
+            return guard
+        f = request.form
+
+        new_hosts = _parse_controllers(f.get("hosts") or "")
+        for _, ip in new_hosts:
+            try:
+                ipaddress.ip_address(ip)
+            except ValueError:
+                flash(f"Invalid controller IP: {ip}", "error")
+                return redirect(url_for("settings_controllers"))
+
+        mode = (f.get("monitor_mode") or "auto").strip()
+        backup_mode = (f.get("backup_mode") or "running-config").strip()
+        do_monitor = f.get("monitor") == "on"
+        enabled = f.get("enabled") == "on"
+
+        live = editor.read()
+        prev = _parse_controllers(
+            live["controllers"].get("hosts", "") if live.has_section("controllers") else "")
+        prev_ips = {ip for _, ip in prev}
+        new_ips = {ip for _, ip in new_hosts}
+
+        editor.update_section("controllers", {
+            "enabled":      "true" if enabled else "false",
+            "hosts":        ", ".join(f"{n}:{ip}" for n, ip in new_hosts),
+            "vendor":       "aruba_aos8",
+            "monitor":      "true" if do_monitor else "false",
+            "monitor_mode": mode,
+            "backup":       "true" if f.get("backup") == "on" else "false",
+            "backup_mode":  backup_mode,
+        })
+
+        if monitor_manager is not None:
+            for nm, ip in new_hosts:
+                state.register_switch(nm, ip, monitor_mode=mode)
+                state.pin_vendor(nm, "aruba_aos8")
+                if enabled and do_monitor:
+                    monitor_manager.add(host=ip, name=nm, monitor_mode=mode)
+            drop = (prev_ips - new_ips) if (enabled and do_monitor) else prev_ips
+            for ip in drop:
+                monitor_manager.remove(ip)
+
+        log.info("Web UI: controllers updated by user=%s (%d hosts)",
+                 session.get("user"), len(new_hosts))
+        _audit_save("controllers")
+        flash(f"Controllers saved ({len(new_hosts)} host(s)). Monitoring applied "
+              "live; backup runs on the next nightly cycle.", "success")
+        return redirect(url_for("settings_controllers"))
+
+    @app.post("/api/settings/controllers/test")
+    @require_login
+    def settings_controllers_test():
+        """Dry-run the AOS-8 backup per controller (login/save/capture size)."""
+        if editor is None:
+            return jsonify({"error": "settings editor disabled"}), 503
+        from aruba_agent.drivers import driver_for
+        live = editor.read()
+        c = live["controllers"] if live.has_section("controllers") else {}
+        cr = live["credentials"] if live.has_section("credentials") else {}
+        a8 = live["credentials.aos8"] if live.has_section("credentials.aos8") else {}
+        user = (a8.get("username", "") or cr.get("username", "admin")).strip()
+        pw = secrets_store.decrypt(a8.get("password", "")) or secrets_store.decrypt(cr.get("password", ""))
+        mode = (c.get("backup_mode", "running-config") or "running-config").strip()
+        hosts = _parse_controllers(c.get("hosts", ""))
+        if not hosts:
+            return jsonify({"error": "No controllers configured."}), 400
+        results = []
+        for nm, ip in hosts:
+            row = {"name": nm, "host": ip}
+            try:
+                with driver_for(ip, user, pw, vendor_hint="aruba_aos8",
+                                aos8_backup_mode=mode) as drv:
+                    if not drv.logged_in:
+                        row.update(ok=False, detail=f"login failed: {drv.error}")
+                    else:
+                        drv.save_running_to_startup()
+                        data = drv.get_running_config()
+                        if data:
+                            row.update(ok=True, bytes=len(data), detail=(drv.error or "captured"))
+                        else:
+                            row.update(ok=False, detail=f"capture failed: {drv.error}")
+            except Exception as exc:
+                row.update(ok=False, detail=f"{type(exc).__name__}: {exc}")
+            results.append(row)
+        return jsonify({"results": results})
+
+    # -- Web-server watchdog (VPN controller) ------------------------------
+
+    @app.get("/settings/webserver-health")
+    @require_login
+    def settings_webserver_health():
+        if editor is None:
+            abort(404)
+        live = editor.read()
+        w = live["webserver_health"] if live.has_section("webserver_health") else {}
+        ctx = _settings_context()
+        ctx.update({
+            "enabled":          w.get("enabled", "false").lower() == "true",
+            "host":             w.get("host", ""),
+            "interval_minutes": w.get("interval_minutes", "60"),
+            "command":          w.get("command", "show web-server statistics"),
+            "device_type":      w.get("device_type", "aruba_os"),
+            "fail_patterns":    w.get("fail_patterns", "not responding, error in fetching"),
+            "errors":           get_flashed_messages(category_filter=["error"]),
+            "messages":         get_flashed_messages(category_filter=["success"]),
+        })
+        return render_template("settings_webserver_health.html", **ctx)
+
+    @app.post("/settings/webserver-health")
+    @require_login
+    def settings_webserver_health_post():
+        guard = _editor_required()
+        if guard is not None:
+            return guard
+        f = request.form
+
+        host = (f.get("host") or "").strip()
+        if host:
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                pass  # allow DNS names
+        try:
+            interval = int(f.get("interval_minutes") or "60")
+            if interval < 1:
+                raise ValueError
+        except ValueError:
+            flash("Interval must be a positive number of minutes.", "error")
+            return redirect(url_for("settings_webserver_health"))
+
+        editor.update_section("webserver_health", {
+            "enabled":          "true" if f.get("enabled") == "on" else "false",
+            "host":             host,
+            "interval_minutes": str(interval),
+            "command":          (f.get("command") or "show web-server statistics").strip(),
+            "device_type":      (f.get("device_type") or "aruba_os").strip(),
+            "fail_patterns":    ", ".join(_csv((f.get("fail_patterns") or "").replace(";", ","))),
+        })
+        log.info("Web UI: webserver_health updated by user=%s", session.get("user"))
+        _audit_save("webserver_health")
+        flash("Web-server watchdog saved. Restart the agent to apply the schedule.",
+              "success")
+        return redirect(url_for("settings_webserver_health"))
+
+    @app.post("/api/settings/webserver-health/run")
+    @require_login
+    def settings_webserver_health_run():
+        """Run the check once against saved config; return JSON. No email."""
+        if editor is None:
+            return jsonify({"error": "settings editor disabled"}), 503
+        from aruba_agent.tasks.webserver_health import WebServerHealthTask
+        live = editor.read()
+        task = WebServerHealthTask(live, None)
+        if not task.host:
+            return jsonify({"error": "Set the controller host first."}), 400
+        ok, out, err = task._run_command()
+        healthy = task.evaluate(ok, out, err)
+        return jsonify({"reachable": ok, "healthy": healthy,
+                        "error": err, "output": (out or "")[:2000]})
+
     # ── Config Backup ─────────────────────────────────────────────────────
 
     @app.get("/settings/backup")

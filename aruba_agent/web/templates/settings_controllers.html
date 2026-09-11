@@ -1,0 +1,125 @@
+{% extends "_settings_chrome.html" %}
+{% block title %}Controllers{% endblock %}
+{% block icon %}bi-router{% endblock %}
+{% block heading %}Controllers (Wireless + VPN){% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-9">
+    <div class="card">
+      <div class="card-body">
+        <p class="text-muted small">
+          AOS-8 Mobility controllers (Conductors, 9240 MCs, 9004 VPN). Monitored
+          for up/down on the dashboard and backed up nightly over SSH. Credentials
+          reuse the default account unless a <code>[credentials.aos8]</code> section
+          is set.
+        </p>
+
+        <form method="POST" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="enabled" name="enabled" {% if enabled %}checked{% endif %}>
+                <label class="form-check-label" for="enabled"><strong>Enabled</strong></label>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="monitor" name="monitor" {% if monitor %}checked{% endif %}>
+                <label class="form-check-label" for="monitor"><strong>Up/down monitoring</strong></label>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="backup" name="backup" {% if backup %}checked{% endif %}>
+                <label class="form-check-label" for="backup"><strong>Nightly backup</strong></label>
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label" for="monitor_mode">Monitor mode</label>
+              <select class="form-select" id="monitor_mode" name="monitor_mode">
+                {% for m in ["auto", "icmp", "snmp_ro"] %}
+                <option value="{{ m }}" {% if monitor_mode == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text">auto = SNMP → ICMP → SSH reachability ladder.</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label" for="backup_mode">Backup mode</label>
+              <select class="form-select" id="backup_mode" name="backup_mode">
+                {% for m in ["running-config", "flash"] %}
+                <option value="{{ m }}" {% if backup_mode == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text">
+                running-config is recommended — AOS-8 won't serve a flash archive
+                for pull, so flash falls back to running-config anyway.
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="hosts">Controllers — one <code>name:ip</code> per line</label>
+            <textarea class="form-control font-monospace" id="hosts" name="hosts"
+                      rows="8" spellcheck="false"
+                      placeholder="MM-1:172.18.251.21&#10;9240-MD-1:172.18.251.31">{{ hosts }}</textarea>
+          </div>
+
+          <button type="submit" class="btn btn-primary" {% if not editor_writable %}disabled{% endif %}>
+            <i class="bi bi-save me-1"></i>Save
+          </button>
+          <button type="button" class="btn btn-outline-info ms-2" id="test-btn" onclick="testBackup()">
+            <i class="bi bi-play-circle me-1"></i>Test backup
+          </button>
+          <span class="text-muted small ms-2">Save applies monitoring live. Test dry-runs the backup (no files written).</span>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mt-3 d-none" id="results-card">
+      <div class="card-body">
+        <h5 class="card-title"><i class="bi bi-clipboard-data me-2"></i>Backup test</h5>
+        <div id="results"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function testBackup() {
+  const btn = document.getElementById('test-btn');
+  const card = document.getElementById('results-card');
+  const out = document.getElementById('results');
+  btn.disabled = true;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing over SSH…';
+  card.classList.remove('d-none');
+  out.innerHTML = '<span class="text-muted">Working… this can take a while for several controllers.</span>';
+  try {
+    const r = await fetch('/api/settings/controllers/test', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { out.innerHTML = '<div class="alert alert-danger py-2 mb-0">' + (d.error || 'Failed') + '</div>'; return; }
+    const rows = (d.results || []).map(x =>
+      '<tr><td>' + (x.ok ? '<span class="badge bg-success">OK</span>' : '<span class="badge bg-danger">FAIL</span>') +
+      '</td><td>' + (x.name||'') + '</td><td class="font-monospace">' + x.host + '</td><td class="text-end">' +
+      (x.bytes != null ? x.bytes + ' B' : '—') + '</td><td class="small text-muted">' + (x.detail||'') + '</td></tr>').join('');
+    out.innerHTML = '<table class="table table-sm"><thead><tr><th></th><th>Name</th><th>Host</th>' +
+      '<th class="text-end">Captured</th><th>Detail</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  } catch (e) {
+    out.innerHTML = '<div class="alert alert-danger py-2 mb-0">' + e.message + '</div>';
+  } finally {
+    btn.disabled = false; btn.innerHTML = orig;
+  }
+}
+</script>
+{% endblock %}

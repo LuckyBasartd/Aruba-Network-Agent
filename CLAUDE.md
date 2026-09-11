@@ -386,6 +386,8 @@ SSH/command failure). `[webserver_health]` section: `enabled`, `host`,
 Scheduled via the new `Scheduler.add_interval(seconds, fn)` (sub-daily cadence;
 60s tick granularity). Test: `python main.py <cfg> --webserver-check`.
 
+Both are editable in the web GUI: **Settings -> Controllers** (`/settings/controllers`; enable/monitor/backup toggles, monitor & backup modes, the name:ip host list, plus a **Test backup** dry-run button — saving registers/removes them in the live monitor manager so they appear in up/down monitoring without a restart) and **Settings -> Web-Server Watchdog** (`/settings/webserver-health`; host, interval, command, fail patterns, and a **Run now** button). Landing cards added to settings.html.
+
 Scheduler now supports both daily `add("HH:MM", fn)` and interval
 `add_interval(seconds, fn, run_at_start=False)` tasks.
 

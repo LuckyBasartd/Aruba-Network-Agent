@@ -339,6 +339,42 @@ sudo chmod 640 {{ config_path or '/etc/aruba-agent/config.ini' }}</code></pre>
       </div>
     </div>
 
+    <!-- Controllers -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-router me-2"></i>Controllers
+          </h5>
+          <p class="card-text small text-muted">
+            AOS-8 wireless + VPN controllers: up/down monitoring, nightly
+            config backup, and a backup test button.
+          </p>
+          <a href="{{ url_for('settings_controllers') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Web-Server Watchdog -->
+    <div class="col-md-6 col-lg-4">
+      <div class="card section-card h-100">
+        <div class="card-body">
+          <h5 class="card-title">
+            <i class="bi bi-heart-pulse me-2"></i>Web-Server Watchdog
+          </h5>
+          <p class="card-text small text-muted">
+            Periodic check of the VPN controller web-server, with an email
+            alert when it stops responding. Run-now test included.
+          </p>
+          <a href="{{ url_for('settings_webserver_health') }}" class="btn btn-primary btn-sm">
+            <i class="bi bi-pencil me-1"></i>Configure
+          </a>
+        </div>
+      </div>
+    </div>
+
     <!-- Firmware -->
     <div class="col-md-6 col-lg-4">
       <div class="card section-card h-100">
