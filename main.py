@@ -414,6 +414,20 @@ def main() -> None:
             print(f"  ... (+{len(summ)-20} more)")
         print(f"interfaces: {total} interfaces across {len(summ)} switch(es). "
               f"(util needs a 2nd poll; run again to see rates)")
+        # Diagnostic: if nothing came back, probe one host directly and show why.
+        if total == 0 and elig:
+            from aruba_agent import interfaces as _ifc
+            sw = elig[0]
+            print(f"\ndiagnostic: probing {sw.name} ({sw.host}) "
+                  f"profile={getattr(sw,'snmp_profile','') or '(default)'} ...")
+            raw = snmp_agent2.bulk_walk(sw.host, [_ifc.OIDS["if_name"]],
+                                        profile_name=getattr(sw, "snmp_profile", "") or None)
+            print(f"  bulk_walk last_error={snmp_agent2.last_error!r} "
+                  f"detail={snmp_agent2.last_detail!r}")
+            if raw is not None:
+                col = raw.get(_ifc.OIDS["if_name"], {})
+                sample = list(col.items())[:5]
+                print(f"  ifName rows returned: {len(col)}; sample: {sample}")
         sys.exit(0)
 
     # Audit log — append-only file separate from journald.

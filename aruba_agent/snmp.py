@@ -554,9 +554,14 @@ class SnmpAgent:
 
         results = {b: {} for b in bases}
         rows = 0
+        # Use a FRESH engine per call. The reachability poller shares one engine
+        # but each monitor is its own thread; the interface poller runs a worker
+        # pool, and hammering a single shared engine's asyncio dispatcher from
+        # several threads causes contention/timeouts. A per-call engine isolates
+        # each walk (acceptable at the 5-min cadence).
         try:
             it = bulkCmd(
-                self._get_engine(), user_data,
+                SnmpEngine(), user_data,
                 UdpTransportTarget((host, profile.port),
                                    timeout=profile.timeout, retries=profile.retries),
                 context_data, 0, max_repetitions,
@@ -572,7 +577,13 @@ class SnmpAgent:
                     self.last_error = "pdu_error"; self.last_detail = err_stat.prettyPrint()
                     return None
                 for name, val in var_binds:
-                    oid = str(name)
+                    # Force the NUMERIC OID. pysnmp may prettyPrint the name as a
+                    # symbolic MIB string (IF-MIB::ifName.1) when MIBs are loaded,
+                    # which would never match our numeric bases.
+                    try:
+                        oid = ".".join(str(x) for x in name.getOid().asTuple())
+                    except Exception:
+                        oid = str(name)
                     for b in bases:
                         if oid == b or oid.startswith(b + "."):
                             suffix = oid[len(b) + 1:] if oid != b else ""
