@@ -430,6 +430,14 @@ def main() -> None:
                 print(f"  bulk_walk FAILED in {dt:.1f}s — last_error="
                       f"{snmp_agent2.last_error!r} detail={snmp_agent2.last_detail!r}")
                 sys.exit(2)
+            # Decisive check via the PROVEN get() path: can we read a single
+            # ifTable/ifXTable leaf at all? If these return values, ifTable is
+            # readable and bulk_walk is at fault; if None, the SNMPv3 view on the
+            # switch excludes ifTable (fix on the switch side).
+            g_name = snmp_agent2.get(iface_host, "1.3.6.1.2.1.31.1.1.1.1.1", profile_name=prof)
+            g_desc = snmp_agent2.get(iface_host, "1.3.6.1.2.1.2.2.1.2.1", profile_name=prof)
+            print(f"  GET ifName.1={g_name!r} (err={snmp_agent2.last_error!r}) "
+                  f"ifDescr.1={g_desc!r}")
             print(f"  bulk_walk OK in {dt:.1f}s; per-column entry counts:")
             for k in _ifc.WALK_KEYS:
                 col = raw.get(_ifc.OIDS[k], {})
