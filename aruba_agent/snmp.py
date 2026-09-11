@@ -600,27 +600,35 @@ class SnmpAgent:
                 if err_stat:
                     self.last_error = "pdu_error"; self.last_detail = err_stat.prettyPrint()
                     break
-                for vb in var_binds:
-                    # Index rather than unpack: a varbind is an ObjectType that
-                    # is [oid, value], but across pysnmp versions unpacking with
-                    # "for name, val in ..." can raise "too many values to
-                    # unpack". vb[0]/vb[1] is stable.
+                # pysnmp 6.1's bulkCmd yields item[3] as a varBindTable: a list
+                # of ROWS, each row a list of ObjectType (one per requested
+                # column). Older/other versions yield a flat list of ObjectType.
+                # Handle both: an entry whose [0] is itself an ObjectType is a
+                # row; otherwise the entry IS a single ObjectType.
+                for entry in var_binds:
                     try:
-                        name, val = vb[0], vb[1]
-                    except (TypeError, IndexError, ValueError):
+                        is_row = type(entry[0]).__name__ == "ObjectType"
+                    except (TypeError, IndexError):
                         continue
-                    # Force the NUMERIC OID — pysnmp may prettyPrint the name as a
-                    # symbolic MIB string (IF-MIB::ifName.1) which never matches
-                    # our numeric bases.
-                    try:
-                        oid = ".".join(str(x) for x in name.getOid().asTuple())
-                    except Exception:
-                        oid = str(name)
-                    for b in bases:
-                        if oid == b or oid.startswith(b + "."):
-                            suffix = oid[len(b) + 1:] if oid != b else ""
-                            results[b][suffix] = val.prettyPrint()
-                            break
+                    row = entry if is_row else [entry]
+                    for ot in row:
+                        try:
+                            name, val = ot[0], ot[1]
+                        except (TypeError, IndexError, ValueError):
+                            continue
+                        # Numeric OID (name is an ObjectIdentity; str() of its
+                        # ObjectName is dotted-decimal). Skip symbolic renders.
+                        try:
+                            oid = str(name.getOid())
+                        except Exception:
+                            oid = str(name)
+                        if not oid or not oid[0].isdigit():
+                            continue
+                        for b in bases:
+                            if oid == b or oid.startswith(b + "."):
+                                suffix = oid[len(b) + 1:] if oid != b else ""
+                                results[b][suffix] = val.prettyPrint()
+                                break
                 rows += 1
                 if rows >= max_rows:
                     log.warning("SNMP bulk_walk %s: hit max_rows=%d — truncating",
