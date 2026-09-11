@@ -333,10 +333,12 @@ every subnet as low — a collection failure can't masquerade as an outage.
 Config: `[subnet_health]` in config.ini (see config.ini.example): `enabled`,
 `schedule`, `distros`, `device_type` (aruba_aoscx | hp_procurve | cisco_ios),
 `arp_command`, `low_pct` (10), `high_pct` (90), `usable_per_subnet` (254),
-`subnets_file`, optional inline `subnets`, and optional cred overrides (blank =
+`subnets_file` (default `/opt/aruba-agent/wireless_subnets.txt` — the
+git-synced copy, so the list is managed in git; no manual copy to /etc),
+optional inline `subnets`, and optional cred overrides (blank =
 reuse `[credentials]`). The subnet list ships as `wireless_subnets.txt`
 (`<label> <CIDR>` per line, 124 VLANs) — deploy to
-`/etc/aruba-agent/wireless_subnets.txt`.
+the repo root and rides to `/opt/aruba-agent/wireless_subnets.txt` via `git pull` (dev) or `deploy.sh` (prod). NOTE: prod's `deploy.sh` only rsyncs `aruba_agent/`+`main.py`+`requirements.txt`, so it needs a one-line `cp` for root-level data files like this one (already added to the reference deploy.sh).
 
 Test on demand (no waiting for 03:00): `python main.py <config.ini> --subnet-health`
 — prints per-subnet low/high results and sends the email if any are flagged.
