@@ -371,7 +371,7 @@ REST. Vendor key `aruba_aos8`, driver `drivers/aos8.py` (netmiko device_type
   prefix .14823 still maps to aruba_os, so controllers are **pinned** by config
   rather than SNMP-detected.
 - `[controllers]` section: `enabled`, `hosts` ("name:ip" list), `vendor`,
-  `monitor`, `monitor_mode`, `backup`, `backup_mode` (flash|running-config).
+  `monitor`, `monitor_mode`, `backup`, `backup_mode` (running-config default; flash needs the controller to PUSH the archive to a TFTP/SCP receiver — AOS-8 does not serve it for pull, so flash falls back to running-config).
   main.py preseeds them into the monitor manager (dashboard reachability) and
   pins their vendor (`state.pin_vendor`); backup.py merges their IPs into the
   nightly run and forces the aos8 driver. Optional `[credentials.aos8]`.

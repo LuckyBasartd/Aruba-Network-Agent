@@ -538,9 +538,12 @@ monitor = true
 monitor_mode = auto
 # Include these in the nightly config backup.
 backup = true
-# "flash" = full backup flash archive (falls back to running-config if the
-# controller won't hand over the archive); "running-config" = config text only.
-backup_mode = flash
+# "running-config" = capture config text over SSH (works on all AOS-8 boxes).
+# "flash" = full backup flash archive, BUT AOS-8 controllers don't serve the
+# archive for pull (SFTP/SCP) — it only works if the controller pushes it to a
+# TFTP/SCP/FTP receiver you run. If flash can't be retrieved it falls back to
+# running-config automatically. Default running-config since pull is unsupported.
+backup_mode = running-config
 
 # Optional dedicated SSH creds for the controllers (blank = reuse [credentials]).
 # [credentials.aos8]
