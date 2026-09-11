@@ -438,6 +438,7 @@ def main() -> None:
             g_desc = snmp_agent2.get(iface_host, "1.3.6.1.2.1.2.2.1.2.1", profile_name=prof)
             print(f"  GET ifName.1={g_name!r} (err={snmp_agent2.last_error!r}) "
                   f"ifDescr.1={g_desc!r}")
+            print(f"  bulk_walk shape: {getattr(snmp_agent2, 'last_bulk_debug', '')}")
             print(f"  bulk_walk OK in {dt:.1f}s; per-column entry counts:")
             for k in _ifc.WALK_KEYS:
                 col = raw.get(_ifc.OIDS[k], {})

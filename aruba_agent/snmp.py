@@ -572,9 +572,23 @@ class SnmpAgent:
             # versions yield a None sentinel at the end of the walk. Handle all.
             if isinstance(it, tuple):
                 it = [it]
+            self.last_bulk_debug = ""
+            _dbg_done = False
             for item in it:
                 if item is None:
                     continue
+                if not _dbg_done:
+                    _dbg_done = True
+                    try:
+                        _vb = item[3] if len(item) > 3 else None
+                        _vb0 = _vb[0] if _vb else None
+                        self.last_bulk_debug = (
+                            f"item_type={type(item).__name__} len={len(item)}; "
+                            f"varbinds_type={type(_vb).__name__} "
+                            f"len={len(_vb) if _vb is not None else 'NA'}; "
+                            f"vb0_type={type(_vb0).__name__} vb0={repr(_vb0)[:160]}")
+                    except Exception as _e:
+                        self.last_bulk_debug = f"debug-capture error: {_e}; item={repr(item)[:160]}"
                 try:
                     err_ind, err_stat, _idx, var_binds = item
                 except (TypeError, ValueError):
