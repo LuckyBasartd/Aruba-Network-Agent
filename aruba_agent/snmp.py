@@ -554,32 +554,42 @@ class SnmpAgent:
 
         results = {b: {} for b in bases}
         rows = 0
-        # Use a FRESH engine per call. The reachability poller shares one engine
-        # but each monitor is its own thread; the interface poller runs a worker
-        # pool, and hammering a single shared engine's asyncio dispatcher from
-        # several threads causes contention/timeouts. A per-call engine isolates
-        # each walk (acceptable at the 5-min cadence).
+        # Fresh engine per call (the worker pool must not share one dispatcher).
+        # We MUST close its transport dispatcher afterwards or pysnmp's asyncio
+        # timeout tasks leak ("Task was destroyed but it is pending").
+        engine = SnmpEngine()
         try:
             it = bulkCmd(
-                SnmpEngine(), user_data,
+                engine, user_data,
                 UdpTransportTarget((host, profile.port),
                                    timeout=profile.timeout, retries=profile.retries),
                 context_data, 0, max_repetitions,
                 *[ObjectType(ObjectIdentity(b)) for b in bases],
                 lexicographicMode=False,
             )
-            for (err_ind, err_stat, _idx, var_binds) in it:
+            # pysnmp's sync bulkCmd shape varies across versions: usually a
+            # generator of 4-tuples, sometimes a single 4-tuple, and some
+            # versions yield a None sentinel at the end of the walk. Handle all.
+            if isinstance(it, tuple):
+                it = [it]
+            for item in it:
+                if item is None:
+                    continue
+                try:
+                    err_ind, err_stat, _idx, var_binds = item
+                except (TypeError, ValueError):
+                    continue
                 if err_ind:
                     self.last_error = "engine_error"; self.last_detail = str(err_ind)
                     log.debug("SNMP bulk_walk %s: %s", host, err_ind)
-                    return None
+                    break
                 if err_stat:
                     self.last_error = "pdu_error"; self.last_detail = err_stat.prettyPrint()
-                    return None
+                    break
                 for name, val in var_binds:
-                    # Force the NUMERIC OID. pysnmp may prettyPrint the name as a
-                    # symbolic MIB string (IF-MIB::ifName.1) when MIBs are loaded,
-                    # which would never match our numeric bases.
+                    # Force the NUMERIC OID — pysnmp may prettyPrint the name as a
+                    # symbolic MIB string (IF-MIB::ifName.1) which never matches
+                    # our numeric bases.
                     try:
                         oid = ".".join(str(x) for x in name.getOid().asTuple())
                     except Exception:
@@ -599,6 +609,12 @@ class SnmpAgent:
             self.last_detail = f"{type(exc).__name__}: {exc}"
             log.debug("SNMP bulk_walk %s raised: %s", host, self.last_detail)
             return None
+        finally:
+            # Reap the engine's asyncio dispatcher so its timeout tasks don't leak.
+            try:
+                engine.transportDispatcher.closeDispatcher()
+            except Exception:
+                pass
         return results
 
     # ─── high-level helpers ──────────────────────────────────────────────────
