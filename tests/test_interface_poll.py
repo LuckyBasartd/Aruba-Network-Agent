@@ -74,3 +74,38 @@ def test_disabled_or_no_snmp_noop():
     ip.InterfacePollTask(_cfg(enabled="false"), st, FakeSnmp(), FakeStore()).run()  # no raise
     t=ip.InterfacePollTask(_cfg(), st, None, FakeStore()); t.run()                   # snmp None
     assert t.summary()=={}
+
+
+class FakeStoreWithCounters(FakeStore):
+    """FakeStore that also persists counter snapshots (like MongoStore), so we
+    can prove utilization survives a simulated agent restart."""
+    def __init__(self):
+        super().__init__(); self._counters={}
+    def save_counters(self, device, counters, ts=None):
+        # emulate Mongo's string storage round-trip
+        self._counters[device]={idx:[t,str(a),str(b)] for idx,(t,a,b) in counters.items()}
+    def load_counters(self, device):
+        return self._counters.get(device)
+
+
+def test_util_survives_restart_via_store(monkeypatch):
+    """Poll once, throw the task away (restart), build a fresh task against the
+    same store: the second poll must still compute util from the persisted
+    baseline — no in-memory _prev carried over."""
+    st=State([SW("a","10.0.0.1")]); snmp=FakeSnmp(); store=FakeStoreWithCounters()
+    clock={"t":1000.0}
+    monkeypatch.setattr(ip.time, "time", lambda: clock["t"])
+
+    t1=ip.InterfacePollTask(_cfg(), st, snmp, store)
+    t1.run()
+    assert store.metrics==[]                       # baseline only
+    assert store._counters.get("a")                # counters persisted
+
+    # ---- simulate restart: brand-new task, empty in-memory _prev ----
+    clock["t"]=1060.0
+    snmp.counters={"in":1000+450_000_000, "out":2000+450_000_000}
+    t2=ip.InterfacePollTask(_cfg(), st, snmp, store)
+    assert t2._prev=={}                            # cold start, nothing in memory
+    t2.run()
+    got={m[1]:m[2] for m in store.metrics}
+    assert "if.1.in_util" in got and 5.9 <= got["if.1.in_util"] <= 6.1

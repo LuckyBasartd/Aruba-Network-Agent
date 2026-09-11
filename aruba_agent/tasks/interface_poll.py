@@ -98,7 +98,9 @@ class InterfacePollTask:
             return 0
         now = time.time()
         with self._lock:
-            prev = self._prev.get(sw.name, {})
+            prev = self._prev.get(sw.name)
+        if prev is None:                        # cold: hydrate from the store so
+            prev = self._load_prev(sw.name)     # util survives an agent restart
         current = []
         for idx, r in rows.items():
             p = prev.get(idx)
@@ -118,7 +120,42 @@ class InterfacePollTask:
         with self._lock:
             self._prev[sw.name] = newprev
             self._current[sw.name] = current
+        self._save_prev(sw.name, newprev)       # restart-safe (Mongo backend)
         return len(current)
+
+    # ── counter persistence (restart-safe utilization) ─────────────────────────
+
+    def _load_prev(self, name: str) -> dict:
+        """Load the last raw counter snapshot for one switch from the store and
+        coerce it back to {ifIndex: (ts_float, hc_in_int, hc_out_int)}. Returns
+        {} on any backend without support or on malformed data."""
+        loader = getattr(self.store, "load_counters", None)
+        if loader is None:
+            return {}
+        try:
+            raw = loader(name) or {}
+        except Exception:
+            return {}
+        out = {}
+        for idx, triple in raw.items():
+            try:
+                ts, a, b = triple
+                out[idx] = (float(ts), int(a), int(b))
+            except (TypeError, ValueError):
+                continue
+        with self._lock:                         # cache so we don't reload next cycle
+            self._prev[name] = out
+        return out
+
+    def _save_prev(self, name: str, newprev: dict) -> None:
+        saver = getattr(self.store, "save_counters", None)
+        if saver is None:
+            return
+        try:
+            saver(name, {idx: [ts, hc_in, hc_out]
+                         for idx, (ts, hc_in, hc_out) in newprev.items()})
+        except Exception as exc:
+            log.debug("interface poll: save_counters failed for %s (%s)", name, exc)
 
     def run(self) -> None:
         if not self.enabled:

@@ -65,5 +65,15 @@ class JsonStore:
     def query_metrics(self, device, metric, start, end):
         return []
 
+    # Interface counter snapshots are persisted only on the Mongo backend
+    # (same rationale as the time-series no-ops above). On JSON the poll task
+    # keeps counters in memory, so utilization simply needs a second poll after
+    # a restart — no crash, no branch at the call site.
+    def save_counters(self, device, counters, ts=None):
+        return None
+
+    def load_counters(self, device):
+        return None
+
     def close(self) -> None:
         pass

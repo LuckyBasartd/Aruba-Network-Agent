@@ -34,3 +34,14 @@ class Store(Protocol):
     def query_metrics(self, device: str, metric: str, start, end) -> list:
         """Return time-series samples [{ts, device, metric, value, labels}]."""
         ...
+
+    def save_counters(self, device: str, counters: dict, ts=None) -> None:
+        """Persist the latest raw interface counter snapshot for one device so
+        utilization can be computed against it after an agent restart. counters
+        is {ifIndex: [ts, hc_in, hc_out]}. No-op on backends without support."""
+        ...
+
+    def load_counters(self, device: str) -> "Optional[dict]":
+        """Return the last persisted counter snapshot for one device, or None.
+        No-op (None) on backends without support."""
+        ...

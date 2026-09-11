@@ -36,6 +36,7 @@ class MongoStore:
                  *, devices_collection: str = "devices",
                  runtime_collection: str = "runtime",
                  metrics_collection: str = "metrics",
+                 counters_collection: str = "if_counters",
                  server_selection_timeout_ms: int = 5000,
                  tls: bool = False) -> None:
         self._uri = uri
@@ -43,6 +44,7 @@ class MongoStore:
         self._devices_name = devices_collection
         self._runtime_name = runtime_collection
         self._metrics_name = metrics_collection
+        self._counters_name = counters_collection
         self._client = None
         self._ReplaceOne = None
         self.error: str = ""
@@ -170,6 +172,37 @@ class MongoStore:
         except Exception as exc:
             log.error("MongoStore: query_metrics failed (%s)", exc)
             return []
+
+    # ── raw interface counter snapshots (for restart-safe utilization) ────────
+
+    def save_counters(self, device: str, counters: dict, ts=None) -> None:
+        """Upsert the latest {ifIndex: [ts, hc_in, hc_out]} snapshot for one
+        device (one document, _id=device). Counters are stored as strings so a
+        fully-wrapped Counter64 can't overflow BSON int64."""
+        db = self._db()
+        if db is None:
+            return
+        safe = {idx: [t, str(a), str(b)] for idx, (t, a, b) in
+                ((k, (v[0], v[1], v[2])) for k, v in (counters or {}).items())}
+        doc = {"_id": device, "ts": ts or datetime.now(timezone.utc),
+               "counters": safe}
+        try:
+            db[self._counters_name].replace_one({"_id": device}, doc, upsert=True)
+        except Exception as exc:
+            log.error("MongoStore: save_counters failed for %s (%s)", device, exc)
+
+    def load_counters(self, device: str) -> Optional[dict]:
+        db = self._db()
+        if db is None:
+            return None
+        try:
+            doc = db[self._counters_name].find_one({"_id": device})
+        except Exception as exc:
+            log.error("MongoStore: load_counters failed for %s (%s)", device, exc)
+            return None
+        if not doc:
+            return None
+        return doc.get("counters") or {}
 
     def close(self) -> None:
         if self._client is not None:
