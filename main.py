@@ -386,12 +386,21 @@ def main() -> None:
     # Run one interface poll cycle and print a summary. For dev validation
     # without waiting for the interval (respects [interfaces] scoping).
     if interfaces_once_mode:
+        # This CLI handler runs before the daemon's state/store are built, so
+        # construct our own (hydrating the device list from the store).
+        from aruba_agent.store import make_store
         from aruba_agent.tasks.interface_poll import InterfacePollTask
+        _sb = (cfg.get("store", "backend", fallback="json")
+               if cfg.has_section("store") else "json")
+        _sf = cfg.get("agent", "state_file",
+                      fallback="/var/lib/aruba-agent/state.json")
+        _once_store = make_store(_sb, snapshot_path=_sf, cfg=cfg)
+        _once_state = AgentState(store=_once_store)
         snmp_agent2 = build_snmp_agent(cfg)
         if snmp_agent2 is None:
             print("--interfaces-poll-once: SNMP is not configured ([snmp]).", file=sys.stderr)
             sys.exit(2)
-        task = InterfacePollTask(cfg, state, snmp_agent2, _store)
+        task = InterfacePollTask(cfg, _once_state, snmp_agent2, _once_store)
         task.enabled = True
         elig = task.eligible()
         print(f"interfaces: polling {len(elig)} eligible switch(es) "

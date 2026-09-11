@@ -47,6 +47,14 @@ _fake.MongoClient = _Client
 _fake.ReplaceOne = type("ReplaceOne", (), {"__init__": lambda s, f, d, upsert=False: None})
 sys.modules["pymongo"] = _fake
 
+
+def setup_function(func):
+    # pytest runs all test modules in one process; another module may have
+    # overwritten sys.modules["pymongo"] with its own fake. Re-assert ours
+    # before each test so the right fake (with the methods this file needs)
+    # is active regardless of collection/run order.
+    sys.modules["pymongo"] = _fake
+
 from aruba_agent.store.mongo_store import MongoStore
 from aruba_agent.store.json_store import JsonStore
 
