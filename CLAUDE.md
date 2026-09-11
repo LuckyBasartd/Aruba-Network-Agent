@@ -277,9 +277,9 @@ startup-crash hotfix.
 **Deploy status:** **v3.5.0 is LIVE in production** (deployed via `deploy.sh`,
 verified) and on dev. The controllers / webserver_health / subnet_health
 features were configured + enabled on prod by the user and tested individually.
-**v3.6.0 (dev, in progress):** data-layer Phase 0 — `AgentState` now persists
+**v3.6.0 (dev):** data-layer migration DONE on dev (Store abstraction Step 0 — `AgentState` now persists
 through a swappable `Store` (`aruba_agent/store/`); default JsonStore reproduces
-state.json exactly; `[store] backend` selects it; MongoDB backend built (Phase 1):
+state.json exactly; `[store] backend` selects it; MongoDB backend built + cut over on dev:
 `[store] backend = mongo` + `uri`/`db`/`tls`; migrate first with
 `--import-state-to-mongo`; cutover (dev soak → prod) is Phase 2. Prod is still v3.5.0;
 check `git log production/main` before assuming parity.

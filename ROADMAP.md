@@ -7,6 +7,10 @@ captures the architecture decisions and the phased plan. Companion to
 
 Status legend: ✅ done · 🔨 in progress · ⬜ planned · ❓ decision needed
 
+Numbering note: "Phase 1 / Phase 2" below = the PRODUCT roadmap (parity /
+AirWave). The database migration has its own internal "Step 0-3" numbering
+in DATA_LAYER_SPEC.md — unrelated to these Phases.
+
 ---
 
 ## 1. Where we are (v3.5.0, live in prod)
@@ -36,7 +40,7 @@ Fine for ~475 switches of *current* state; two hard ceilings ahead:
 2. **Volume** — AirWave means thousands of APs + tens of thousands of clients,
    sampled continuously; a full-file JSON rewrite under one lock won't take it.
 
-### Decision (pending final confirm): **MongoDB as the primary store**
+### Decision: **MongoDB** ✅ (data-layer migration DONE on dev; prod pending)
 Rationale: current state is already document-shaped (`SwitchState.to_dict()`),
 so the transition is near 1:1; flexible schema suits the growing device model;
 **Mongo 5+ time-series collections** can hold metrics too, so one datastore

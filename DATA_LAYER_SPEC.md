@@ -1,6 +1,13 @@
 # Spec: Data-Access Layer + MongoDB Migration
 
-Status: **Phase 0 + Phase 1 COMPLETE (JsonStore + MongoStore behind the Store interface). Cutover = Phase 2.** Companion to `ROADMAP.md` §2.
+Status: **Data-layer migration DONE on dev** — Steps 0-2 complete (Store
+abstraction + JsonStore + MongoStore + cutover to Mongo). Step 3 (time-series
+metrics) is tracked with the feature roadmap.
+
+> Note: these Step numbers cover ONLY the database migration. The product
+> roadmap's "Phase 1 / Phase 2" (SolarWinds parity / AirWave) in ROADMAP.md are
+> a separate, unrelated numbering. This whole doc = the "data layer" foundation
+> item in ROADMAP.md §2-3. Companion to `ROADMAP.md` §2.
 Goal: replace the single `state.json` snapshot with a swappable persistence
 layer that (a) changes nothing functionally on day one, (b) unblocks history +
 scale, and (c) makes MongoDB (or Postgres) a backend choice rather than a
@@ -14,16 +21,16 @@ rewrite.
 - Introduce a thin, backend-agnostic **Store** interface behind the existing
   `AgentState` public API (callers keep calling `state.xxx()` unchanged).
 - Ship a **JsonStore** first that reproduces today's exact behavior (atomic
-  `state.json`), so Phase 0 is a zero-risk refactor.
+  `state.json`), so Step 0 is a zero-risk refactor.
 - Make **MongoStore** a later drop-in selected by config, with a one-time
   importer and an instant rollback toggle.
 - Lay the groundwork for **time-series metrics** (interface stats, RF, clients)
   that the SolarWinds/AirWave features need.
 
 **Non-goals (for this spec)**
-- No feature work (config-diff, interface polling) — those come after Phase 0/1.
+- No feature work (config-diff, interface polling) — those come after Step 0/1.
 - No secrets in the DB — credentials stay Fernet-encrypted in `config.ini`.
-- No forced Mongo decision to start: Phase 0 is DB-agnostic.
+- No forced Mongo decision to start: Step 0 is DB-agnostic.
 
 ---
 
@@ -73,7 +80,7 @@ class Store(Protocol):
     def set_runtime(self, key: str, value) -> None: ...
     def get_runtime(self, key: str): ...
 
-    # metrics time-series (Phase 3; no-op in JsonStore)
+    # metrics time-series (Step 3; no-op in JsonStore)
     def record_metric(self, device: str, metric: str, value: float,
                       ts: datetime, labels: dict | None = None) -> None: ...
     def query_metrics(self, device: str, metric: str,
@@ -109,9 +116,9 @@ in `config.ini` (Fernet). Mongo runs with auth + TLS.
 
 ---
 
-## 5. Migration phases
+## 5. Migration steps
 
-### Phase 0 — Store abstraction + JsonStore  ✅ DONE (DB-agnostic, zero-risk)
+### Step 0 — Store abstraction + JsonStore  ✅ DONE (DB-agnostic, zero-risk)
 - Add `aruba_agent/store/` : `base.py` (Protocol), `json_store.py`.
 - Refactor `state.py` to delegate persistence to a `Store` (default JsonStore
   pointed at the existing `state.json`). **No behavior change.**
@@ -121,7 +128,7 @@ in `config.ini` (Fernet). Mongo runs with auth + TLS.
   backend` config, `main.py` builds it via make_store, contract +
   AgentState persistence tests (tests/test_store.py, test_state_persistence.py).
 
-### Phase 1 — MongoStore (opt-in)  ✅ DONE
+### Step 1 — MongoStore (opt-in)  ✅ DONE
 - `[store] backend = json | mongo` (+ `uri`, `db`, TLS/auth opts). Default `json`.
 - `mongo_store.py` implementing `Store`; `record_metric` writes to the TS
   collection.
@@ -133,14 +140,14 @@ in `config.ini` (Fernet). Mongo runs with auth + TLS.
   one-time importer, tests via a fake pymongo (round-trip, deletion, outage,
   AgentState-through-MongoStore). 16/16 store tests pass.
 
-### Phase 2 — Cutover
+### Step 2 — Cutover  ✅ DONE (dev; prod pending)
 - Flip dev to `backend = mongo`, soak. Keep writing a periodic `state.json`
   **export** as a DR snapshot during the soak.
 - Then prod. Rollback = set `backend = json` and restart (state.json still current).
 
-### Phase 3 — Metrics/history on
+### Step 3 — Metrics/history on
 - Start recording time-series (interface counters, CPU/mem, later AP/client/RF).
-- Unblocks Phase 1 NMS features (graphs, thresholds) and the AirWave phase.
+- Unblocks Step 1 NMS features (graphs, thresholds) and the AirWave phase.
 
 ---
 
@@ -164,12 +171,12 @@ in `config.ini` (Fernet). Mongo runs with auth + TLS.
 ---
 
 ## 8. Effort / sequence
-1. **Phase 0** (self-contained; the concrete next work item) — refactor + JsonStore
+1. **Step 0** (self-contained; the concrete next work item) — refactor + JsonStore
    + contract tests. Safe to build now, independent of the Mongo decision.
 2. Resolve Mongo **licensing + host ownership** (ROADMAP §2 checklist).
-3. **Phase 1** MongoStore + importer + tests.
-4. **Phase 2** cutover (dev soak → prod).
-5. **Phase 3** metrics — then feature work begins.
+3. **Step 1** MongoStore + importer + tests.
+4. **Step 2** cutover (dev soak → prod).
+5. **Step 3** metrics — then feature work begins.
 
 ---
 
