@@ -585,6 +585,7 @@ backend = json
 # db               = aruba_agent
 # tls              = false
 # server_timeout_ms = 5000
+# require_mongo    = true   ; refuse to start if Mongo is down at boot (systemd retries)
 #
 # Migrate existing state.json into Mongo once, before flipping backend=mongo:
 #   python main.py /etc/aruba-agent/config.ini --import-state-to-mongo

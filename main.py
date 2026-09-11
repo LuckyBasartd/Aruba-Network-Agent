@@ -402,6 +402,19 @@ def main() -> None:
     from aruba_agent.store import make_store
     store_backend = cfg.get("store", "backend", fallback="json") if cfg.has_section("store") else "json"
     _store = make_store(store_backend, snapshot_path=state_file, cfg=cfg)
+    # Safeguard: if Mongo is the backend but unreachable at boot, refuse to
+    # start rather than silently run with empty state and stop persisting.
+    # systemd Restart=on-failure will keep retrying until Mongo is up. Override
+    # with [store] require_mongo = false.
+    if store_backend == "mongo":
+        require_mongo = (cfg.getboolean("store", "require_mongo", fallback=True)
+                         if cfg and cfg.has_section("store") else True)
+        healthy = getattr(_store, "healthy", lambda: True)()
+        if require_mongo and not healthy:
+            log.error("Store backend is 'mongo' but MongoDB is unreachable at "
+                      "startup — refusing to start with empty state. Fix Mongo "
+                      "or set [store] require_mongo = false. (systemd will retry.)")
+            sys.exit(1)
     state    = AgentState(store=_store)
     notifier = EmailNotifier(cfg)
 

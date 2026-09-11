@@ -25,3 +25,12 @@ class Store(Protocol):
     def close(self) -> None:
         """Release resources (no-op for file-based backends)."""
         ...
+
+    def record_metric(self, device: str, metric: str, value,
+                      ts=None, labels: "Optional[dict]" = None) -> None:
+        """Append a time-series sample. No-op on backends without a TSDB."""
+        ...
+
+    def query_metrics(self, device: str, metric: str, start, end) -> list:
+        """Return time-series samples [{ts, device, metric, value, labels}]."""
+        ...

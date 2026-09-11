@@ -56,5 +56,14 @@ class JsonStore:
         except OSError as exc:
             log.warning("JsonStore: could not persist state to %s: %s", path, exc)
 
+    # Time-series is not supported on the JSON backend (use [store] backend =
+    # mongo for interface/RF/CPU history). These are safe no-ops so callers
+    # don't need to branch on the backend.
+    def record_metric(self, device, metric, value, ts=None, labels=None):
+        return None
+
+    def query_metrics(self, device, metric, start, end):
+        return []
+
     def close(self) -> None:
         pass

@@ -22,6 +22,7 @@ store directly.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -34,12 +35,14 @@ class MongoStore:
     def __init__(self, uri: str, db_name: str = "aruba_agent",
                  *, devices_collection: str = "devices",
                  runtime_collection: str = "runtime",
+                 metrics_collection: str = "metrics",
                  server_selection_timeout_ms: int = 5000,
                  tls: bool = False) -> None:
         self._uri = uri
         self._db_name = db_name
         self._devices_name = devices_collection
         self._runtime_name = runtime_collection
+        self._metrics_name = metrics_collection
         self._client = None
         self._ReplaceOne = None
         self.error: str = ""
@@ -124,6 +127,49 @@ class MongoStore:
                                                runtime_doc, upsert=True)
         except Exception as exc:
             log.error("MongoStore: save failed (%s) — state kept in memory", exc)
+
+    def healthy(self) -> bool:
+        """True if Mongo answers a ping right now."""
+        if self._client is None:
+            return False
+        try:
+            self._client.admin.command("ping")
+            return True
+        except Exception:
+            return False
+
+    # ── time-series metrics (interface counters, RF, CPU, ...) ────────────────
+
+    def record_metric(self, device: str, metric: str, value,
+                      ts=None, labels: Optional[dict] = None) -> None:
+        db = self._db()
+        if db is None:
+            return
+        doc = {"ts": ts or datetime.now(timezone.utc),
+               "device": device, "metric": metric, "value": value}
+        if labels:
+            doc["labels"] = labels
+        try:
+            db[self._metrics_name].insert_one(doc)
+        except Exception as exc:
+            log.error("MongoStore: record_metric failed (%s)", exc)
+
+    def query_metrics(self, device: str, metric: str, start, end) -> list:
+        db = self._db()
+        if db is None:
+            return []
+        try:
+            cur = db[self._metrics_name].find(
+                {"device": device, "metric": metric,
+                 "ts": {"$gte": start, "$lte": end}}).sort("ts", 1)
+            out = []
+            for d in cur:
+                d.pop("_id", None)
+                out.append(d)
+            return out
+        except Exception as exc:
+            log.error("MongoStore: query_metrics failed (%s)", exc)
+            return []
 
     def close(self) -> None:
         if self._client is not None:

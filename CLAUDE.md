@@ -115,7 +115,7 @@ aruba_agent/
   store/                     persistence backends (data-layer abstraction)
     base.py                  Store Protocol (load/save/close) + make_store()
     json_store.py            JSON file backend (historical state.json behavior)
-    mongo_store.py           MongoDB backend (devices + runtime collections)
+    mongo_store.py           MongoDB backend (devices + runtime + metrics TS); healthy()
     switch_poller.py         reachability ladder, vendor/os backfill, mute checks
   drivers/
     base.py                  SwitchDriver Protocol + Facts/ArpEntry dataclasses
@@ -429,4 +429,4 @@ Encrypted at rest, decrypt-in-memory (same model as backups):
 
 ## 14. Other docs
 `README.md`, `STRUCTURE.md`, `INSTALL.md`, `INSTALL-AlmaLinux-10.md`,
-`DISASTER-RECOVERY.md`, `config.ini.example`, `ROADMAP.md` (architecture + SolarWinds/AirWave roadmap), `DATA_LAYER_SPEC.md` (store abstraction + Mongo migration plan).
+`DISASTER-RECOVERY.md`, `config.ini.example`, `ROADMAP.md`, `INTERFACE_MONITORING_SPEC.md`, (architecture + SolarWinds/AirWave roadmap), `DATA_LAYER_SPEC.md` (store abstraction + Mongo migration plan).
