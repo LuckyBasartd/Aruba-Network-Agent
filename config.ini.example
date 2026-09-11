@@ -449,7 +449,14 @@ retention_days = 7
 
 # ------------------------------------------------------------
 # ARP Discovery Tasks
-# One [arp.<location>] section per campus location.
+# One
+# Config change detection: after each run, diff each device's newest config
+# against the previous version and email a coalesced report. Diffs are
+# truncated per device in the email (full diff in the web UI).
+change_alerts = true
+change_diff_max_lines = 80
+
+[arp.<location>] section per campus location.
 # Requires nmap installed on the agent host.
 #
 # retention_days — keep the N most recent CSV files per location and

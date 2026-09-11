@@ -13,6 +13,10 @@ in DATA_LAYER_SPEC.md — unrelated to these Phases.
 
 ---
 
+> **PROD HOLD:** prod stays on v3.5.0 (JSON) until Product Phase 1
+> (SolarWinds parity) is complete; then app + MongoDB promote to argos-2026
+> together as one tested unit. Dev is on v3.6.0 + MongoDB.
+
 ## 1. Where we are (v3.5.0, live in prod)
 
 ✅ Vendor-neutral reachability monitoring (SNMP→ICMP→SSH ladder), dashboard,
@@ -84,9 +88,10 @@ covers both current state and history (potentially no separate TSDB).
 ## 4. Phase 1 — SolarWinds (wired NMS) parity
 
 Cheapest-highest-value first:
-- ⬜ **Config change detection + diff** — we already store versioned encrypted
-    configs; diff consecutive versions, alert "config changed on X", show diffs.
-    *Best first win.*
+- ✅ **Config change detection + diff** — `config_diff.py`; nightly backup emails a
+    coalesced per-device diff when a config changes ([backup] change_alerts), and
+    switch-detail has a per-version 'diff vs previous' viewer
+    (`/api/backups/<host>/diff`). *Done.*
 - ⬜ **Interface-level monitoring** — ifTable/ifXTable: port up/down, errors,
     discards, utilization (needs the time-series store).
 - ⬜ **Threshold alerting engine** — generic CPU/mem/temp/PoE/interface-% rules

@@ -3519,6 +3519,30 @@ def create_app(
         )
         return jsonify(files)
 
+    @app.get("/api/backups/<hostname>/diff")
+    @require_login
+    def api_backup_diff(hostname: str):
+        """Unified diff between two backup versions of a host (a=older, b=newer).
+        Decrypts both in memory; plaintext never lands on disk."""
+        from aruba_agent import config_diff
+        if not all(c.isalnum() or c in "-_." for c in hostname):
+            abort(400)
+        a = request.args.get("a", "")
+        b = request.args.get("b", "")
+        for fn in (a, b):
+            if not fn or not all(c.isalnum() or c in "-_." for c in fn):
+                abort(400)
+        # a defaults to "previous": if only b given, diff b vs the next-older.
+        versions = config_diff.list_versions(backup_path, hostname)
+        if b not in versions or a not in versions:
+            abort(404)
+        diff = config_diff.diff_versions(backup_path, hostname, a, b)
+        if diff is None:
+            abort(500)
+        added, removed = config_diff._count(diff)
+        return jsonify({"a": a, "b": b, "added": added, "removed": removed,
+                        "diff": diff, "changed": bool(diff.strip())})
+
     @app.get("/api/backups/<hostname>/<filename>")
     @require_login
     def api_backup_download(hostname: str, filename: str):

@@ -42,6 +42,14 @@ class BackupTask:
         self.ip_list_path = b.get("ip_list",     "/etc/aruba-agent/ip_list.txt")
         self.backup_path  = b.get("backup_path", "/var/lib/aruba-agent/backups")
         self.retention    = int(b.get("retention_days", "7"))
+        # Config change detection (SolarWinds parity): after each run, compare
+        # each device's newest config to the previous version and email a
+        # coalesced diff report. On by default; diffs truncated per device.
+        self.change_alerts = (b.get("change_alerts", "true") or "true").strip().lower() == "true"
+        try:
+            self.change_diff_max_lines = int(b.get("change_diff_max_lines", "80") or "80")
+        except ValueError:
+            self.change_diff_max_lines = 80
         self.username     = cr.get("username", "admin")
         # Passwords / enable secrets are decrypted at read time so the
         # rest of the task (driver_for, NAPALM) sees cleartext as it
@@ -325,8 +333,26 @@ class BackupTask:
 
         self.state.set_backup_result(len(success), len(failed), failed)
         self._send_report(success, failed)
+        if self.change_alerts and success:
+            try:
+                self._alert_config_changes([s["hostname"] for s in success
+                                            if s.get("hostname")])
+            except Exception as exc:
+                log.warning("Backup: config-change detection failed: %s", exc)
         log.info("Backup task done: %d ok, %d failed, %d skipped (icmp/snmp_ro)",
                  len(success), len(failed), skipped_modes)
+
+    def _alert_config_changes(self, hostnames: List[str]) -> None:
+        """Detect configs that changed vs their previous version and email a
+        single coalesced diff report. Quiet when nothing changed."""
+        from aruba_agent import config_diff
+        changes = config_diff.detect_changes(self.backup_path, hostnames)
+        if not changes:
+            return
+        body = config_diff.format_change_email(changes, self.change_diff_max_lines)
+        subject = f"[Network Agent] Config changed on {len(changes)} device(s)"
+        log.info("Backup: %d config change(s) detected — emailing report", len(changes))
+        self.notifier.send(subject, body)
 
     def _send_report(self, success: List[dict], failed: List[dict]) -> None:
         now  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -122,15 +122,38 @@
       const files=await (await fetch(`/api/backups/${encodeURIComponent(HOST)}`)).json();
       const box=document.getElementById('d-backups');
       if(!files.length){box.innerHTML='<div class="text-muted small py-2">No backups yet.</div>';return;}
-      box.innerHTML=files.map(f=>{
+      box.innerHTML=files.map((f,i)=>{
         const m=f.match(/(\d{4}-\d{2}-\d{2}_\d{6})\.cfg/);
         let label=f; if(m){label=new Date(m[1].replace('_','T').replace(/(\d{2})(\d{2})(\d{2})$/,'$1:$2:$3')).toLocaleString();}
         const url=`/api/backups/${encodeURIComponent(HOST)}/${encodeURIComponent(f)}`;
+        const prev=files[i+1];
+        const diffBtn=prev?`<button class="btn btn-outline-info btn-sm py-0 px-2 me-1" title="Diff vs previous" onclick="showDiff('${prev}','${f}')"><i class="bi bi-file-diff"></i></button>`:'';
         return `<div class="bk-item"><span><i class="bi bi-file-earmark-text me-2 text-muted"></i>${esc(label)}</span>
-          <a class="btn btn-outline-success btn-sm py-0 px-2" href="${url}" download="${esc(f)}"><i class="bi bi-download"></i></a></div>`;
+          <span>${diffBtn}<a class="btn btn-outline-success btn-sm py-0 px-2" href="${url}" download="${esc(f)}"><i class="bi bi-download"></i></a></span></div>`;
       }).join('');
     }catch(e){document.getElementById('d-backups').innerHTML='<div class="text-danger small py-2">Failed to load.</div>';}
   }
+
+  async function showDiff(a,b){
+    const ov=document.getElementById('diff-ov'), body=document.getElementById('diff-body');
+    ov.style.display='flex';
+    body.innerHTML='<div class="p-3 text-muted">Loading diff…</div>';
+    try{
+      const r=await fetch(`/api/backups/${encodeURIComponent(HOST)}/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+      const d=await r.json();
+      if(!r.ok){ body.innerHTML='<div class="p-3 text-danger">'+(d.error||'Failed to load diff.')+'</div>'; return; }
+      if(!d.changed){ body.innerHTML='<div class="p-3 text-success">No differences between these two versions.</div>'; return; }
+      const rows=d.diff.split('\n').map(line=>{
+        let cls='dl';
+        if(line.startsWith('+')&&!line.startsWith('+++'))cls='dl dl-add';
+        else if(line.startsWith('-')&&!line.startsWith('---'))cls='dl dl-del';
+        else if(line.startsWith('@@'))cls='dl dl-hunk';
+        return `<div class="${cls}">${esc(line)||'&nbsp;'}</div>`;
+      }).join('');
+      body.innerHTML=`<div class="diff-meta">+${d.added} / -${d.removed} lines &nbsp;·&nbsp; ${esc(a)} → ${esc(b)}</div>`+rows;
+    }catch(e){ body.innerHTML='<div class="p-3 text-danger">Failed to load diff.</div>'; }
+  }
+  function closeDiff(){ document.getElementById('diff-ov').style.display='none'; }
 
   async function refresh(){
     try{
@@ -152,5 +175,22 @@
 
   loadBackups(); refresh(); setInterval(refresh, 30000);
 </script>
+<div id="diff-ov" onclick="if(event.target===this)closeDiff()"
+     style="display:none;position:fixed;inset:0;background:rgba(1,4,9,.7);z-index:1080;align-items:center;justify-content:center;">
+  <div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;width:min(1000px,94vw);max-height:88vh;display:flex;flex-direction:column;">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #21262d;">
+      <strong><i class="bi bi-file-diff me-2 text-info"></i>Config diff</strong>
+      <button class="btn btn-outline-secondary btn-sm" onclick="closeDiff()">Close</button>
+    </div>
+    <div id="diff-body" style="overflow:auto;padding:6px 0;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;"></div>
+  </div>
+</div>
+<style>
+  .diff-meta{color:#8b949e;padding:8px 16px;border-bottom:1px solid #21262d;margin-bottom:6px;}
+  .dl{padding:0 16px;white-space:pre-wrap;word-break:break-all;color:#c9d1d9;}
+  .dl-add{background:rgba(46,160,67,.15);color:#3fb950;}
+  .dl-del{background:rgba(248,81,73,.15);color:#f85149;}
+  .dl-hunk{color:#58a6ff;background:#161b22;}
+</style>
 </body>
 </html>
