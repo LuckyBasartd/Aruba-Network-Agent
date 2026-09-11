@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Help — Network Agent</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body { background:#0d1117; color:#c9d1d9; }
+    .help-wrap { max-width:980px; }
+    .help-body h1 { font-size:1.7rem; border-bottom:1px solid #30363d; padding-bottom:.3em; margin-top:1.4em; }
+    .help-body h2 { font-size:1.3rem; border-bottom:1px solid #21262d; padding-bottom:.25em; margin-top:1.6em; color:#e6edf3; }
+    .help-body h3 { font-size:1.08rem; margin-top:1.2em; color:#e6edf3; }
+    .help-body code { background:#161b22; color:#79c0ff; padding:.12em .4em; border-radius:5px; font-size:.88em; }
+    .help-body pre { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:12px 14px; overflow:auto; }
+    .help-body pre code { background:transparent; color:#c9d1d9; padding:0; }
+    .help-body table { width:100%; margin:1em 0; border-collapse:collapse; }
+    .help-body th, .help-body td { border:1px solid #30363d; padding:6px 10px; font-size:.92em; }
+    .help-body th { background:#161b22; color:#8b949e; text-align:left; }
+    .help-body a { color:#58a6ff; }
+    .help-body blockquote { border-left:3px solid #30363d; margin:1em 0; padding:.2em 1em; color:#8b949e; }
+    .help-search { max-width:320px; }
+  </style>
+</head>
+<body>
+
+{% set active_nav = '' %}
+{% include "_topnav.html" with context %}
+<div class="na-crumb"><a href="{{ url_for('dashboard') }}"><i class="bi bi-house-door"></i> Home</a><span class="sep">/</span>Help</div>
+
+<div class="container py-4 help-wrap">
+  <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-question-circle me-2 text-primary"></i>Help &amp; Troubleshooting</h2>
+    <input type="search" class="form-control help-search bg-dark text-light border-secondary"
+           id="help-filter" placeholder="Filter sections…" oninput="filterHelp(this.value)">
+  </div>
+  <div class="help-body" id="help-body"><span class="text-muted">Rendering…</span></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+  // Trusted, app-owned markdown (not user input) — safe to render.
+  const HELP_MD = {{ help_md|tojson }};
+  const body = document.getElementById('help-body');
+  try {
+    body.innerHTML = (window.marked ? marked.parse(HELP_MD) : ('<pre>' + HELP_MD.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) + '</pre>'));
+  } catch (e) {
+    body.innerHTML = '<pre>' + HELP_MD.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) + '</pre>';
+  }
+  // Simple client-side section filter: hide h2 blocks that don't match.
+  function filterHelp(q) {
+    q = (q || '').toLowerCase().trim();
+    const nodes = Array.from(body.children);
+    // group by h2
+    let groups = [], cur = null;
+    for (const n of nodes) {
+      if (n.tagName === 'H2') { cur = { head: n, els: [n] }; groups.push(cur); }
+      else if (cur) { cur.els.push(n); }
+    }
+    if (!groups.length) return;
+    for (const g of groups) {
+      const text = g.els.map(e => e.textContent).join(' ').toLowerCase();
+      const show = !q || text.includes(q);
+      g.els.forEach(e => e.style.display = show ? '' : 'none');
+    }
+  }
+</script>
+</body>
+</html>

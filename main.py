@@ -21,6 +21,9 @@ Check the VPN controller web-server once and exit:
 Dry-run the AOS-8 controller backups (no files written):
   python main.py [/path/to/config.ini] --controller-backup
 
+(Re)generate the encrypted-at-rest Help guide copy:
+  python main.py [/path/to/config.ini] --encrypt-help
+
 Decrypt a single backup file to stdout for restore:
   python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
@@ -152,6 +155,7 @@ def main() -> None:
     subnet_health_mode = "--subnet-health" in args
     webserver_check_mode = "--webserver-check" in args
     controller_backup_mode = "--controller-backup" in args
+    encrypt_help_mode = "--encrypt-help" in args
     # --decrypt-backup <path> is a two-token flag; the next positional
     # is the backup file path. Extract it now so the path doesn't get
     # mis-parsed as config_path below.
@@ -324,6 +328,18 @@ def main() -> None:
                 else:
                     print(f"  FAILED to capture: {drv.error}")
         sys.exit(0)
+
+    # ── --encrypt-help ────────────────────────────────────────────────────────
+    # (Re)generate the encrypted-at-rest copy of the Help guide from the bundled
+    # markdown source. Runs after the secrets bootstrap so the master key is up.
+    if encrypt_help_mode:
+        import os as _os
+        from aruba_agent import help_store
+        source = _os.path.join(_os.path.dirname(__file__), "aruba_agent", "web", "help_content.md")
+        data_dir = _os.path.dirname(cfg.get("agent", "state_file",
+                    fallback="/var/lib/aruba-agent/state.json")) or "/var/lib/aruba-agent"
+        enc = _os.path.join(data_dir, "help.md.enc")
+        sys.exit(help_store.encrypt_help_cli(source, enc))
 
     # Audit log — append-only file separate from journald.
     # Operator-controllable path with the same [agent] block as the

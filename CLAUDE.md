@@ -391,6 +391,26 @@ Both are editable in the web GUI: **Settings -> Controllers** (`/settings/contro
 Scheduler now supports both daily `add("HH:MM", fn)` and interval
 `add_interval(seconds, fn, run_at_start=False)` tasks.
 
-## 13. Other docs
+## 13. In-app Help (encrypted at rest)
+
+Top-nav **Help** button (`?` icon by the user/logout) -> `/help`, login-gated
+(`@require_login`). Serves the operator troubleshooting guide, rendered from
+markdown client-side with marked.js (CDN) and passed in via `{{ help_md|tojson }}`
+(Flask escapes it script-safe).
+
+Encrypted at rest, decrypt-in-memory (same model as backups):
+- Source of truth: `aruba_agent/web/help_content.md` (bundled with the code;
+  plaintext template, kept in sync with the repo-root `TROUBLESHOOTING.md`).
+- Served copy: `aruba_agent/help_store.py` keeps a Fernet-encrypted copy at
+  `<data_dir>/help.md.enc` (default `/var/lib/aruba-agent/help.md.enc`), created/
+  refreshed from the source when missing or stale, and decrypted only in memory
+  per request. Falls back to the plaintext source if there's no master key or
+  the data dir isn't writable.
+- Regenerate on demand: `python main.py <cfg> --encrypt-help`.
+- To edit the guide: update `TROUBLESHOOTING.md` AND `aruba_agent/web/help_content.md`
+  (keep them identical), redeploy; the encrypted copy refreshes automatically on
+  the next `/help` load (mtime check) or via `--encrypt-help`.
+
+## 14. Other docs
 `README.md`, `STRUCTURE.md`, `INSTALL.md`, `INSTALL-AlmaLinux-10.md`,
 `DISASTER-RECOVERY.md`, `config.ini.example`.

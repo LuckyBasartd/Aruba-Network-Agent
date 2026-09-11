@@ -807,6 +807,25 @@ def create_app(
         # Full scheduling UI arrives in a later phase.
         return render_template("jobs.html", **_settings_context())
 
+    @app.get("/help")
+    @require_login
+    def help_page():
+        """Operator troubleshooting guide. Served to logged-in users only,
+        decrypted in memory from an encrypted-at-rest copy."""
+        import os as _os
+        from aruba_agent import help_store
+        source = _os.path.join(_os.path.dirname(__file__), "help_content.md")
+        data_dir = _os.path.dirname(
+            (cfg.get("agent", "state_file",
+                     fallback="/var/lib/aruba-agent/state.json") if cfg
+             else "/var/lib/aruba-agent/state.json")) or "/var/lib/aruba-agent"
+        enc = _os.path.join(data_dir, "help.md.enc")
+        md = help_store.load_markdown(enc, source)
+        return render_template("help.html", help_md=md,
+                               current_user=session.get("user"),
+                               auth_method=session.get("auth_method"),
+                               active_nav="")
+
     @app.get("/switch/<switch_name>")
     @require_login
     def switch_detail(switch_name: str):
