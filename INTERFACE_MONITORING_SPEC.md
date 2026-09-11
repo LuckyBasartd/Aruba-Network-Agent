@@ -46,6 +46,29 @@ Feeds the **threshold engine** (next roadmap item): rules on util%/errors/
 oper-down → alerts via the shared notifier. Out of scope for the first cut
 (collect + display first).
 
+## Network-impact controls (keep it quiet)
+
+Interface polling must not clog the network or load switch CPUs. Defaults are
+deliberately conservative and everything is tunable via `[interfaces]`:
+
+- **Cadence:** `poll_seconds = 300` (5 min) default; hard floor 60s. Separate
+  from the 30s reachability poll.
+- **GETBULK, minimal columns:** fetch only the ~10 ifXTable columns we use,
+  via GETBULK (few round-trips), not a full-table/full-MIB walk.
+- **Stagger + jitter:** spread each cycle's switches evenly across the interval
+  (plus small random jitter) so we never poll the whole fleet at once.
+- **Bounded concurrency:** `max_workers = 8` cap on simultaneous switch polls.
+- **Physical-only by default:** `physical_only = true` filters to
+  ifType=ethernetCsmacd(6), skipping loopback/SVI/tunnel/null — the big
+  varbind reducer on chassis. Configurable.
+- **Opt-in + scope:** `enabled = false` by default; optional `include` /
+  `exclude` (names/CIDRs/tags) to start on a subset (uplinks/distribution)
+  before fleet-wide.
+- **Reuse + skip:** reuse the host's existing SNMPv3 session/profile; skip
+  icmp / snmp_ro / unmanaged / muted hosts. Per-switch timeout + limited retries.
+- **Budget (est.):** ~20-40 KB/switch/poll; ~481 switches @ 5 min staggered
+  ≈ ~50 KB/s aggregate, one small burst per switch every 5 min.
+
 ## Build order
 1. ✅ Store metrics (record/query) — done.
 2. ⬜ SNMP ifXTable walker (`interfaces.py`) — pure parse, mock-testable.
