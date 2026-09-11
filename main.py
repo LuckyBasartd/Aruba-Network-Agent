@@ -245,7 +245,10 @@ def main() -> None:
     # operator test the job on demand instead of waiting for 03:00.
     # Runs after the secrets bootstrap so credentials decrypt.
     if subnet_health_mode:
-        from aruba_agent.notifier import EmailNotifier
+        # NOTE: do NOT import EmailNotifier here — it's already imported at
+        # module top. A local import would make the name function-local and
+        # shadow the top-level one, breaking `notifier = EmailNotifier(cfg)`
+        # later in main() with UnboundLocalError.
         from aruba_agent.tasks.subnet_health import SubnetHealthTask
         task = SubnetHealthTask(cfg, EmailNotifier(cfg))
         subs = task._load_subnets()
