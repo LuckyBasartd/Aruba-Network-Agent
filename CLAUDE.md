@@ -313,6 +313,37 @@ This app is edited from a Cowork/Claude sandbox with specific quirks:
   mock-test → `git add <explicit files>` → commit → (usually) move the `v3.5.0`
   tag forward with `git tag -d` + `git tag -a`. Never `git add .`.
 
-## 11. Other docs
+## 11. Subnet-health job (wireless distro ARP monitor)
+
+`aruba_agent/tasks/subnet_health.py` (`SubnetHealthTask`) — a **self-contained**
+nightly job, independent of backup/scanner/ARP/poller (shares no state, only
+scheduled when `[subnet_health] enabled = true`; imported only when enabled).
+
+What it does: SSHes (netmiko) to the wireless distros (default 10.253.0.30 /
+.31), runs `show arp`, extracts all IPv4s, buckets them into the configured
+/24 wireless subnets, computes utilization = distinct active IPs / usable
+(254), and **emails** when a subnet is **< low_pct** (likely IP-helper / DHCP
+broken — clients not getting leases) or **> high_pct** (pool near exhaustion).
+Runs 03:00 by default. Stays quiet when everything is healthy.
+
+Fail-safe: if it can't read ARP from the distros (both unreachable / zero IPs
+parsed) it sends a distinct "FAILED to collect ARP" email rather than flagging
+every subnet as low — a collection failure can't masquerade as an outage.
+
+Config: `[subnet_health]` in config.ini (see config.ini.example): `enabled`,
+`schedule`, `distros`, `device_type` (aruba_aoscx | hp_procurve | cisco_ios),
+`arp_command`, `low_pct` (10), `high_pct` (90), `usable_per_subnet` (254),
+`subnets_file`, optional inline `subnets`, and optional cred overrides (blank =
+reuse `[credentials]`). The subnet list ships as `wireless_subnets.txt`
+(`<label> <CIDR>` per line, 124 VLANs) — deploy to
+`/etc/aruba-agent/wireless_subnets.txt`.
+
+Test on demand (no waiting for 03:00): `python main.py <config.ini> --subnet-health`
+— prints per-subnet low/high results and sends the email if any are flagged.
+
+Caveat: ARP reflects *active* hosts, so a legitimately quiet subnet at 3am can
+read low. Tune `low_pct` / `high_pct` if it's noisy.
+
+## 12. Other docs
 `README.md`, `STRUCTURE.md`, `INSTALL.md`, `INSTALL-AlmaLinux-10.md`,
 `DISASTER-RECOVERY.md`, `config.ini.example`.

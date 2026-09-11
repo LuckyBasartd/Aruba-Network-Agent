@@ -484,3 +484,33 @@ ip_list        = /var/lib/aruba-agent/ip_list.txt
 target_version = 10.13.1150
 image_path     = /var/lib/aruba-agent/firmware/ArubaOS-CX_6400-6300_10_13_1150.swi
 max_workers    = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [subnet_health] — nightly ARP-based subnet utilization monitor
+# ─────────────────────────────────────────────────────────────────────────────
+# Self-contained job (independent of backup/scanner/arp). SSHes to the wireless
+# distribution switches, reads their ARP tables, and emails you when any listed
+# subnet's utilization drops below low_pct (likely an IP-helper / DHCP problem)
+# or rises above high_pct (pool nearly exhausted). Off by default.
+[subnet_health]
+enabled = false
+# Time of day to run (HH:MM, 24h, server local time).
+schedule = 03:00
+# Distribution switches to read ARP from (comma or space separated).
+distros = 10.253.0.30, 10.253.0.31
+# netmiko device_type for the distros over SSH:
+#   aruba_aoscx (Aruba CX, default) | hp_procurve (Aruba OS-S) | cisco_ios
+device_type = aruba_aoscx
+arp_command = show arp
+# Thresholds (percent of usable addresses) and subnet sizing.
+low_pct = 10
+high_pct = 90
+usable_per_subnet = 254
+# One "<label> <CIDR>" per line (see wireless_subnets.txt in the repo).
+subnets_file = /etc/aruba-agent/wireless_subnets.txt
+# Optional inline subnets instead of / in addition to the file:
+# subnets = vlan500 172.18.0.0/24, vlan501 172.18.1.0/24
+# Credentials: blank = reuse the [credentials] monitoring account.
+username =
+password =
+enable_secret =

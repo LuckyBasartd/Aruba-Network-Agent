@@ -12,6 +12,9 @@ Verify all backup files against their SHA-256 sidecars (exits 0 if all
 match, 2 if any corruption is found — fit for cron):
   python main.py [/path/to/config.ini] --verify-backups
 
+Run the wireless subnet utilization check once and exit:
+  python main.py [/path/to/config.ini] --subnet-health
+
 Decrypt a single backup file to stdout for restore:
   python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
@@ -140,6 +143,7 @@ def main() -> None:
     args          = sys.argv[1:]
     firmware_mode = "--firmware-update" in args
     verify_mode   = "--verify-backups" in args
+    subnet_health_mode = "--subnet-health" in args
     # --decrypt-backup <path> is a two-token flag; the next positional
     # is the backup file path. Extract it now so the path doesn't get
     # mis-parsed as config_path below.
@@ -234,6 +238,33 @@ def main() -> None:
         # config file happens to be UTF-8 with line endings that
         # differ from the OS.
         sys.stdout.buffer.write(plaintext)
+        sys.exit(0)
+
+    # ── --subnet-health ──────────────────────────────────────────────────────
+    # Run the wireless subnet utilization check once and exit. Lets the
+    # operator test the job on demand instead of waiting for 03:00.
+    # Runs after the secrets bootstrap so credentials decrypt.
+    if subnet_health_mode:
+        from aruba_agent.notifier import EmailNotifier
+        from aruba_agent.tasks.subnet_health import SubnetHealthTask
+        task = SubnetHealthTask(cfg, EmailNotifier(cfg))
+        subs = task._load_subnets()
+        print(f"subnet_health: {len(task.distros)} distro(s), {len(subs)} subnet(s); "
+              f"reading ARP over SSH ...")
+        active, errors = task._collect_active_ips()
+        for e in errors:
+            print(f"  ERROR {e}")
+        print(f"  collected {len(active)} distinct active IPs")
+        if not active:
+            print("  no ARP data -- would send a 'collection failed' email")
+            sys.exit(2)
+        res = task.evaluate(active, subs)
+        for r in sorted(res["low"], key=lambda r: r["pct"]):
+            print(f"  LOW  {r['label']:<16} {r['cidr']:<18} {r['count']:>3}/{r['usable']} ({r['pct']}%)")
+        for r in sorted(res["high"], key=lambda r: -r["pct"]):
+            print(f"  HIGH {r['label']:<16} {r['cidr']:<18} {r['count']:>3}/{r['usable']} ({r['pct']}%)")
+        print(f"  {len(res['low'])} low, {len(res['high'])} high. Sending email if any ...")
+        task.run()
         sys.exit(0)
 
     # Audit log — append-only file separate from journald.
@@ -359,6 +390,18 @@ def main() -> None:
         )
         scheduler.add(cfg.get(sec, "schedule", fallback="01:00"), arp_task.run)
         arp_fns[name] = arp_task.run
+
+    # Subnet utilization health (wireless distros) — optional, off by default.
+    # Fully self-contained; imported only when enabled so it can't affect
+    # anything already working.
+    if cfg.getboolean("subnet_health", "enabled", fallback=False):
+        from aruba_agent.tasks.subnet_health import SubnetHealthTask
+        subnet_health_task = SubnetHealthTask(cfg, notifier)
+        scheduler.add(cfg.get("subnet_health", "schedule", fallback="03:00"),
+                      subnet_health_task.run)
+        log.info("Subnet-health job scheduled at %s for distros: %s",
+                 cfg.get("subnet_health", "schedule", fallback="03:00"),
+                 cfg.get("subnet_health", "distros", fallback=""))
 
     scheduler.start()
 
