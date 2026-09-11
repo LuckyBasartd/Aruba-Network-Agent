@@ -553,94 +553,82 @@ class SnmpAgent:
                                    contextName=effective_context)
 
         results = {b: {} for b in bases}
-        rows = 0
-        # Fresh engine per call (the worker pool must not share one dispatcher).
-        # We MUST close its transport dispatcher afterwards or pysnmp's asyncio
-        # timeout tasks leak ("Task was destroyed but it is pending").
+        # Fresh engine per call (the worker pool must not share one dispatcher);
+        # closed in finally or pysnmp's asyncio timeout tasks leak.
         engine = SnmpEngine()
-        try:
-            it = bulkCmd(
-                engine, user_data,
-                UdpTransportTarget((host, profile.port),
-                                   timeout=profile.timeout, retries=profile.retries),
-                context_data, 0, max_repetitions,
-                *[ObjectType(ObjectIdentity(b)) for b in bases],
-                lexicographicMode=False,
-            )
-            # pysnmp's sync bulkCmd shape varies across versions: usually a
-            # generator of 4-tuples, sometimes a single 4-tuple, and some
-            # versions yield a None sentinel at the end of the walk. Handle all.
-            if isinstance(it, tuple):
-                it = [it]
-            self.last_bulk_debug = ""
-            _dbg_done = False
-            for item in it:
-                if item is None:
-                    continue
-                if not _dbg_done:
-                    _dbg_done = True
-                    try:
-                        _vb = item[3] if len(item) > 3 else None
-                        _vb0 = _vb[0] if _vb else None
-                        self.last_bulk_debug = (
-                            f"item_type={type(item).__name__} len={len(item)}; "
-                            f"varbinds_type={type(_vb).__name__} "
-                            f"len={len(_vb) if _vb is not None else 'NA'}; "
-                            f"vb0_type={type(_vb0).__name__} vb0={repr(_vb0)[:160]}")
-                    except Exception as _e:
-                        self.last_bulk_debug = f"debug-capture error: {_e}; item={repr(item)[:160]}"
+        target = UdpTransportTarget((host, profile.port),
+                                    timeout=profile.timeout, retries=profile.retries)
+
+        def _pairs(vbt):
+            """Yield (numeric_oid, value) from a varBindTable that may be a list
+            of ROWS (each a list of ObjectType) or a flat list of ObjectType."""
+            for entry in vbt:
                 try:
-                    err_ind, err_stat, _idx, var_binds = item
-                except (TypeError, ValueError):
+                    is_row = type(entry[0]).__name__ == "ObjectType"
+                except (TypeError, IndexError):
                     continue
-                if err_ind:
-                    self.last_error = "engine_error"; self.last_detail = str(err_ind)
-                    log.debug("SNMP bulk_walk %s: %s", host, err_ind)
-                    break
-                if err_stat:
-                    self.last_error = "pdu_error"; self.last_detail = err_stat.prettyPrint()
-                    break
-                # pysnmp 6.1's bulkCmd yields item[3] as a varBindTable: a list
-                # of ROWS, each row a list of ObjectType (one per requested
-                # column). Older/other versions yield a flat list of ObjectType.
-                # Handle both: an entry whose [0] is itself an ObjectType is a
-                # row; otherwise the entry IS a single ObjectType.
-                for entry in var_binds:
+                row = entry if is_row else [entry]
+                for ot in row:
                     try:
-                        is_row = type(entry[0]).__name__ == "ObjectType"
-                    except (TypeError, IndexError):
+                        nm, vl = ot[0], ot[1]
+                    except (TypeError, IndexError, ValueError):
                         continue
-                    row = entry if is_row else [entry]
-                    for ot in row:
-                        try:
-                            name, val = ot[0], ot[1]
-                        except (TypeError, IndexError, ValueError):
+                    try:
+                        oid = str(nm.getOid())
+                    except Exception:
+                        oid = str(nm)
+                    if oid and oid[0].isdigit():
+                        yield oid, vl
+
+        try:
+            # pysnmp 6.1's sync bulkCmd returns a SINGLE PDU (not an
+            # auto-continuing generator), so we paginate each column manually:
+            # re-issue GETBULK from the last OID until we leave the subtree.
+            for base in bases:
+                start_oid = base
+                seen = 0
+                while seen < max_rows:
+                    resp = bulkCmd(
+                        engine, user_data, target, context_data,
+                        0, max_repetitions,
+                        ObjectType(ObjectIdentity(start_oid)),
+                        lexicographicMode=False,
+                    )
+                    pdus = [resp] if isinstance(resp, tuple) else list(resp)
+                    advanced = False
+                    stop = False
+                    for item in pdus:
+                        if item is None:
                             continue
-                        # Numeric OID (name is an ObjectIdentity; str() of its
-                        # ObjectName is dotted-decimal). Skip symbolic renders.
                         try:
-                            oid = str(name.getOid())
-                        except Exception:
-                            oid = str(name)
-                        if not oid or not oid[0].isdigit():
+                            err_ind, err_stat, _idx, vbt = item
+                        except (TypeError, ValueError):
                             continue
-                        for b in bases:
-                            if oid == b or oid.startswith(b + "."):
-                                suffix = oid[len(b) + 1:] if oid != b else ""
-                                results[b][suffix] = val.prettyPrint()
-                                break
-                rows += 1
-                if rows >= max_rows:
-                    log.warning("SNMP bulk_walk %s: hit max_rows=%d — truncating",
-                                host, max_rows)
-                    break
+                        if err_ind:
+                            self.last_error = "engine_error"; self.last_detail = str(err_ind)
+                            stop = True; break
+                        if err_stat:
+                            self.last_error = "pdu_error"; self.last_detail = err_stat.prettyPrint()
+                            stop = True; break
+                        for oid, vl in _pairs(vbt):
+                            if oid == base or oid.startswith(base + "."):
+                                suffix = oid[len(base) + 1:] if oid != base else ""
+                                results[base][suffix] = vl.prettyPrint()
+                                start_oid = oid
+                                advanced = True
+                                seen += 1
+                            else:
+                                stop = True   # walked past this column's subtree
+                        if stop:
+                            break
+                    if stop or not advanced:
+                        break
         except Exception as exc:
             self.last_error = "engine_error"
             self.last_detail = f"{type(exc).__name__}: {exc}"
             log.debug("SNMP bulk_walk %s raised: %s", host, self.last_detail)
             return None
         finally:
-            # Reap the engine's asyncio dispatcher so its timeout tasks don't leak.
             try:
                 engine.transportDispatcher.closeDispatcher()
             except Exception:
