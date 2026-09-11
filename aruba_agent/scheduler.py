@@ -26,11 +26,22 @@ class Scheduler:
     def __init__(self) -> None:
         self._tasks:    List[Tuple[str, Callable]] = []
         self._last_run: dict[int, date]            = {}
+        # Interval tasks: id(fn) -> (interval_seconds, fn, last_epoch)
+        self._intervals: dict[int, Tuple[float, Callable, float]] = {}
         self._stop = threading.Event()
 
     def add(self, time_str: str, fn: Callable) -> None:
         """Register *fn* to run every day at 'HH:MM'."""
         self._tasks.append((time_str, fn))
+
+    def add_interval(self, interval_seconds: float, fn: Callable,
+                     run_at_start: bool = False) -> None:
+        """Register *fn* to run every ``interval_seconds`` (checked on the
+        60s tick, so that is the minimum granularity). ``run_at_start``
+        fires it on the first tick instead of waiting a full interval."""
+        import time as _t
+        last = 0.0 if run_at_start else _t.time()
+        self._intervals[id(fn)] = (float(interval_seconds), fn, last)
 
     def _tick(self) -> None:
         now   = datetime.now()
@@ -52,6 +63,16 @@ class Scheduler:
                 log.info("Scheduler: firing '%s' at %s", name, time_str)
                 threading.Thread(target=self._safe_run, args=(fn,), daemon=True).start()
 
+        # Interval-based tasks (hourly, every-N-minutes, etc.)
+        import time as _t
+        now_ts = _t.time()
+        for key, (interval, fn, last) in list(self._intervals.items()):
+            if now_ts - last >= interval:
+                self._intervals[key] = (interval, fn, now_ts)
+                name = getattr(fn, "__name__", repr(fn))
+                log.info("Scheduler: firing interval task '%s' (every %ss)", name, int(interval))
+                threading.Thread(target=self._safe_run, args=(fn,), daemon=True).start()
+
     @staticmethod
     def _safe_run(fn: Callable) -> None:
         try:
@@ -67,7 +88,7 @@ class Scheduler:
                 self._stop.wait(60)
 
         threading.Thread(target=_loop, name="scheduler", daemon=True).start()
-        log.info("Scheduler started with %d task(s)", len(self._tasks))
+        log.info("Scheduler started with %d daily + %d interval task(s)", len(self._tasks), len(self._intervals))
 
     def stop(self) -> None:
         self._stop.set()

@@ -32,7 +32,7 @@ from typing import Optional
 from aruba_agent.drivers.aruba_cx import ArubaCXDriver
 from aruba_agent.drivers.base     import SwitchDriver
 from aruba_agent.drivers.detector import (
-    VENDOR_ARUBA_CX, VENDOR_ARUBA_OS,
+    VENDOR_ARUBA_CX, VENDOR_ARUBA_OS, VENDOR_ARUBA_AOS8,
     VENDOR_CISCO_IOS, VENDOR_ARISTA,
 )
 
@@ -73,6 +73,12 @@ def driver_for(
     arubaos_username:       str = "",
     arubaos_password:       str = "",
     arubaos_enable:         str = "",
+    # AOS-8 Mobility controller SSH overrides; reuse username/password
+    # when blank. backup_mode: "flash" | "running-config".
+    aos8_username:          str = "",
+    aos8_password:          str = "",
+    aos8_enable:            str = "",
+    aos8_backup_mode:       str = "flash",
 ) -> SwitchDriver:
     """
     Return a SwitchDriver instance ready for `with driver_for(...) as drv`.
@@ -122,6 +128,17 @@ def driver_for(
             port            = arista_port,
         )
 
+    if vendor_hint == VENDOR_ARUBA_AOS8:
+        # AOS-8 Mobility controllers / conductors / VPN — SSH CLI.
+        from aruba_agent.drivers.aos8 import AOS8Driver
+        return AOS8Driver(
+            host          = host,
+            username      = aos8_username or username,
+            password      = aos8_password or password,
+            enable_secret = aos8_enable,
+            backup_mode   = aos8_backup_mode,
+        )
+
     if vendor_hint == VENDOR_ARUBA_OS:
         # ProCurve / ArubaOS-Switch: no REST API — drive over SSH CLI.
         from aruba_agent.drivers.aruba_os import ArubaOSDriver
@@ -134,7 +151,7 @@ def driver_for(
 
     # Default / AOS-CX path
     _ = vendor_hint  # accepted but unused beyond the routing above
-    if vendor_hint not in (None, VENDOR_ARUBA_CX, VENDOR_ARISTA):
+    if vendor_hint not in (None, VENDOR_ARUBA_CX, VENDOR_ARUBA_AOS8, VENDOR_ARISTA):
         log.warning("driver_for: unrecognized vendor_hint=%r for %s — "
                     "defaulting to AOS-CX", vendor_hint, host)
     return ArubaCXDriver(

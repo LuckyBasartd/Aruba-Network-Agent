@@ -337,6 +337,16 @@ class AgentState:
                     return sw.vendor
             return ""
 
+    def pin_vendor(self, name: str, vendor: str) -> None:
+        """Force a switch's vendor tag (used for statically-configured
+        devices like AOS-8 controllers that we don't SNMP-detect).
+        Persists immediately."""
+        with self._lock:
+            sw = self.switches.get(name)
+            if sw is not None and sw.vendor != vendor:
+                sw.vendor = vendor
+                self._save()
+
     def set_switch_profile(self, name: str, profile: str) -> bool:
         """
         Pin or unpin the SNMPv3 profile for a switch. Empty string

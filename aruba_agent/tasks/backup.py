@@ -13,6 +13,7 @@ import glob
 import hashlib
 import logging
 import os
+import re
 from datetime import datetime
 from typing import List, Tuple
 
@@ -23,6 +24,10 @@ from aruba_agent.secrets_store import decrypt as _decrypt
 from aruba_agent.state         import AgentState
 
 log = logging.getLogger(__name__)
+
+
+def _re_split(v):
+    return [t for t in re.split(r'[,\s]+', v or '') if t]
 
 
 class BackupTask:
@@ -69,6 +74,25 @@ class BackupTask:
         self.arubaos_username = (ao.get("username", "") or "").strip()
         self.arubaos_password = _decrypt(ao.get("password", ""))
         self.arubaos_enable   = _decrypt(ao.get("enable_secret", ""))
+
+        # AOS-8 Mobility controllers (backed up over SSH via the aos8 driver).
+        # Reuse the default account unless [credentials.aos8] overrides it.
+        a8 = cfg["credentials.aos8"] if "credentials.aos8" in cfg else {}
+        self.aos8_username = (a8.get("username", "") or "").strip()
+        self.aos8_password = _decrypt(a8.get("password", ""))
+        self.aos8_enable   = _decrypt(a8.get("enable_secret", ""))
+        cn = cfg["controllers"] if "controllers" in cfg else {}
+        self.controllers_enabled = (cn.get("enabled", "false") or "false").lower() == "true"
+        self.controllers_backup  = (cn.get("backup", "true") or "true").lower() == "true"
+        self.controllers_vendor  = (cn.get("vendor", "aruba_aos8") or "aruba_aos8").strip()
+        self.aos8_backup_mode    = (cn.get("backup_mode", "flash") or "flash").strip()
+        self._controller_ips = set()
+        for tok in _re_split(cn.get("hosts", "")):
+            # accept "name:ip", "name=ip", or "ip"
+            m = tok.replace("=", ":")
+            ip = m.split(":")[-1].strip() if ":" in m else m.strip()
+            if ip:
+                self._controller_ips.add(ip)
 
         ac = cfg["credentials.arista"] if "credentials.arista" in cfg else {}
         self.arista_username = (ac.get("username", "") or "").strip()
@@ -121,6 +145,10 @@ class BackupTask:
     def run(self) -> None:
         log.info("Backup task started")
         ips = self._load_ips()
+        if self.controllers_enabled and self.controllers_backup:
+            for cip in sorted(self._controller_ips):
+                if cip not in ips:
+                    ips.append(cip)
         if not ips:
             return
 
@@ -135,8 +163,9 @@ class BackupTask:
             # it needs to read running-config, so skip them silently
             # rather than fill the FAILED panel with noise about hosts
             # that were never expected to back up.
+            is_controller = ip in self._controller_ips
             mode = self.state.get_mode_for_host(ip)
-            if mode in ("icmp", "snmp_ro"):
+            if mode in ("icmp", "snmp_ro") and not is_controller:
                 log.debug("Backup: skipping %s — monitor_mode=%s "
                           "(no write access)", ip, mode)
                 skipped_modes += 1
@@ -150,6 +179,8 @@ class BackupTask:
             # vendors default to the AOS-CX driver, preserving v2.x
             # behavior.
             vendor = self.state.get_vendor_for_host(ip) or None
+            if is_controller:
+                vendor = self.controllers_vendor   # force AOS-8 SSH driver
             try:
                 with driver_for(
                     ip, self.username, self.password,
@@ -170,6 +201,10 @@ class BackupTask:
                     arubaos_username        = self.arubaos_username,
                     arubaos_password        = self.arubaos_password,
                     arubaos_enable          = self.arubaos_enable,
+                    aos8_username           = self.aos8_username,
+                    aos8_password           = self.aos8_password,
+                    aos8_enable             = self.aos8_enable,
+                    aos8_backup_mode        = self.aos8_backup_mode,
                 ) as drv:
                     if not drv.logged_in:
                         failed.append({"ip": ip, "hostname": hostname,

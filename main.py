@@ -15,6 +15,12 @@ match, 2 if any corruption is found — fit for cron):
 Run the wireless subnet utilization check once and exit:
   python main.py [/path/to/config.ini] --subnet-health
 
+Check the VPN controller web-server once and exit:
+  python main.py [/path/to/config.ini] --webserver-check
+
+Dry-run the AOS-8 controller backups (no files written):
+  python main.py [/path/to/config.ini] --controller-backup
+
 Decrypt a single backup file to stdout for restore:
   python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
@@ -144,6 +150,8 @@ def main() -> None:
     firmware_mode = "--firmware-update" in args
     verify_mode   = "--verify-backups" in args
     subnet_health_mode = "--subnet-health" in args
+    webserver_check_mode = "--webserver-check" in args
+    controller_backup_mode = "--controller-backup" in args
     # --decrypt-backup <path> is a two-token flag; the next positional
     # is the backup file path. Extract it now so the path doesn't get
     # mis-parsed as config_path below.
@@ -270,6 +278,53 @@ def main() -> None:
         task.run()
         sys.exit(0)
 
+    # ── --webserver-check ─────────────────────────────────────────────────────
+    if webserver_check_mode:
+        from aruba_agent.tasks.webserver_health import WebServerHealthTask
+        task = WebServerHealthTask(cfg, EmailNotifier(cfg))
+        print(f"webserver_health: checking {task.host} ({task.command}) ...")
+        ok, out, err = task._run_command()
+        healthy = task.evaluate(ok, out, err)
+        print(f"  reachable={ok} healthy={healthy}")
+        if err:
+            print(f"  error: {err}")
+        if out:
+            print("  output:\n" + "\n".join("    " + l for l in out.splitlines()[:20]))
+        print("  Sending alert email ..." if not healthy else "  Healthy — no email.")
+        task.run()
+        sys.exit(0 if healthy else 2)
+
+    # ── --controller-backup (dry run) ─────────────────────────────────────────
+    if controller_backup_mode:
+        import re as _re
+        from aruba_agent.drivers import driver_for
+        cn = cfg["controllers"] if "controllers" in cfg else {}
+        cr = cfg["credentials"] if "credentials" in cfg else {}
+        a8 = cfg["credentials.aos8"] if "credentials.aos8" in cfg else {}
+        user = (a8.get("username", "") or cr.get("username", "admin")).strip()
+        pw   = secrets_store.decrypt(a8.get("password", "")) or secrets_store.decrypt(cr.get("password", ""))
+        mode = (cn.get("backup_mode", "flash") or "flash").strip()
+        hosts = [t for t in _re.split(r"[,\n]+", cn.get("hosts", "")) if t.strip()]
+        if not hosts:
+            print("No [controllers] hosts configured."); sys.exit(2)
+        for tok in hosts:
+            t = tok.strip().replace("=", ":")
+            name, ip = (t.split(":", 1) if ":" in t else (t, t))
+            ip = ip.strip()
+            print(f"controller-backup: {name.strip()} ({ip}) mode={mode} ...")
+            with driver_for(ip, user, pw, vendor_hint="aruba_aos8",
+                            aos8_backup_mode=mode) as drv:
+                if not drv.logged_in:
+                    print(f"  LOGIN FAILED: {drv.error}"); continue
+                saved = drv.save_running_to_startup()
+                data = drv.get_running_config()
+                if data:
+                    print(f"  OK: saved={saved}, captured {len(data)} bytes "
+                          f"(err='{drv.error}')")
+                else:
+                    print(f"  FAILED to capture: {drv.error}")
+        sys.exit(0)
+
     # Audit log — append-only file separate from journald.
     # Operator-controllable path with the same [agent] block as the
     # state file and master key. Failures are non-fatal: audit.install
@@ -358,6 +413,36 @@ def main() -> None:
             if _h.get("snmp_profile"):
                 state.set_switch_profile(_h["name"], _h["snmp_profile"])
 
+    # ── AOS-8 Mobility controllers (wireless + VPN) ───────────────────────────
+    # Static set of controllers monitored for reachability (dashboard) and
+    # backed up nightly via the aos8 SSH driver. Self-contained: enabled only
+    # when [controllers] enabled = true.
+    if cfg.getboolean("controllers", "enabled", fallback=False):
+        import re as _re
+        _cn = cfg["controllers"]
+        _mode = (_cn.get("monitor_mode", "auto") or "auto").strip()
+        _vendor = (_cn.get("vendor", "aruba_aos8") or "aruba_aos8").strip()
+        _do_monitor = (_cn.get("monitor", "true") or "true").lower() == "true"
+        _count = 0
+        for _tok in [t for t in _re.split(r"[,\n]+", _cn.get("hosts", "")) if t.strip()]:
+            _t = _tok.strip().replace("=", ":")
+            if ":" in _t:
+                _name, _ip = _t.split(":", 1)
+                _name, _ip = _name.strip(), _ip.strip()
+            else:
+                _name = _ip = _t.strip()
+            if not _ip:
+                continue
+            # Register + pin vendor so backup routes to the aos8 driver and the
+            # dashboard tags it correctly even without SNMP detection.
+            state.register_switch(_name, _ip, monitor_mode=_mode)
+            state.pin_vendor(_name, _vendor)
+            if _do_monitor:
+                manager.add(host=_ip, name=_name, monitor_mode=_mode)
+            _count += 1
+        if _count:
+            log.info("Registered %d AOS-8 controller(s) for monitoring/backup", _count)
+
     # ── scheduled tasks ──────────────────────────────────────────────────────
     scheduler = Scheduler()
 
@@ -405,6 +490,18 @@ def main() -> None:
         log.info("Subnet-health job scheduled at %s for distros: %s",
                  cfg.get("subnet_health", "schedule", fallback="03:00"),
                  cfg.get("subnet_health", "distros", fallback=""))
+
+    # Web-server health check (VPN controller) — optional, off by default.
+    if cfg.getboolean("webserver_health", "enabled", fallback=False):
+        from aruba_agent.tasks.webserver_health import WebServerHealthTask
+        ws_task = WebServerHealthTask(cfg, notifier)
+        try:
+            _ws_min = int(cfg.get("webserver_health", "interval_minutes", fallback="60") or "60")
+        except ValueError:
+            _ws_min = 60
+        scheduler.add_interval(max(1, _ws_min) * 60, ws_task.run)
+        log.info("Web-server health check scheduled every %d min for %s",
+                 _ws_min, cfg.get("webserver_health", "host", fallback=""))
 
     scheduler.start()
 

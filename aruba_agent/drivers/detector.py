@@ -53,7 +53,8 @@ log = logging.getLogger(__name__)
 # concrete driver (ArubaCXDriver.vendor == "aruba_cx", etc.) so the
 # factory can pass the result straight through.
 VENDOR_ARUBA_CX  = "aruba_cx"
-VENDOR_ARUBA_OS  = "aruba_os"     # legacy AOS-S / Switch — driver TBD
+VENDOR_ARUBA_OS  = "aruba_os"     # legacy AOS-S / Switch (ProCurve)
+VENDOR_ARUBA_AOS8 = "aruba_aos8"  # AOS-8 Mobility controllers / conductors / VPN
 VENDOR_CISCO_IOS = "cisco_ios"
 VENDOR_ARISTA    = "arista_eos"
 
@@ -79,6 +80,12 @@ _DESCR_KEYWORDS: Tuple[Tuple[str, str], ...] = (
     ("Aruba JL",          VENDOR_ARUBA_CX),    # 6300/6400 hostname patterns
     ("ProCurve",          VENDOR_ARUBA_OS),    # HP ProCurve / ArubaOS-Switch (2530, 2930F, ...)
     ("HP J",              VENDOR_ARUBA_OS),    # ProCurve part numbers, e.g. "HP J9774A"
+    ("Wireless Operating System", VENDOR_ARUBA_AOS8),  # AOS-8 controller banner
+    ("ArubaMM",           VENDOR_ARUBA_AOS8),  # Mobility Conductor
+    ("Aruba9240",         VENDOR_ARUBA_AOS8),  # 9240 Mobility Controller
+    ("Aruba9004",         VENDOR_ARUBA_AOS8),  # 9004 VPN/standalone
+    ("Mobility Controller", VENDOR_ARUBA_AOS8),
+    ("Mobility Conductor",  VENDOR_ARUBA_AOS8),
     ("Aruba",             VENDOR_ARUBA_OS),    # generic — last resort
     ("Cisco IOS",         VENDOR_CISCO_IOS),
     ("Cisco Internetwork",VENDOR_CISCO_IOS),

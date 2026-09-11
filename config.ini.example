@@ -519,3 +519,46 @@ ignore =
 username =
 password =
 enable_secret =
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [controllers] — AOS-8 Mobility controllers (wireless + VPN)
+# ─────────────────────────────────────────────────────────────────────────────
+# Static set of AOS-8 devices (Mobility Conductors, 9240 MCs, 9004 VPN) to
+# monitor for reachability (dashboard) and back up nightly over SSH via the
+# aos8 driver. Off by default. Credentials reuse [credentials] unless a
+# [credentials.aos8] section overrides them.
+[controllers]
+enabled = false
+# One "name:ip" per entry (comma or newline separated). Names show on the dashboard.
+hosts = MM-1:172.18.251.21, MM-2:172.18.251.23,
+        9240-MD-1:172.18.251.31, 9240-MD-2:172.18.251.32, 9240-MD-3:172.18.251.33,
+        VPN-9004:10.103.15.10
+vendor = aruba_aos8
+monitor = true
+monitor_mode = auto
+# Include these in the nightly config backup.
+backup = true
+# "flash" = full backup flash archive (falls back to running-config if the
+# controller won't hand over the archive); "running-config" = config text only.
+backup_mode = flash
+
+# Optional dedicated SSH creds for the controllers (blank = reuse [credentials]).
+# [credentials.aos8]
+# username =
+# password =
+# enable_secret =
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [webserver_health] — VPN controller web-server watchdog
+# ─────────────────────────────────────────────────────────────────────────────
+# Periodically SSH to the VPN controller and run `show web-server statistics`.
+# Emails an alert (alert-only) if the web-server is not responding. Off by
+# default. Uses [credentials.aos8] or [credentials] for login.
+[webserver_health]
+enabled = false
+host = 10.103.15.10
+interval_minutes = 60
+command = show web-server statistics
+device_type = aruba_os
+# Substrings (lower-cased, comma-separated) that mean "web-server is down".
+fail_patterns = not responding, error in fetching

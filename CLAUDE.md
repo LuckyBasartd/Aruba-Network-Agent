@@ -354,6 +354,41 @@ Test on demand (no waiting for 03:00): `python main.py <config.ini> --subnet-hea
 Caveat: ARP reflects *active* hosts, so a legitimately quiet subnet at 3am can
 read low. Tune `low_pct` / `high_pct` if it's noisy.
 
-## 12. Other docs
+## 12. AOS-8 controllers + VPN web-server job
+
+**AOS-8 Mobility controllers** (Conductors/ArubaMM, 9240 MCs, 9004 VPN) are a
+distinct platform from AOS-CX and from Aruba OS-S/ProCurve — SSH/CLI only, no
+REST. Vendor key `aruba_aos8`, driver `drivers/aos8.py` (netmiko device_type
+`aruba_os`), labeled "Aruba AOS-8" in the UI. Do NOT confuse with `aruba_os`
+(ProCurve, netmiko `hp_procurve`).
+
+- Driver: `show running-config`, `write memory`, `cli()`, and a flash-backup
+  path (`backup flash` then pull `flashbackup.tar.gz` via paramiko SFTP/SCP,
+  falling back to running-config text if the box won't hand the archive over).
+- `factory.driver_for` routes `aruba_aos8` with `aos8_*` creds (reuse default).
+- detector: sysDescr keywords ("Wireless Operating System", ArubaMM, Aruba9240,
+  Aruba9004, "Mobility Controller/Conductor") -> aruba_aos8. NOTE the SNMP OID
+  prefix .14823 still maps to aruba_os, so controllers are **pinned** by config
+  rather than SNMP-detected.
+- `[controllers]` section: `enabled`, `hosts` ("name:ip" list), `vendor`,
+  `monitor`, `monitor_mode`, `backup`, `backup_mode` (flash|running-config).
+  main.py preseeds them into the monitor manager (dashboard reachability) and
+  pins their vendor (`state.pin_vendor`); backup.py merges their IPs into the
+  nightly run and forces the aos8 driver. Optional `[credentials.aos8]`.
+- Test on demand: `python main.py <cfg> --controller-backup` (dry-run, no files
+  written — prints login/save/capture per controller).
+
+**VPN web-server watchdog** (`tasks/webserver_health.py`, `WebServerHealthTask`):
+SSHes to the VPN controller, runs `show web-server statistics`, and emails
+(alert-only) when it is not responding (fail-pattern match, empty output, or
+SSH/command failure). `[webserver_health]` section: `enabled`, `host`,
+`interval_minutes` (default 60), `command`, `device_type`, `fail_patterns`.
+Scheduled via the new `Scheduler.add_interval(seconds, fn)` (sub-daily cadence;
+60s tick granularity). Test: `python main.py <cfg> --webserver-check`.
+
+Scheduler now supports both daily `add("HH:MM", fn)` and interval
+`add_interval(seconds, fn, run_at_start=False)` tasks.
+
+## 13. Other docs
 `README.md`, `STRUCTURE.md`, `INSTALL.md`, `INSTALL-AlmaLinux-10.md`,
 `DISASTER-RECOVERY.md`, `config.ini.example`.
