@@ -114,6 +114,7 @@ aruba_agent/
   store/                     persistence backends (data-layer abstraction)
     base.py                  Store Protocol (load/save/close) + make_store()
     json_store.py            JSON file backend (historical state.json behavior)
+    mongo_store.py           MongoDB backend (devices + runtime collections)
     switch_poller.py         reachability ladder, vendor/os backfill, mute checks
   drivers/
     base.py                  SwitchDriver Protocol + Facts/ArpEntry dataclasses
@@ -278,8 +279,9 @@ verified) and on dev. The controllers / webserver_health / subnet_health
 features were configured + enabled on prod by the user and tested individually.
 **v3.6.0 (dev, in progress):** data-layer Phase 0 — `AgentState` now persists
 through a swappable `Store` (`aruba_agent/store/`); default JsonStore reproduces
-state.json exactly; `[store] backend` selects it; MongoDB chosen for Phase 1
-(MongoStore not built yet — `make_store('mongo')` raises). Prod is still v3.5.0;
+state.json exactly; `[store] backend` selects it; MongoDB backend built (Phase 1):
+`[store] backend = mongo` + `uri`/`db`/`tls`; migrate first with
+`--import-state-to-mongo`; cutover (dev soak → prod) is Phase 2. Prod is still v3.5.0;
 check `git log production/main` before assuming parity.
 
 **Backup failures triage** (from a full prod run): ProCurve (aruba_os) and slow

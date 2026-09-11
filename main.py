@@ -24,6 +24,9 @@ Dry-run the AOS-8 controller backups (no files written):
 (Re)generate the encrypted-at-rest Help guide copy:
   python main.py [/path/to/config.ini] --encrypt-help
 
+Migrate the JSON state snapshot into MongoDB (before backend=mongo):
+  python main.py [/path/to/config.ini] --import-state-to-mongo
+
 Decrypt a single backup file to stdout for restore:
   python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
@@ -156,6 +159,7 @@ def main() -> None:
     webserver_check_mode = "--webserver-check" in args
     controller_backup_mode = "--controller-backup" in args
     encrypt_help_mode = "--encrypt-help" in args
+    import_mongo_mode = "--import-state-to-mongo" in args
     # --decrypt-backup <path> is a two-token flag; the next positional
     # is the backup file path. Extract it now so the path doesn't get
     # mis-parsed as config_path below.
@@ -340,6 +344,32 @@ def main() -> None:
                     fallback="/var/lib/aruba-agent/state.json")) or "/var/lib/aruba-agent"
         enc = _os.path.join(data_dir, "help.md.enc")
         sys.exit(help_store.encrypt_help_cli(source, enc))
+
+    # ── --import-state-to-mongo ────────────────────────────────────────────────
+    # One-time migration: read the JSON snapshot and write it into MongoDB via
+    # the same Store contract. Run before flipping [store] backend = mongo.
+    if import_mongo_mode:
+        from aruba_agent.store.json_store import JsonStore
+        from aruba_agent.store import make_store
+        state_file = cfg.get("agent", "state_file",
+                             fallback="/var/lib/aruba-agent/state.json")
+        snapshot = JsonStore(state_file).load()
+        if not snapshot:
+            print(f"--import-state-to-mongo: nothing to import from {state_file}")
+            sys.exit(0)
+        try:
+            mongo = make_store("mongo", cfg=cfg)
+        except Exception as exc:
+            print(f"--import-state-to-mongo: {exc}", file=sys.stderr)
+            sys.exit(2)
+        mongo.save(snapshot)
+        back = mongo.load() or {}
+        ndev = len(back.get("switches", []))
+        mongo.close()
+        print(f"--import-state-to-mongo: imported {len(snapshot.get('switches', []))} "
+              f"device(s); Mongo now reports {ndev}. Set [store] backend = mongo "
+              f"and restart to cut over.")
+        sys.exit(0 if ndev else 2)
 
     # Audit log — append-only file separate from journald.
     # Operator-controllable path with the same [agent] block as the

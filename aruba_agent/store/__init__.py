@@ -26,8 +26,12 @@ def make_store(backend: str = "json", *, snapshot_path: Optional[str] = None,
         from aruba_agent.store.json_store import JsonStore
         return JsonStore(snapshot_path)
     if backend == "mongo":
-        raise NotImplementedError(
-            "MongoStore lands in Phase 1 of the data-layer migration "
-            "(see DATA_LAYER_SPEC.md). Set [store] backend = json for now."
+        from aruba_agent.store.mongo_store import MongoStore
+        sec = cfg["store"] if (cfg is not None and cfg.has_section("store")) else {}
+        return MongoStore(
+            uri     = sec.get("uri", "mongodb://localhost:27017"),
+            db_name = sec.get("db", "aruba_agent"),
+            tls     = (sec.get("tls", "false") or "false").strip().lower() == "true",
+            server_selection_timeout_ms = int(sec.get("server_timeout_ms", "5000") or "5000"),
         )
     raise ValueError(f"unknown [store] backend: {backend!r}")

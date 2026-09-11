@@ -34,3 +34,7 @@ napalm>=4.0,<6.0
 # Batch config push (multi-vendor CLI over SSH). Ships transitively with
 # napalm; declared explicitly since the batch-config feature calls it directly.
 netmiko>=4.0
+
+# MongoDB backend for the data layer ([store] backend = mongo). Only required
+# when Mongo persistence is enabled; the default JSON backend needs nothing.
+pymongo>=4.6,<5

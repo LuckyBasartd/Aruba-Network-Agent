@@ -1,6 +1,6 @@
 # Spec: Data-Access Layer + MongoDB Migration
 
-Status: **Phase 0 COMPLETE (JsonStore behind the Store interface). MongoDB chosen for Phase 1.** Companion to `ROADMAP.md` §2.
+Status: **Phase 0 + Phase 1 COMPLETE (JsonStore + MongoStore behind the Store interface). Cutover = Phase 2.** Companion to `ROADMAP.md` §2.
 Goal: replace the single `state.json` snapshot with a swappable persistence
 layer that (a) changes nothing functionally on day one, (b) unblocks history +
 scale, and (c) makes MongoDB (or Postgres) a backend choice rather than a
@@ -121,13 +121,17 @@ in `config.ini` (Fernet). Mongo runs with auth + TLS.
   backend` config, `main.py` builds it via make_store, contract +
   AgentState persistence tests (tests/test_store.py, test_state_persistence.py).
 
-### Phase 1 — MongoStore (opt-in)
+### Phase 1 — MongoStore (opt-in)  ✅ DONE
 - `[store] backend = json | mongo` (+ `uri`, `db`, TLS/auth opts). Default `json`.
 - `mongo_store.py` implementing `Store`; `record_metric` writes to the TS
   collection.
 - One-time importer: `--import-state-to-mongo` reads `state.json` → `devices`/
   `runtime`.
-- Unit tests via **mongomock**; same contract suite, both backends.
+- ✅ Shipped: `aruba_agent/store/mongo_store.py` (devices + runtime collections,
+  bulk upsert + delete-propagation, outage-graceful), `make_store('mongo')` from
+  `[store] uri/db/tls`, `pymongo` in requirements, `--import-state-to-mongo`
+  one-time importer, tests via a fake pymongo (round-trip, deletion, outage,
+  AgentState-through-MongoStore). 16/16 store tests pass.
 
 ### Phase 2 — Cutover
 - Flip dev to `backend = mongo`, soak. Keep writing a periodic `state.json`

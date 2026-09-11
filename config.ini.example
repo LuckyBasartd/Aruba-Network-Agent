@@ -573,3 +573,11 @@ fail_patterns = not responding, error in fetching
 # "mongo" = MongoDB backend (Phase 1 — not yet implemented; will add uri/db/tls).
 [store]
 backend = json
+# MongoDB options (only used when backend = mongo):
+# uri              = mongodb://user:pass@localhost:27017/?authSource=admin
+# db               = aruba_agent
+# tls              = false
+# server_timeout_ms = 5000
+#
+# Migrate existing state.json into Mongo once, before flipping backend=mongo:
+#   python main.py /etc/aruba-agent/config.ini --import-state-to-mongo

@@ -51,9 +51,11 @@ def test_make_store_defaults_json(tmp_path):
     assert isinstance(st, Store)                    # satisfies the protocol
 
 
-def test_make_store_mongo_not_yet():
-    with pytest.raises(NotImplementedError):
-        make_store("mongo", snapshot_path=None)
+def test_make_store_mongo_builds():
+    # Phase 1: mongo backend now constructs a MongoStore (it tolerates a
+    # missing driver / unreachable server without raising at build time).
+    st = make_store("mongo", snapshot_path=None)
+    assert type(st).__name__ == "MongoStore"
 
 
 def test_make_store_unknown():
