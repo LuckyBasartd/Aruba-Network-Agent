@@ -66,6 +66,7 @@ class InterfacePollTask:
         self._prev: dict = {}       # name -> {ifIndex: (ts, hc_in, hc_out)}
         self._current: dict = {}    # name -> [rows incl. in_util/out_util]
         self._lock = threading.RLock()
+        self._running = threading.Lock()   # overlap guard: one sweep at a time
 
     # ── selection ─────────────────────────────────────────────────────────────
 
@@ -163,14 +164,26 @@ class InterfacePollTask:
         if self.snmp is None:
             log.warning("interface poll: no SNMP agent — skipping")
             return
-        elig = self.eligible()
-        if not elig:
+        # Overlap guard: the scheduler fires a fresh thread every poll_seconds,
+        # but a full-fleet sweep can outlast one interval. Never stack sweeps —
+        # a second concurrent poll would double the SNMP load and record util
+        # over a too-short window (noise). If the previous cycle is still
+        # running, skip this tick and let it finish.
+        if not self._running.acquire(blocking=False):
+            log.warning("interface poll: previous cycle still running — skipping "
+                        "this tick (raise [interfaces] poll_seconds or max_workers)")
             return
-        started = time.time()
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            counts = list(pool.map(self._poll_one, elig))
-        log.info("interface poll: %d switch(es), %d interfaces, %.1fs",
-                 len(elig), sum(counts), time.time() - started)
+        try:
+            elig = self.eligible()
+            if not elig:
+                return
+            started = time.time()
+            with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+                counts = list(pool.map(self._poll_one, elig))
+            log.info("interface poll: %d switch(es), %d interfaces, %.1fs",
+                     len(elig), sum(counts), time.time() - started)
+        finally:
+            self._running.release()
 
     # ── read side (for the web API / CLI) ──────────────────────────────────────
 

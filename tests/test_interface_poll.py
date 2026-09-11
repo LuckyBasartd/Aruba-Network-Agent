@@ -109,3 +109,19 @@ def test_util_survives_restart_via_store(monkeypatch):
     t2.run()
     got={m[1]:m[2] for m in store.metrics}
     assert "if.1.in_util" in got and 5.9 <= got["if.1.in_util"] <= 6.1
+
+
+def test_run_skips_when_previous_cycle_in_flight():
+    """The overlap guard must drop a tick if a sweep is already running, so a
+    slow full-fleet poll can't stack on itself."""
+    st=State([SW("a","10.0.0.1")]); snmp=FakeSnmp(); store=FakeStore()
+    t=ip.InterfacePollTask(_cfg(), st, snmp, store)
+    assert t._running.acquire(blocking=False)      # simulate an in-flight sweep
+    try:
+        t.run()                                    # should no-op immediately
+        assert store.metrics==[] and t.summary()=={}
+    finally:
+        t._running.release()
+    # lock is free again -> a normal run proceeds
+    t.run()
+    assert t.get_current("a")                       # polled this time
