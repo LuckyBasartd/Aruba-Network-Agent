@@ -106,6 +106,7 @@ aruba_agent/
   notifier.py                EmailNotifier (SMTP)
   alert_batcher.py           coalesces up/down alerts into ONE email (60s window)
   config_diff.py             config change detection + unified diff (SolarWinds parity)
+  interfaces.py              SNMP ifXTable collector: assemble/filter/utilization (pure)
   secrets_store.py           Fernet encrypt/decrypt + redact()
   snmp.py / snmp_profiles.py SNMPv3 (pysnmp) + SnmpProfile registry
   manual_hosts.py            manually-pinned hosts/profiles

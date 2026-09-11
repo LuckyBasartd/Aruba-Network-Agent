@@ -463,6 +463,133 @@ class SnmpAgent:
         self.last_detail = "PDU returned no variable bindings"
         return None
 
+    def bulk_walk(
+        self,
+        host: str,
+        base_oids,
+        *,
+        profile_name:     Optional[str] = None,
+        context_override: Optional[str] = None,
+        max_repetitions:  int = 25,
+        max_rows:         int = 8192,
+    ):
+        """GETBULK-walk one or more table columns.
+
+        Returns ``{base_oid: {index_suffix: value_str}}`` (index_suffix is the
+        OID tail after the column base, e.g. the ifIndex) or None on failure.
+        Never raises. Uses lexicographicMode=False so the walk stops at the end
+        of each requested subtree — one bounded burst, not a full-MIB walk.
+        """
+        self.last_error = ""
+        self.last_detail = ""
+        bases = list(base_oids)
+        if not bases:
+            return {}
+
+        if profile_name:
+            profile = self._registry.get(profile_name)
+        else:
+            profile = self._registry.default()
+        if profile is None:
+            self.last_error = "no_profile"
+            return None
+        creds = profile.creds
+        _ensure_thread_event_loop()
+
+        try:
+            from pysnmp.hlapi import (
+                bulkCmd, SnmpEngine, UsmUserData, UdpTransportTarget,
+                ContextData, ObjectType, ObjectIdentity,
+                usmHMACMD5AuthProtocol, usmHMACSHAAuthProtocol,
+                usmHMAC128SHA224AuthProtocol, usmHMAC192SHA256AuthProtocol,
+                usmHMAC256SHA384AuthProtocol, usmHMAC384SHA512AuthProtocol,
+                usmDESPrivProtocol, usmAesCfb128Protocol,
+                usmAesCfb192Protocol, usmAesCfb256Protocol,
+                usmNoAuthProtocol, usmNoPrivProtocol,
+            )
+            from pyasn1.type.univ import OctetString
+        except ImportError as exc:
+            self.last_error = "pysnmp_unavailable"
+            self.last_detail = str(exc)
+            log.warning("SNMP bulk_walk: pysnmp unavailable (%s)", exc)
+            return None
+
+        auth_map = {
+            "NONE": usmNoAuthProtocol, "MD5": usmHMACMD5AuthProtocol,
+            "SHA": usmHMACSHAAuthProtocol, "SHA224": usmHMAC128SHA224AuthProtocol,
+            "SHA256": usmHMAC192SHA256AuthProtocol, "SHA384": usmHMAC256SHA384AuthProtocol,
+            "SHA512": usmHMAC384SHA512AuthProtocol,
+        }
+        priv_map = {
+            "NONE": usmNoPrivProtocol, "DES": usmDESPrivProtocol,
+            "AES128": usmAesCfb128Protocol, "AES192": usmAesCfb192Protocol,
+            "AES256": usmAesCfb256Protocol,
+        }
+        auth_proto = auth_map.get(creds.auth_protocol.upper(), usmHMACSHAAuthProtocol)
+        priv_proto = priv_map.get(creds.priv_protocol.upper(), usmAesCfb128Protocol)
+        if creds.auth_password and creds.priv_password:
+            user_data = UsmUserData(creds.username, creds.auth_password,
+                                    creds.priv_password, authProtocol=auth_proto,
+                                    privProtocol=priv_proto)
+        elif creds.auth_password:
+            user_data = UsmUserData(creds.username, creds.auth_password,
+                                    authProtocol=auth_proto, privProtocol=usmNoPrivProtocol)
+        else:
+            user_data = UsmUserData(creds.username, authProtocol=usmNoAuthProtocol,
+                                    privProtocol=usmNoPrivProtocol)
+
+        context_engine_id = None
+        if creds.context_engine_id:
+            try:
+                context_engine_id = OctetString(
+                    hexValue=creds.context_engine_id.replace(":", "").strip())
+            except Exception as exc:
+                self.last_error = "bad_context_engine_id"
+                self.last_detail = str(exc)
+                return None
+        effective_context = (context_override if context_override is not None
+                             else creds.context_name)
+        context_data = ContextData(contextEngineId=context_engine_id,
+                                   contextName=effective_context)
+
+        results = {b: {} for b in bases}
+        rows = 0
+        try:
+            it = bulkCmd(
+                self._get_engine(), user_data,
+                UdpTransportTarget((host, profile.port),
+                                   timeout=profile.timeout, retries=profile.retries),
+                context_data, 0, max_repetitions,
+                *[ObjectType(ObjectIdentity(b)) for b in bases],
+                lexicographicMode=False,
+            )
+            for (err_ind, err_stat, _idx, var_binds) in it:
+                if err_ind:
+                    self.last_error = "engine_error"; self.last_detail = str(err_ind)
+                    log.debug("SNMP bulk_walk %s: %s", host, err_ind)
+                    return None
+                if err_stat:
+                    self.last_error = "pdu_error"; self.last_detail = err_stat.prettyPrint()
+                    return None
+                for name, val in var_binds:
+                    oid = str(name)
+                    for b in bases:
+                        if oid == b or oid.startswith(b + "."):
+                            suffix = oid[len(b) + 1:] if oid != b else ""
+                            results[b][suffix] = val.prettyPrint()
+                            break
+                rows += 1
+                if rows >= max_rows:
+                    log.warning("SNMP bulk_walk %s: hit max_rows=%d — truncating",
+                                host, max_rows)
+                    break
+        except Exception as exc:
+            self.last_error = "engine_error"
+            self.last_detail = f"{type(exc).__name__}: {exc}"
+            log.debug("SNMP bulk_walk %s raised: %s", host, self.last_detail)
+            return None
+        return results
+
     # ─── high-level helpers ──────────────────────────────────────────────────
 
     def is_reachable(

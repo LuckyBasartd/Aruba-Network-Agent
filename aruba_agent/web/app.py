@@ -169,6 +169,7 @@ def create_app(
                                # operator doesn't have to wait for the next agent
                                # restart to see their new host monitored.
     manual_hosts_path: Optional[str] = None,
+    interface_task = None,   # InterfacePollTask — current per-interface stats
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.config["JSON_SORT_KEYS"] = False
@@ -3518,6 +3519,16 @@ def create_app(
             reverse=True,
         )
         return jsonify(files)
+
+    @app.get("/api/switch/<name>/interfaces")
+    @require_login
+    def api_switch_interfaces(name: str):
+        """Current per-interface stats for a switch (from the last poll)."""
+        if interface_task is None:
+            return jsonify({"enabled": False, "interfaces": []})
+        if state.switches.get(name) is None:
+            abort(404)
+        return jsonify({"enabled": True, "interfaces": interface_task.get_current(name)})
 
     @app.get("/api/backups/<hostname>/diff")
     @require_login

@@ -27,6 +27,9 @@ Dry-run the AOS-8 controller backups (no files written):
 Migrate the JSON state snapshot into MongoDB (before backend=mongo):
   python main.py [/path/to/config.ini] --import-state-to-mongo
 
+Run one interface poll cycle and print a summary:
+  python main.py [/path/to/config.ini] --interfaces-poll-once
+
 Decrypt a single backup file to stdout for restore:
   python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
@@ -160,6 +163,7 @@ def main() -> None:
     controller_backup_mode = "--controller-backup" in args
     encrypt_help_mode = "--encrypt-help" in args
     import_mongo_mode = "--import-state-to-mongo" in args
+    interfaces_once_mode = "--interfaces-poll-once" in args
     # --decrypt-backup <path> is a two-token flag; the next positional
     # is the backup file path. Extract it now so the path doesn't get
     # mis-parsed as config_path below.
@@ -378,6 +382,31 @@ def main() -> None:
               f"succeeds — the agent would start with empty state.", file=sys.stderr)
         sys.exit(2)
 
+    # ── --interfaces-poll-once ─────────────────────────────────────────────────
+    # Run one interface poll cycle and print a summary. For dev validation
+    # without waiting for the interval (respects [interfaces] scoping).
+    if interfaces_once_mode:
+        from aruba_agent.tasks.interface_poll import InterfacePollTask
+        snmp_agent2 = build_snmp_agent(cfg)
+        if snmp_agent2 is None:
+            print("--interfaces-poll-once: SNMP is not configured ([snmp]).", file=sys.stderr)
+            sys.exit(2)
+        task = InterfacePollTask(cfg, state, snmp_agent2, _store)
+        task.enabled = True
+        elig = task.eligible()
+        print(f"interfaces: polling {len(elig)} eligible switch(es) "
+              f"(physical_only={task.physical_only}) ...")
+        task.run()
+        summ = task.summary()
+        total = sum(summ.values())
+        for name in sorted(summ)[:20]:
+            print(f"  {name:<28} {summ[name]} interfaces")
+        if len(summ) > 20:
+            print(f"  ... (+{len(summ)-20} more)")
+        print(f"interfaces: {total} interfaces across {len(summ)} switch(es). "
+              f"(util needs a 2nd poll; run again to see rates)")
+        sys.exit(0)
+
     # Audit log — append-only file separate from journald.
     # Operator-controllable path with the same [agent] block as the
     # state file and master key. Failures are non-fatal: audit.install
@@ -562,6 +591,16 @@ def main() -> None:
                  cfg.get("subnet_health", "schedule", fallback="03:00"),
                  cfg.get("subnet_health", "distros", fallback=""))
 
+    # Interface statistics poll — optional, off by default. Needs SNMP.
+    interface_task = None
+    if cfg.getboolean("interfaces", "enabled", fallback=False):
+        from aruba_agent.tasks.interface_poll import InterfacePollTask
+        interface_task = InterfacePollTask(cfg, state, snmp_agent, _store)
+        scheduler.add_interval(interface_task.poll_seconds, interface_task.run)
+        log.info("Interface poll scheduled every %ds (max_workers=%d, physical_only=%s)",
+                 interface_task.poll_seconds, interface_task.max_workers,
+                 interface_task.physical_only)
+
     # Web-server health check (VPN controller) — optional, off by default.
     if cfg.getboolean("webserver_health", "enabled", fallback=False):
         from aruba_agent.tasks.webserver_health import WebServerHealthTask
@@ -594,6 +633,7 @@ def main() -> None:
         snmp_agent        = snmp_agent,
         monitor_manager   = manager,
         manual_hosts_path = _manual_hosts_path,
+        interface_task    = interface_task,
     )
     start_web(flask_app, host=web_host, port=web_port, threads=web_threads)
 

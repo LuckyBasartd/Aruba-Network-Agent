@@ -92,9 +92,10 @@ Cheapest-highest-value first:
     coalesced per-device diff when a config changes ([backup] change_alerts), and
     switch-detail has a per-version 'diff vs previous' viewer
     (`/api/backups/<host>/diff`). *Done.*
-- 🔨 **Interface-level monitoring** — ifTable/ifXTable: port up/down, errors,
-    discards, utilization. Foundation done (Store time-series metrics + startup
-    safeguard); collector/UI next. See INTERFACE_MONITORING_SPEC.md.
+- ✅ **Interface-level monitoring** — SNMP ifXTable collector (GETBULK), staggered
+    bounded poll task with anti-chatter controls, in/out utilization to the TS
+    store, and a switch-detail Interfaces table. `[interfaces]` (off by default).
+    Threshold alerts on these are the next item. See INTERFACE_MONITORING_SPEC.md.
 - ⬜ **Threshold alerting engine** — generic CPU/mem/temp/PoE/interface-% rules
     → alerts (generalize beyond up/down + subnet + web-server).
 - ⬜ **SNMP trap receiver** — PSU/temp/fan/VSF/LAG events.

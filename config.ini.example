@@ -589,3 +589,24 @@ backend = json
 #
 # Migrate existing state.json into Mongo once, before flipping backend=mongo:
 #   python main.py /etc/aruba-agent/config.ini --import-state-to-mongo
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [interfaces] — per-interface statistics (SNMP ifXTable), SolarWinds NPM parity
+# ─────────────────────────────────────────────────────────────────────────────
+# Polls each switch's interface counters and records in/out utilization to the
+# time-series store (requires [store] backend = mongo for history). Off by
+# default. Designed to stay quiet — see INTERFACE_MONITORING_SPEC.md.
+[interfaces]
+enabled = false
+# Poll cadence in seconds (floor 60). Separate from the 30s reachability poll.
+poll_seconds = 300
+# Cap on simultaneous switch polls (bounds the network/CPU burst).
+max_workers = 8
+# Random 0..N second jitter per switch to avoid synchronized packets.
+jitter_seconds = 2
+# Only physical ports (ifType=ethernetCsmacd); skips SVIs/loopback/tunnel/null.
+physical_only = true
+# Scope: switch names, host IPs, or CIDRs (comma separated). Empty include = all
+# eligible (managed, SNMP-capable). Start on a subset before fleet-wide.
+include =
+exclude =

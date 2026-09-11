@@ -16,6 +16,12 @@
     .d-row:last-child{border-bottom:none;}
     .d-row .k{color:#8b949e;}
     .d-row .v{color:#e6edf3;text-align:right;}
+    .if-tbl{width:100%;border-collapse:collapse;font-size:13px;}
+    .if-tbl th{color:#8b949e;text-align:left;font-weight:600;padding:6px 10px;border-bottom:1px solid #30363d;white-space:nowrap;}
+    .if-tbl td{padding:5px 10px;border-bottom:1px solid #1b1f24;}
+    .if-tbl td.num{text-align:right;font-variant-numeric:tabular-nums;}
+    .if-tbl td.al{color:#8b949e;}
+    .if-up{color:#3fb950;} .if-down{color:#f85149;}
     .badge-up{background:#238636;}.badge-down{background:#da3633;}
     .badge-warn{background:#9e6a03;}.badge-muted{background:#8957e5;}.badge-unmanaged{background:#6e7681;}
     .mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;}
@@ -101,6 +107,13 @@
         <div class="bdy" id="d-backups"><div class="text-muted small py-2">Loading…</div></div>
       </div>
     </div>
+
+    <div class="col-12">
+      <div class="d-card">
+        <div class="hdr"><i class="bi bi-ethernet me-2"></i>Interfaces</div>
+        <div class="bdy" id="d-ifaces"><div class="text-muted small py-2">Loading…</div></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -173,7 +186,32 @@
     }catch(e){}
   }
 
-  loadBackups(); refresh(); setInterval(refresh, 30000);
+  async function loadInterfaces(){
+    const box=document.getElementById('d-ifaces');
+    try{
+      const d=await (await fetch(`/api/switch/${encodeURIComponent(NAME)}/interfaces`)).json();
+      if(!d.enabled){ box.innerHTML='<div class="text-muted small py-2">Interface monitoring is disabled ([interfaces] enabled=false).</div>'; return; }
+      const ifs=d.interfaces||[];
+      if(!ifs.length){ box.innerHTML='<div class="text-muted small py-2">No interface data yet (first poll pending).</div>'; return; }
+      const pct=v=>v==null?'<span class="text-muted">—</span>':`${v.toFixed(1)}%`;
+      const st=s=>s==='up'?'<span class="if-up">up</span>':`<span class="if-down">${esc(s)}</span>`;
+      box.innerHTML=`<div style="overflow-x:auto"><table class="if-tbl">
+        <thead><tr><th>Interface</th><th>Alias</th><th>Admin</th><th>Oper</th>
+        <th class="num">Speed</th><th class="num">In%</th><th class="num">Out%</th>
+        <th class="num">In err</th><th class="num">Out err</th><th class="num">Disc</th></tr></thead>
+        <tbody>${ifs.map(r=>`<tr>
+          <td>${esc(r.name)}</td><td class="al">${esc(r.alias||'')}</td>
+          <td>${st(r.admin)}</td><td>${st(r.oper)}</td>
+          <td class="num">${r.speed_mbps?(r.speed_mbps>=1000?(r.speed_mbps/1000)+'G':r.speed_mbps+'M'):'—'}</td>
+          <td class="num">${pct(r.in_util)}</td><td class="num">${pct(r.out_util)}</td>
+          <td class="num ${r.in_err?'text-danger':''}">${r.in_err||0}</td>
+          <td class="num ${r.out_err?'text-danger':''}">${r.out_err||0}</td>
+          <td class="num">${(r.in_disc||0)+(r.out_disc||0)}</td></tr>`).join('')}</tbody></table></div>`;
+    }catch(e){ box.innerHTML='<div class="text-danger small py-2">Failed to load interfaces.</div>'; }
+  }
+
+  loadBackups(); loadInterfaces(); refresh(); setInterval(refresh, 30000);
+  setInterval(loadInterfaces, 60000);
 </script>
 <div id="diff-ov" onclick="if(event.target===this)closeDiff()"
      style="display:none;position:fixed;inset:0;background:rgba(1,4,9,.7);z-index:1080;align-items:center;justify-content:center;">
