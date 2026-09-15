@@ -245,3 +245,21 @@ def test_close_thread_event_loop_frees_loop():
 
     t = threading.Thread(target=worker); t.start(); t.join()
     assert captured["closed"] is True
+
+
+def test_close_thread_event_loop_drains_pending_tasks():
+    """A loop with a pending task (like pysnmp's timeout handler) must still
+    close cleanly — drained, not left to warn 'Task destroyed but pending'."""
+    import asyncio, threading
+    from aruba_agent import snmp as _snmp
+    out = {}
+    def worker():
+        _snmp._ensure_thread_event_loop()
+        loop = asyncio.get_event_loop()
+        async def hang():
+            await asyncio.sleep(999)
+        loop.create_task(hang())          # pending task
+        _snmp.close_thread_event_loop()
+        out["closed"] = loop.is_closed()
+    t = threading.Thread(target=worker); t.start(); t.join()
+    assert out["closed"] is True

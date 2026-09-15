@@ -84,6 +84,23 @@ def close_thread_event_loop() -> None:
         return
     try:
         if loop is not None and not loop.is_closed():
+            # Cancel and drain any tasks pysnmp's sync hlapi left pending
+            # (its timeout handlers). Closing a loop with pending tasks logs
+            # a noisy "Task was destroyed but it is pending!" per task at
+            # ERROR — at fleet scale that floods journald. Draining first
+            # both silences it and lets the socketpair fds free cleanly.
+            try:
+                pending = list(asyncio.all_tasks(loop))
+            except Exception:
+                pending = []
+            for t in pending:
+                t.cancel()
+            if pending:
+                try:
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True))
+                except Exception:
+                    pass
             loop.close()
     except Exception:
         pass
