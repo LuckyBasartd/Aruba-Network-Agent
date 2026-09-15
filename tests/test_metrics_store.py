@@ -9,11 +9,13 @@ class _Cursor:
         self._docs = sorted(self._docs, key=lambda d: d.get(field),
                             reverse=(direction == -1))
         return self
+    def limit(self, n): self._docs = self._docs[:int(n)]; return self
     def __iter__(self): return iter(self._docs)
 
 class _Coll:
     def __init__(self): self.docs = []
     def insert_one(self, doc): self.docs.append(dict(doc))
+    def create_index(self, *a, **k): return None
     def find(self, q=None):
         q = q or {}
         out = []
@@ -90,3 +92,28 @@ def test_jsonstore_metrics_are_noops(tmp_path):
     st = JsonStore(str(tmp_path / "s.json"))
     st.record_metric("sw1", "if.1.in_util", 5.0)   # no-op, no raise
     assert st.query_metrics("sw1", "if.1.in_util", 0, 1) == []
+
+
+def test_mongo_save_and_query_traps():
+    _Client.registry.clear()
+    st = MongoStore(URI, db_name="t1")
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    st.save_trap({"switch": "sw1", "severity": "critical", "name": "coldStart",
+                  "ts": base})
+    st.save_trap({"switch": "sw2", "severity": "info", "name": "linkUp",
+                  "ts": base + timedelta(minutes=1)})
+    st.save_trap({"switch": "sw1", "severity": "warning", "name": "linkDown",
+                  "ts": base + timedelta(minutes=2)})
+    allt = st.query_traps()
+    assert len(allt) == 3 and allt[0]["ts"] >= allt[-1]["ts"]      # newest first
+    assert [t["switch"] for t in st.query_traps(switch="sw1")] == ["sw1", "sw1"]
+    assert [t["name"] for t in st.query_traps(severity="critical")] == ["coldStart"]
+    since = base + timedelta(minutes=1, seconds=30)
+    assert len(st.query_traps(since=since)) == 1
+    assert len(st.query_traps(limit=2)) == 2
+
+
+def test_json_traps_noop(tmp_path=None):
+    js = JsonStore(None)
+    assert js.save_trap({"x": 1}) is None
+    assert js.query_traps() == []

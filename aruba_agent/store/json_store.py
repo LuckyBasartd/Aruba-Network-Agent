@@ -91,5 +91,11 @@ class JsonStore:
     def load_neighbors(self, device):
         return []
 
+    def save_trap(self, doc):
+        return None
+
+    def query_traps(self, *, switch=None, severity=None, since=None, limit=200):
+        return []
+
     def close(self) -> None:
         pass

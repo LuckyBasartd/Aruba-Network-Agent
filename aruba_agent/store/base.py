@@ -70,3 +70,13 @@ class Store(Protocol):
     def load_neighbors(self, device: str) -> list:
         """Return neighbor rows for one device. [] on unsupported backends."""
         ...
+
+    def save_trap(self, doc: dict) -> None:
+        """Append one received SNMP trap. No-op on backends without support."""
+        ...
+
+    def query_traps(self, *, switch=None, severity=None, since=None,
+                    limit: int = 200) -> list:
+        """Return recent traps (newest first), optionally filtered. []
+        on unsupported backends."""
+        ...

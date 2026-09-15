@@ -39,6 +39,7 @@ class MongoStore:
                  counters_collection: str = "if_counters",
                  fdb_collection: str = "fdb",
                  neighbors_collection: str = "neighbors",
+                 traps_collection: str = "traps",
                  server_selection_timeout_ms: int = 5000,
                  metrics_retention_days: int = 30,
                  tls: bool = False) -> None:
@@ -52,6 +53,8 @@ class MongoStore:
         self._fdb_indexed = False
         self._neighbors_name = neighbors_collection
         self._neighbors_indexed = False
+        self._traps_name = traps_collection
+        self._traps_indexed = False
         self._metrics_indexed = False
         self._metrics_retention_days = max(1, int(metrics_retention_days or 30))
         self._client = None
@@ -333,6 +336,58 @@ class MongoStore:
             return out
         except Exception as exc:
             log.error("MongoStore: load_neighbors failed (%s)", exc)
+            return []
+
+    # ── SNMP traps ────────────────────────────────────────────────────────────
+
+    def _ensure_traps_index(self, db) -> None:
+        if self._traps_indexed:
+            return
+        try:
+            db[self._traps_name].create_index([("ts", -1)])
+            db[self._traps_name].create_index([("switch", 1), ("ts", -1)])
+            db[self._traps_name].create_index([("severity", 1), ("ts", -1)])
+            # TTL: reuse the metrics retention so trap history is bounded too.
+            db[self._traps_name].create_index(
+                "ts", expireAfterSeconds=self._metrics_retention_days * 86400,
+                name="ts_ttl")
+            self._traps_indexed = True
+        except Exception as exc:
+            log.debug("MongoStore: traps index create failed (%s)", exc)
+
+    def save_trap(self, doc: dict) -> None:
+        db = self._db()
+        if db is None:
+            return
+        try:
+            self._ensure_traps_index(db)
+            d = dict(doc)
+            d.setdefault("ts", datetime.now(timezone.utc))
+            db[self._traps_name].insert_one(d)
+        except Exception as exc:
+            log.error("MongoStore: save_trap failed (%s)", exc)
+
+    def query_traps(self, *, switch=None, severity=None, since=None,
+                    limit: int = 200) -> list:
+        db = self._db()
+        if db is None:
+            return []
+        q = {}
+        if switch:
+            q["switch"] = switch
+        if severity:
+            q["severity"] = severity
+        if since is not None:
+            q["ts"] = {"$gte": since}
+        try:
+            cur = db[self._traps_name].find(q).sort("ts", -1).limit(int(limit))
+            out = []
+            for d in cur:
+                d.pop("_id", None)
+                out.append(d)
+            return out
+        except Exception as exc:
+            log.error("MongoStore: query_traps failed (%s)", exc)
             return []
 
     def close(self) -> None:
