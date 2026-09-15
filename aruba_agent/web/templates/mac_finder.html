@@ -54,7 +54,7 @@
         <tbody>
           {% for r in results %}
           <tr>
-            <td><a href="{{ url_for('switch_detail', name=r.device) }}" class="text-decoration-none">{{ r.device }}</a></td>
+            <td><a href="{{ url_for('switch_detail', switch_name=r.device) }}" class="text-decoration-none">{{ r.device }}</a></td>
             <td class="mono {{ 'edge' if r.port_mac_count == 1 }}">{{ r.ifname }}</td>
             <td>{{ r.vlan if r.vlan else '—' }}</td>
             <td>{% if r.port_mac_count == 1 %}<span class="pill" style="background:#1f6f3f;color:#d3f9d8;">edge · 1</span>{% else %}<span class="pill">{{ r.port_mac_count }}</span>{% endif %}</td>
