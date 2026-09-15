@@ -131,7 +131,25 @@ from aruba_agent.web.app                import create_app, start as start_web
 def load_config(path: str) -> configparser.ConfigParser:
     # inline_comment_prefixes lets '; comment' and '# comment' work on value lines
     cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
-    if not cfg.read(path):
+    try:
+        found = cfg.read(path)
+    except configparser.DuplicateSectionError as exc:
+        # Hand-edited config with a section pasted twice (e.g. two [store]).
+        # Give an actionable one-liner instead of a raw traceback.
+        log.error("Config error in %s: duplicate section [%s] near line %s. "
+                  "Each section must appear once — merge its keys into the "
+                  "first one and delete the extra header.",
+                  path, exc.section, getattr(exc, "lineno", "?"))
+        sys.exit(2)
+    except configparser.DuplicateOptionError as exc:
+        log.error("Config error in %s: option '%s' set twice in [%s] near line "
+                  "%s. Keep a single line for it.",
+                  path, exc.option, exc.section, getattr(exc, "lineno", "?"))
+        sys.exit(2)
+    except configparser.Error as exc:
+        log.error("Config error in %s: %s", path, exc)
+        sys.exit(2)
+    if not found:
         log.warning("Config not found at %s — built-in defaults apply.", path)
     return cfg
 
