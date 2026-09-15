@@ -33,5 +33,6 @@ def make_store(backend: str = "json", *, snapshot_path: Optional[str] = None,
             db_name = sec.get("db", "aruba_agent"),
             tls     = (sec.get("tls", "false") or "false").strip().lower() == "true",
             server_selection_timeout_ms = int(sec.get("server_timeout_ms", "5000") or "5000"),
+            metrics_retention_days = int(sec.get("metrics_retention_days", "30") or "30"),
         )
     raise ValueError(f"unknown [store] backend: {backend!r}")

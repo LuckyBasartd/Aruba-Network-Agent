@@ -579,6 +579,9 @@ fail_patterns = not responding, error in fetching
 # "json"  = state stored in [agent] state_file (default; current behavior).
 # "mongo" = MongoDB backend (Phase 1 — not yet implemented; will add uri/db/tls).
 [store]
+# Auto-expire interface/RF/CPU time-series after N days (Mongo TTL index),
+# so the metrics collection can't grow without bound.
+metrics_retention_days = 30
 backend = json
 # MongoDB options (only used when backend = mongo):
 # uri              = mongodb://user:pass@localhost:27017/?authSource=admin
@@ -606,6 +609,12 @@ max_workers = 8
 jitter_seconds = 2
 # Only physical ports (ifType=ethernetCsmacd); skips SVIs/loopback/tunnel/null.
 physical_only = true
+# Time-series volume controls. Every port's util every cycle floods Mongo
+# (millions of docs; most ports are idle). record_zero_util keeps 0% samples;
+# record_metrics=false disables time-series entirely (small boxes / until
+# charts exist). The MAC/interface tables still work with metrics off.
+record_metrics = true
+record_zero_util = false
 # Scope: switch names, host IPs, or CIDRs (comma separated). Empty include = all
 # eligible (managed, SNMP-capable). Start on a subset before fleet-wide.
 include =

@@ -125,3 +125,46 @@ def test_run_skips_when_previous_cycle_in_flight():
     # lock is free again -> a normal run proceeds
     t.run()
     assert t.get_current("a")                       # polled this time
+
+
+class FakeSnmpZero:
+    """Two polls: first baseline, second with ZERO traffic delta (idle port)."""
+    last_error=""
+    def __init__(self): self.counters={"in":1000,"out":2000}
+    def bulk_walk(self, host, bases, profile_name=None):
+        m={ifc.OIDS["if_name"]:{"1":"1/1/1"}, ifc.OIDS["if_type"]:{"1":"6"},
+           ifc.OIDS["oper"]:{"1":"1"}, ifc.OIDS["admin"]:{"1":"1"},
+           ifc.OIDS["high_speed"]:{"1":"1000"},
+           ifc.OIDS["hc_in"]:{"1":str(self.counters["in"])},
+           ifc.OIDS["hc_out"]:{"1":str(self.counters["out"])}}
+        return {b:m.get(b,{}) for b in bases}
+
+
+def test_zero_util_not_recorded_by_default(monkeypatch):
+    st=State([SW("a","10.0.0.1")]); snmp=FakeSnmpZero(); store=FakeStore()
+    t=ip.InterfacePollTask(_cfg(), st, snmp, store)   # record_zero_util defaults false
+    clock={"t":1000.0}; monkeypatch.setattr(ip.time,"time",lambda: clock["t"])
+    t.run()                       # baseline
+    clock["t"]=1060.0             # no counter change -> util 0.0
+    t.run()
+    assert store.metrics==[]      # 0% not recorded
+
+
+def test_zero_util_recorded_when_enabled(monkeypatch):
+    st=State([SW("a","10.0.0.1")]); snmp=FakeSnmpZero(); store=FakeStore()
+    t=ip.InterfacePollTask(_cfg(record_zero_util="true"), st, snmp, store)
+    clock={"t":1000.0}; monkeypatch.setattr(ip.time,"time",lambda: clock["t"])
+    t.run(); clock["t"]=1060.0; t.run()
+    got={m[1] for m in store.metrics}
+    assert "if.1.in_util" in got and "if.1.out_util" in got   # zeros recorded
+
+
+def test_record_metrics_false_disables(monkeypatch):
+    st=State([SW("a","10.0.0.1")]); snmp=FakeSnmp(); store=FakeStore()
+    t=ip.InterfacePollTask(_cfg(record_metrics="false"), st, snmp, store)
+    clock={"t":1000.0}; monkeypatch.setattr(ip.time,"time",lambda: clock["t"])
+    t.run(); clock["t"]=1060.0
+    snmp.counters={"in":1000+450_000_000,"out":2000+450_000_000}
+    t.run()
+    assert store.metrics==[]      # non-zero util still not recorded when off
+    assert t.get_current("a")     # but the live table still populates

@@ -63,6 +63,12 @@ class InterfacePollTask:
         self.jitter_seconds = float(i.get("jitter_seconds", "2") or "2")
         self.include = _csv(i.get("include", ""))
         self.exclude = _csv(i.get("exclude", ""))
+        # Metrics volume controls. Recording every port's util every cycle
+        # floods the time-series store (millions of docs) — most ports sit at
+        # 0%. Off-by-default zero recording keeps only meaningful samples;
+        # record_metrics=false disables time-series entirely (e.g. small box).
+        self.record_metrics   = (i.get("record_metrics", "true") or "true").lower() == "true"
+        self.record_zero_util = (i.get("record_zero_util", "false") or "false").lower() == "true"
 
         self._prev: dict = {}       # name -> {ifIndex: (ts, hc_in, hc_out)}
         self._current: dict = {}    # name -> [rows incl. in_util/out_util]
@@ -119,12 +125,13 @@ class InterfacePollTask:
             out_util = ifc.compute_util(p[2] if p else None, r["hc_out"], elapsed, r["speed_mbps"])
             row = dict(r); row["in_util"] = in_util; row["out_util"] = out_util
             current.append(row)
-            if in_util is not None:
-                self.store.record_metric(sw.name, f"if.{idx}.in_util", in_util,
-                                         labels={"ifName": r["name"]})
-            if out_util is not None:
-                self.store.record_metric(sw.name, f"if.{idx}.out_util", out_util,
-                                         labels={"ifName": r["name"]})
+            if self.record_metrics:
+                if in_util is not None and (self.record_zero_util or in_util > 0):
+                    self.store.record_metric(sw.name, f"if.{idx}.in_util", in_util,
+                                             labels={"ifName": r["name"]})
+                if out_util is not None and (self.record_zero_util or out_util > 0):
+                    self.store.record_metric(sw.name, f"if.{idx}.out_util", out_util,
+                                             labels={"ifName": r["name"]})
         newprev = {idx: (now, r["hc_in"], r["hc_out"]) for idx, r in rows.items()}
         current.sort(key=lambda x: _sortkey(x["ifIndex"]))
         with self._lock:

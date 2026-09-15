@@ -39,6 +39,7 @@ class MongoStore:
                  counters_collection: str = "if_counters",
                  fdb_collection: str = "fdb",
                  server_selection_timeout_ms: int = 5000,
+                 metrics_retention_days: int = 30,
                  tls: bool = False) -> None:
         self._uri = uri
         self._db_name = db_name
@@ -48,6 +49,8 @@ class MongoStore:
         self._counters_name = counters_collection
         self._fdb_name = fdb_collection
         self._fdb_indexed = False
+        self._metrics_indexed = False
+        self._metrics_retention_days = max(1, int(metrics_retention_days or 30))
         self._client = None
         self._ReplaceOne = None
         self.error: str = ""
@@ -145,11 +148,27 @@ class MongoStore:
 
     # ── time-series metrics (interface counters, RF, CPU, ...) ────────────────
 
+    def _ensure_metrics_index(self, db) -> None:
+        if self._metrics_indexed:
+            return
+        try:
+            db[self._metrics_name].create_index([("device", 1), ("metric", 1), ("ts", 1)])
+            # TTL: auto-expire samples so the time-series can't grow without
+            # bound (a weekend of fleet polling is millions of docs). ts is a
+            # BSON Date, so Mongo's background TTL monitor reaps old ones.
+            db[self._metrics_name].create_index(
+                "ts", expireAfterSeconds=self._metrics_retention_days * 86400,
+                name="ts_ttl")
+            self._metrics_indexed = True
+        except Exception as exc:
+            log.debug("MongoStore: metrics index create failed (%s)", exc)
+
     def record_metric(self, device: str, metric: str, value,
                       ts=None, labels: Optional[dict] = None) -> None:
         db = self._db()
         if db is None:
             return
+        self._ensure_metrics_index(db)
         doc = {"ts": ts or datetime.now(timezone.utc),
                "device": device, "metric": metric, "value": value}
         if labels:
