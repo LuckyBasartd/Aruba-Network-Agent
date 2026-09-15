@@ -196,13 +196,15 @@
       if(!ifs.length){ box.innerHTML='<div class="text-muted small py-2">No interface data yet (first poll pending).</div>'; return; }
       const pct=v=>v==null?'<span class="text-muted">—</span>':`${v.toFixed(1)}%`;
       const st=s=>s==='up'?'<span class="if-up">up</span>':`<span class="if-down">${esc(s)}</span>`;
+      const NEIGH_ICON={'wireless-ap':'bi-broadcast-pin','voip-phone':'bi-telephone','switch':'bi-hdd-network','router':'bi-router','host':'bi-pc-display'};
+      const neighCell=r=>{if(!r.neighbor)return '<span class="text-muted">—</span>';const ic=NEIGH_ICON[r.neighbor_type]||'bi-question-circle';const t=r.neighbor_type?` <span class="text-muted" style="font-size:11px">${esc(r.neighbor_type)}</span>`:'';return `<i class="bi ${ic} me-1" title="${esc(r.neighbor_proto||'')}"></i>${esc(r.neighbor)}${t}`;};
       const macCell=r=>{const m=r.macs||[];if(!m.length)return '<span class="text-muted">—</span>';return m.length===1?`<span class="mono">${esc(m[0])}</span>`:`<span class="mono">${esc(m[0])}</span> <span class="text-muted">(+${m.length-1})</span>`;};
       box.innerHTML=`<div style="overflow-x:auto"><table class="if-tbl">
-        <thead><tr><th>Interface</th><th>Alias</th><th>Device (MAC)</th><th>Admin</th><th>Oper</th>
+        <thead><tr><th>Interface</th><th>Alias</th><th>Device (MAC)</th><th>Neighbor</th><th>Admin</th><th>Oper</th>
         <th class="num">Speed</th><th class="num">In%</th><th class="num">Out%</th>
         <th class="num">CRC</th><th class="num">Out err</th><th class="num">Disc</th></tr></thead>
         <tbody>${ifs.map(r=>`<tr>
-          <td>${esc(r.name)}</td><td class="al">${esc(r.alias||'')}</td><td>${macCell(r)}</td>
+          <td>${esc(r.name)}</td><td class="al">${esc(r.alias||'')}</td><td>${macCell(r)}</td><td>${neighCell(r)}</td>
           <td>${st(r.admin)}</td><td>${st(r.oper)}</td>
           <td class="num">${r.speed_mbps?(r.speed_mbps>=1000?(r.speed_mbps/1000)+'G':r.speed_mbps+'M'):'—'}</td>
           <td class="num">${pct(r.in_util)}</td><td class="num">${pct(r.out_util)}</td>

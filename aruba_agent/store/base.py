@@ -60,3 +60,13 @@ class Store(Protocol):
     def load_fdb(self, device: str) -> list:
         """Return all FDB rows for one device. [] on unsupported backends."""
         ...
+
+    def save_neighbors(self, device: str, records: list, ts=None) -> None:
+        """Replace LLDP/CDP neighbor rows for one device.
+        records: [{ifname, protocol, neighbor, rem_port, rem_desc, device_type}].
+        No-op on backends without support."""
+        ...
+
+    def load_neighbors(self, device: str) -> list:
+        """Return neighbor rows for one device. [] on unsupported backends."""
+        ...

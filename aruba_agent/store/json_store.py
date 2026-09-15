@@ -85,5 +85,11 @@ class JsonStore:
     def load_fdb(self, device):
         return []
 
+    def save_neighbors(self, device, records, ts=None):
+        return None
+
+    def load_neighbors(self, device):
+        return []
+
     def close(self) -> None:
         pass

@@ -3534,16 +3534,27 @@ def create_app(
         # Join per-port MACs from the bridge FDB (L2 discovery). Cheap: one
         # indexed load_fdb per request; empty/no-op when L2 isn't enabled.
         by_if: dict = {}
+        neigh_by_name: dict = {}
         if l2_task is not None:
             try:
                 for r in (l2_task.store.load_fdb(name) or []):
                     by_if.setdefault(str(r.get("ifindex")), []).append(r.get("mac_fmt"))
             except Exception:
                 by_if = {}
+            try:
+                for n in (l2_task.store.load_neighbors(name) or []):
+                    # first neighbor per local port (edge ports have one)
+                    neigh_by_name.setdefault(n.get("ifname"), n)
+            except Exception:
+                neigh_by_name = {}
         enriched = []
         for row in rows:
             macs = by_if.get(str(row.get("ifIndex")), [])
-            enriched.append({**row, "macs": macs, "mac_count": len(macs)})
+            n = neigh_by_name.get(row.get("name"))
+            enriched.append({**row, "macs": macs, "mac_count": len(macs),
+                             "neighbor": (n or {}).get("neighbor"),
+                             "neighbor_type": (n or {}).get("device_type"),
+                             "neighbor_proto": (n or {}).get("protocol")})
         return jsonify({"enabled": True, "l2": l2_task is not None,
                         "interfaces": enriched})
 

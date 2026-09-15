@@ -38,6 +38,7 @@ class MongoStore:
                  metrics_collection: str = "metrics",
                  counters_collection: str = "if_counters",
                  fdb_collection: str = "fdb",
+                 neighbors_collection: str = "neighbors",
                  server_selection_timeout_ms: int = 5000,
                  metrics_retention_days: int = 30,
                  tls: bool = False) -> None:
@@ -49,6 +50,8 @@ class MongoStore:
         self._counters_name = counters_collection
         self._fdb_name = fdb_collection
         self._fdb_indexed = False
+        self._neighbors_name = neighbors_collection
+        self._neighbors_indexed = False
         self._metrics_indexed = False
         self._metrics_retention_days = max(1, int(metrics_retention_days or 30))
         self._client = None
@@ -290,6 +293,46 @@ class MongoStore:
             return out
         except Exception as exc:
             log.error("MongoStore: load_fdb failed (%s)", exc)
+            return []
+
+    # ── LLDP/CDP neighbors ────────────────────────────────────────────────────
+
+    def _ensure_neighbors_index(self, db) -> None:
+        if self._neighbors_indexed:
+            return
+        try:
+            db[self._neighbors_name].create_index("device")
+            self._neighbors_indexed = True
+        except Exception as exc:
+            log.debug("MongoStore: neighbors index create failed (%s)", exc)
+
+    def save_neighbors(self, device: str, records: list, ts=None) -> None:
+        db = self._db()
+        if db is None:
+            return
+        when = ts or datetime.now(timezone.utc)
+        try:
+            self._ensure_neighbors_index(db)
+            coll = db[self._neighbors_name]
+            coll.delete_many({"device": device})
+            docs = [{"device": device, "ts": when, **r} for r in (records or [])]
+            if docs:
+                coll.insert_many(docs, ordered=False)
+        except Exception as exc:
+            log.error("MongoStore: save_neighbors failed for %s (%s)", device, exc)
+
+    def load_neighbors(self, device: str) -> list:
+        db = self._db()
+        if db is None:
+            return []
+        try:
+            out = []
+            for d in db[self._neighbors_name].find({"device": device}):
+                d.pop("_id", None)
+                out.append(d)
+            return out
+        except Exception as exc:
+            log.error("MongoStore: load_neighbors failed (%s)", exc)
             return []
 
     def close(self) -> None:

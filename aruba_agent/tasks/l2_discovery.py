@@ -20,6 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from aruba_agent import fdb
+from aruba_agent import lldp
 from aruba_agent.snmp import close_thread_event_loop
 from aruba_agent.tasks.interface_poll import _csv, _matches
 
@@ -42,6 +43,7 @@ class L2DiscoveryTask:
         self.exclude = _csv(l.get("exclude", ""))
 
         self._counts: dict = {}          # name -> learned-MAC count (last sweep)
+        self._neigh_counts: dict = {}    # name -> neighbor count (last sweep)
         self._lock = threading.RLock()
         self._running = threading.Lock()  # overlap guard
 
@@ -73,15 +75,20 @@ class L2DiscoveryTask:
     def _discover_one_inner(self, sw) -> int:
         if self.jitter_seconds > 0:
             time.sleep(random.uniform(0, self.jitter_seconds))
-        recs = fdb.collect(self.snmp, sw.host,
-                           profile_name=getattr(sw, "snmp_profile", "") or None)
+        prof = getattr(sw, "snmp_profile", "") or None
+        recs = fdb.collect(self.snmp, sw.host, profile_name=prof)
         if recs is None:
             log.debug("l2 discovery: %s (%s) no FDB (%s)", sw.name, sw.host,
                       getattr(self.snmp, "last_error", ""))
             return 0
         self.store.save_fdb(sw.name, recs)
+        # Neighbors (LLDP/CDP) on the same sweep. Best-effort: a switch may do
+        # FDB but not LLDP; never let a neighbor failure drop the FDB result.
+        neighbors = lldp.collect(self.snmp, sw.host, profile_name=prof) or []
+        self.store.save_neighbors(sw.name, neighbors)
         with self._lock:
             self._counts[sw.name] = len(recs)
+            self._neigh_counts[sw.name] = len(neighbors)
         return len(recs)
 
     def run(self) -> None:
@@ -129,3 +136,7 @@ class L2DiscoveryTask:
     def summary(self) -> dict:
         with self._lock:
             return dict(self._counts)
+
+    def neighbor_summary(self) -> dict:
+        with self._lock:
+            return dict(self._neigh_counts)

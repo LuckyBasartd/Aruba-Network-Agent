@@ -621,8 +621,9 @@ include =
 exclude =
 
 [l2]
-# Layer-2 discovery: bridge MAC table (FDB) now, LLDP/CDP neighbors later.
-# Makes MACs searchable (top-nav search) and shows what's on each port.
+# Layer-2 discovery: bridge MAC table (FDB) + LLDP/CDP neighbors. Makes MACs
+# searchable (top-nav search) and shows what's attached to each port
+# (switch / VoIP phone / wireless AP / router / host) on the switch page.
 enabled = false
 # Slow cadence in seconds (floor 300). FDB/neighbors change slowly; hourly is
 # typical and keeps this off the wire between sweeps.

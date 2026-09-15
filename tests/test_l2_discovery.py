@@ -19,14 +19,20 @@ class FakeSnmp:
     def bulk_walk(self, host, bases, profile_name=None):
         q={"1.0.17.34.51.68.1":"2",
            "1.0.17.34.51.68.10":"9","1.0.17.34.51.68.11":"9","1.0.17.34.51.68.12":"9"}
+        from aruba_agent import lldp
         m={fdb.OID_Q_FDB_PORT:q,
            fdb.OID_BASEPORT_IF:{"2":"2","9":"9"},
-           fdb.OID_IF_NAME:{"2":"1/1/2","9":"1/1/9"}}
+           fdb.OID_IF_NAME:{"2":"1/1/2","9":"1/1/9"},
+           lldp.OID_LLDP_LOC_PORTID:{"2":"1/1/2"},
+           lldp.OID_LLDP_REM_SYSNAME:{"0.2.1":"AP-lobby"},
+           lldp.OID_LLDP_REM_CAP_ENA:{"0.2.1":"0x1000"}}
         return {b:m.get(b,{}) for b in bases}
 
 class FakeFdbStore:
-    def __init__(self): self.rows={}     # device -> [records]
+    def __init__(self): self.rows={}; self.neigh={}   # device -> [records]
     def save_fdb(self, device, records, ts=None): self.rows[device]=list(records)
+    def save_neighbors(self, device, records, ts=None): self.neigh[device]=list(records)
+    def load_neighbors(self, device): return self.neigh.get(device, [])
     def search_fdb(self, mac, limit=200):
         out=[]
         for dev, recs in self.rows.items():
@@ -58,6 +64,9 @@ def test_run_saves_fdb_and_search_edge_only():
     t.run()
     assert store.rows["sw1"]                       # FDB persisted
     assert t.summary()=={"sw1":4}
+    # neighbors collected + classified
+    assert store.neigh["sw1"] and store.neigh["sw1"][0]["device_type"]=="wireless-ap"
+    assert t.neighbor_summary()=={"sw1":1}
 
     # edge-only search for the access-port mac -> single hit, count 1
     hits=t.search("00:11:22:33:44:01")

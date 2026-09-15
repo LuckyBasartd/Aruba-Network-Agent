@@ -536,6 +536,15 @@ def main() -> None:
                 print(f"    {ifname:<16} {len(rs):>4} mac(s): {macs}{more}")
             if len(byport) > 20:
                 print(f"    ... (+{len(byport)-20} more ports)")
+            # LLDP/CDP neighbors on the same host
+            from aruba_agent import lldp as _lldp
+            neigh = _lldp.collect(snmp_agent2, iface_host, profile_name=prof) or []
+            print(f"  neighbors (LLDP/CDP): {len(neigh)}")
+            for n in sorted(neigh, key=lambda x: x.get("ifname",""))[:20]:
+                print(f"    {n['ifname']:<16} {n['device_type']:<12} "
+                      f"{n['neighbor']}  [{n['protocol']}] {n['rem_desc'][:40]}")
+            if len(neigh) > 20:
+                print(f"    ... (+{len(neigh)-20} more neighbors)")
             sys.exit(0)
 
         elig = l2task.eligible()
@@ -547,7 +556,9 @@ def main() -> None:
             print(f"  {name:<28} {summ[name]} MAC(s)")
         if len(summ) > 20:
             print(f"  ... (+{len(summ)-20} more)")
-        print(f"l2: {total} MAC(s) across {len(summ)} switch(es).")
+        nsumm = l2task.neighbor_summary()
+        print(f"l2: {total} MAC(s), {sum(nsumm.values())} neighbor(s) across "
+              f"{len(summ)} switch(es).")
         sys.exit(0)
 
     # Audit log — append-only file separate from journald.
