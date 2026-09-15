@@ -615,12 +615,17 @@ physical_only = true
 # charts exist). The MAC/interface tables still work with metrics off.
 record_metrics = true
 record_zero_util = false
+# Populate the live table on startup instead of waiting a full poll_seconds.
+run_at_start = true
 # Scope: switch names, host IPs, or CIDRs (comma separated). Empty include = all
 # eligible (managed, SNMP-capable). Start on a subset before fleet-wide.
 include =
 exclude =
 
 [l2]
+# run_at_start = true populates MAC/neighbor data shortly after a restart
+# (instead of waiting up to poll_seconds, e.g. an hour).
+run_at_start = true
 # Layer-2 discovery: bridge MAC table (FDB) + LLDP/CDP neighbors. Makes MACs
 # searchable (top-nav search) and shows what's attached to each port
 # (switch / VoIP phone / wireless AP / router / host) on the switch page.

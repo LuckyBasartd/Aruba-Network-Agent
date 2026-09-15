@@ -768,7 +768,8 @@ def main() -> None:
     if cfg.getboolean("interfaces", "enabled", fallback=False):
         from aruba_agent.tasks.interface_poll import InterfacePollTask
         interface_task = InterfacePollTask(cfg, state, snmp_agent, _store)
-        scheduler.add_interval(interface_task.poll_seconds, interface_task.run)
+        scheduler.add_interval(interface_task.poll_seconds, interface_task.run,
+                               run_at_start=cfg.getboolean("interfaces", "run_at_start", fallback=True))
         log.info("Interface poll scheduled every %ds (max_workers=%d, physical_only=%s)",
                  interface_task.poll_seconds, interface_task.max_workers,
                  interface_task.physical_only)
@@ -779,7 +780,8 @@ def main() -> None:
     if cfg.getboolean("l2", "enabled", fallback=False):
         from aruba_agent.tasks.l2_discovery import L2DiscoveryTask
         l2_task = L2DiscoveryTask(cfg, state, snmp_agent, _store)
-        scheduler.add_interval(l2_task.poll_seconds, l2_task.run)
+        scheduler.add_interval(l2_task.poll_seconds, l2_task.run,
+                               run_at_start=cfg.getboolean("l2", "run_at_start", fallback=True))
         log.info("L2 discovery scheduled every %ds (max_workers=%d)",
                  l2_task.poll_seconds, l2_task.max_workers)
 
