@@ -639,3 +639,23 @@ jitter_seconds = 2
 # icmp-only. Same scoping semantics as [interfaces].
 include =
 exclude =
+
+[traps]
+# SNMP trap receiver: listen for device traps (link/PSU/fan/temp/VSF/auth),
+# store them, and email on CRITICAL ones. UDP 162 is privileged — grant the
+# venv python CAP_NET_BIND_SERVICE, or use a high port + redirect. See
+# TROUBLESHOOTING.md "SNMP trap receiver".
+enabled = false
+bind_address = 0.0.0.0
+port = 162
+# v2c community string(s) the switches send traps with (comma separated)
+communities = public
+# Accept authenticated v3 traps as these SNMP profile name(s) (reuse the same
+# polling credentials); comma separated. Leave blank for v2c-only.
+v3_profiles =
+# Which traps email: critical | critical+linkdown | none
+#   critical         = system/auth/hardware (PSU/fan/temp/VSF), NOT link changes
+#   critical+linkdown= also linkDown (linkUp stays store-only)
+alert_policy = critical
+# Suppress repeat emails for the same (switch, trap) within N seconds
+alert_dedup_seconds = 300

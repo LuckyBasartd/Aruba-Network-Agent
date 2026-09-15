@@ -148,6 +148,19 @@ class TrapReceiver:
             log.error("Trap receiver failed to start: %s", exc)
             return False
 
+    def stop(self) -> None:
+        eng = self._engine
+        if eng is None:
+            return
+        try:
+            eng.transportDispatcher.jobFinished(1)
+        except Exception:
+            pass
+        try:
+            eng.transportDispatcher.closeDispatcher()
+        except Exception:
+            pass
+
     def _serve(self) -> None:
         try:
             import asyncio

@@ -171,6 +171,7 @@ def create_app(
     manual_hosts_path: Optional[str] = None,
     interface_task = None,   # InterfacePollTask — current per-interface stats
     l2_task = None,          # L2DiscoveryTask — MAC/FDB search
+    trap_store = None,       # Store — query received SNMP traps
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.config["JSON_SORT_KEYS"] = False
@@ -3591,6 +3592,33 @@ def create_app(
                                mac=_fdb.format_mac(canon) if canon else q,
                                results=results,
                                l2_enabled=(l2_task is not None),
+                               **_settings_context())
+
+    @app.get("/api/traps")
+    @require_login
+    def api_traps():
+        """Recent SNMP traps (newest first), optional switch/severity filter."""
+        if trap_store is None:
+            return jsonify({"enabled": False, "traps": []})
+        sw  = (request.args.get("switch") or "").strip() or None
+        sev = (request.args.get("severity") or "").strip() or None
+        try:
+            limit = min(1000, max(1, int(request.args.get("limit", "200"))))
+        except ValueError:
+            limit = 200
+        rows = trap_store.query_traps(switch=sw, severity=sev, limit=limit)
+        # datetimes -> ISO for JSON
+        for r in rows:
+            ts = r.get("ts")
+            if hasattr(ts, "isoformat"):
+                r["ts"] = ts.isoformat()
+        return jsonify({"enabled": True, "traps": rows})
+
+    @app.get("/traps")
+    @require_login
+    def traps_page():
+        return render_template("traps.html",
+                               traps_enabled=(trap_store is not None),
                                **_settings_context())
 
     @app.get("/api/backups/<hostname>/diff")

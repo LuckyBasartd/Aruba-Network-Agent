@@ -785,6 +785,14 @@ def main() -> None:
         log.info("L2 discovery scheduled every %ds (max_workers=%d)",
                  l2_task.poll_seconds, l2_task.max_workers)
 
+    # SNMP trap receiver — optional, off by default. Runs its own UDP listener
+    # thread; started here and passed to the web app so /traps can query them.
+    trap_receiver = None
+    if cfg.getboolean("traps", "enabled", fallback=False):
+        from aruba_agent.trap_receiver import TrapReceiver
+        trap_receiver = TrapReceiver(cfg, state, _store, notifier)
+        trap_receiver.start()
+
     # Web-server health check (VPN controller) — optional, off by default.
     if cfg.getboolean("webserver_health", "enabled", fallback=False):
         from aruba_agent.tasks.webserver_health import WebServerHealthTask
@@ -819,6 +827,7 @@ def main() -> None:
         manual_hosts_path = _manual_hosts_path,
         interface_task    = interface_task,
         l2_task           = l2_task,
+        trap_store        = _store,
     )
     start_web(flask_app, host=web_host, port=web_port, threads=web_threads)
 
@@ -828,6 +837,8 @@ def main() -> None:
     def _shutdown(signum, _frame) -> None:
         log.info("Signal %s received — shutting down gracefully", signum)
         scheduler.stop()
+        if trap_receiver is not None:
+            trap_receiver.stop()
         manager.stop_all()
         stop_event.set()
 
