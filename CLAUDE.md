@@ -106,7 +106,9 @@ aruba_agent/
   notifier.py                EmailNotifier (SMTP)
   alert_batcher.py           coalesces up/down alerts into ONE email (60s window)
   config_diff.py             config change detection + unified diff (SolarWinds parity)
-  interfaces.py              SNMP ifXTable collector: assemble/filter/utilization (pure)
+  interfaces.py              SNMP ifXTable collector: util + CRC (dot3StatsFCSErrors), pure
+  fdb.py                     bridge MAC table collector (Q-BRIDGE + fallback), pure
+  lldp.py                    LLDP/CDP neighbor collector + device-type classifier, pure
   secrets_store.py           Fernet encrypt/decrypt + redact()
   snmp.py / snmp_profiles.py SNMPv3 (pysnmp) + SnmpProfile registry
   manual_hosts.py            manually-pinned hosts/profiles
@@ -131,6 +133,8 @@ aruba_agent/
     scanner.py               OS-ping subnet sweep -> device discovery (ip_list)
     arp.py                   per-location ARP discovery
     config_push.py           batch CLI config push (netmiko, multi-vendor)
+    interface_poll.py        per-port util/CRC poll -> live table + metrics (anti-chatter)
+    l2_discovery.py          hourly MAC-table (FDB) + LLDP/CDP neighbor sweep
     firmware.py              on-demand firmware update
   web/
     app.py                   all routes (see §7)
@@ -427,6 +431,29 @@ Encrypted at rest, decrypt-in-memory (same model as backups):
 - To edit the guide: update `TROUBLESHOOTING.md` AND `aruba_agent/web/help_content.md`
   (keep them identical), redeploy; the encrypted copy refreshes automatically on
   the next `/help` load (mtime check) or via `--encrypt-help`.
+
+## 13b. Interface + L2 monitoring (Sep 2026, v3.6.0 dev)
+
+SolarWinds-parity port monitoring, all SNMP, both off by default, both poll
+**every known switch** when their `[interfaces]`/`[l2]` `include` is blank:
+
+- **interface_poll.py** — ifXTable util %, speed, CRC (`dot3StatsFCSErrors`,
+  NOT ifInErrors — the latter false-flags APs' jumbo-frame giants), discards.
+  Records util time-series to Mongo. Anti-chatter: cadence floor, bounded pool,
+  jitter, overlap guard, `record_zero_util` (skip idle ports), `record_metrics`
+  off switch. Prev counters persist (`if_counters`) so util survives restarts.
+- **l2_discovery.py** — hourly FDB (`fdb.py`: dot1qTpFdbPort → ifIndex, edge vs
+  uplink via port_mac_count) + LLDP/CDP neighbors (`lldp.py`: capability bits,
+  name/desc fallback). Stored in Mongo `fdb` / `neighbors`.
+- **Web:** switch page Interfaces table has Device(MAC) + Neighbor columns;
+  top-nav MAC search → `/tools/mac` (edge-port-first). `snmp.bulk_walk` does
+  paginated GETBULK (pysnmp 6.1 returns one PDU — must paginate per column).
+- **Ops knobs / gotchas:** `[store] metrics_retention_days` (TTL); one config
+  section each (DuplicateSectionError otherwise); ~4-8 GB RAM for 481 switches;
+  pool workers must close their asyncio loop per sweep (fd leak, fixed).
+  See TROUBLESHOOTING.md "Interface & L2 monitoring" + "Performance".
+
+---
 
 ## 14. Other docs
 `README.md`, `STRUCTURE.md`, `INSTALL.md`, `INSTALL-AlmaLinux-10.md`,

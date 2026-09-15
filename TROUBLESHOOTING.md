@@ -131,6 +131,16 @@ sudo /opt/aruba-agent/venv/bin/python /opt/aruba-agent/main.py /etc/aruba-agent/
 # Decrypt one backup to a file for restore (backups are encrypted at rest)
 sudo /opt/aruba-agent/venv/bin/python /opt/aruba-agent/main.py /etc/aruba-agent/config.ini \
      --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
+
+# Interface poll — one cycle now. Utilization needs a 2nd run (counter delta).
+sudo /opt/aruba-agent/venv/bin/python /opt/aruba-agent/main.py /etc/aruba-agent/config.ini --interfaces-poll-once
+# Probe interfaces on ONE switch (fast; prints ifName/util/CRC + SNMP diagnostics)
+sudo /opt/aruba-agent/venv/bin/python /opt/aruba-agent/main.py /etc/aruba-agent/config.ini --interfaces-poll-once --host 10.40.0.6
+
+# L2 discovery — one MAC-table + LLDP/CDP neighbor sweep now
+sudo /opt/aruba-agent/venv/bin/python /opt/aruba-agent/main.py /etc/aruba-agent/config.ini --l2-discover-once
+# Probe ONE switch: prints its per-port MAC table AND classified neighbors
+sudo /opt/aruba-agent/venv/bin/python /opt/aruba-agent/main.py /etc/aruba-agent/config.ini --l2-discover-once --host 10.40.0.6
 ```
 
 Nightly Config Backup, Discovery, and ARP can also be **Run now** from the
@@ -226,6 +236,91 @@ df -h /var/lib/aruba-agent                          # disk space for backups
   controllers, which are merged in separately).
 - Coverage safeguard: on a big drop the agent keeps the previous `ip_list`
   rather than shrinking the monitored set — check the log for a coverage warning.
+
+---
+
+## Interface & L2 monitoring (util, CRC, MACs, neighbors)
+
+Two optional background jobs, both off by default, both SNMP-only. They poll
+**every switch the agent already knows** when their `include` is blank — no
+CIDR list to maintain — skipping unmanaged and icmp-only hosts.
+
+```ini
+[interfaces]              # per-port util %, speed, CRC errors, discards
+enabled = true
+include =                 # blank = all known switches; or "10.40.0.0/24", names, IPs
+poll_seconds = 600        # floor 60; a full-fleet sweep must finish inside this
+physical_only = true      # ethernetCsmacd ports only
+record_metrics = true     # write util time-series to Mongo (needs backend = mongo)
+record_zero_util = false  # skip idle (0%) ports — this is where the volume is
+
+[l2]                      # bridge MAC table (FDB) + LLDP/CDP neighbors
+enabled = true
+include =                 # same semantics as [interfaces]
+poll_seconds = 3600       # floor 300; FDB/neighbors change slowly — hourly is plenty
+```
+
+- **CRC vs In err.** The table's `CRC` column is `dot3StatsFCSErrors` (real CRC/
+  FCS), *not* `ifInErrors` — the latter counts giants from AP jumbo-frame
+  negotiation and false-flagged healthy AP ports. A down port with a nonzero
+  CRC is a genuine historical error.
+- **MAC search.** Top-nav search box (any spelling: `aa:bb:cc:dd:ee:ff`,
+  `aabb.ccdd.eeff`, bare) → `/tools/mac`. Shows the **edge port** per switch
+  (fewest MACs = access port); tick "show all" for uplink/trunk hits.
+- **Neighbor types** come from LLDP capability bits, falling back to the
+  sysName/sysDesc when a device (many VoIP phones) doesn't advertise them.
+  New phone/AP model not classified? It's a one-line pattern add in `lldp.py`
+  (`_TEXT_HINTS`).
+- **Scale note.** One sweep of ~108 switches ≈ 100 s at `max_workers = 8`;
+  ~450 s for all 481. If a sweep can't finish inside `poll_seconds` you'll see
+  `previous cycle still running — skipping this tick` — raise `poll_seconds`
+  or `max_workers` (an overlap guard prevents stacking, so it's safe, just
+  stale). Start scoped, widen once it looks healthy.
+
+---
+
+## Performance & resources (high load / slow UI / swap)
+
+```bash
+PID=$(pgrep -f 'aruba-agent/main.py')
+top -bn1 | head -12                 # load avg + who's hot (python vs mongod)
+free -m                             # RAM / swap — swapping = the box is too small
+ls /proc/$PID/fd | wc -l            # open fds — should be STABLE, not climbing
+# metrics collection size (time-series can grow fast if record_zero_util=true)
+mongosh --quiet aruba_agent --eval 'db.metrics.countDocuments()'
+mongosh --quiet aruba_agent --eval 'db.metrics.stats().size'
+```
+
+- **fd count should be flat.** It ramps at startup as the ~481 per-switch
+  monitors come online (~4 fds each ≈ ~1900 steady) then holds. A *steady
+  climb* is a leak — historically the interface/L2 pool workers leaked an
+  asyncio loop's socketpair per sweep (fixed by closing the loop per worker).
+- **Metrics are bounded** by a Mongo TTL index (`[store] metrics_retention_days`,
+  default 30) plus `record_zero_util = false`. If `db.metrics` is huge from an
+  older run, it's safe to drop — nothing reads it yet:
+  `mongosh --quiet aruba_agent --eval 'db.metrics.drop()'` (indexes/TTL rebuild
+  on next write).
+- **Box sizing.** ~481 switches in the one-thread-per-switch model + Mongo want
+  headroom: **4–8 GB RAM**. On a 1.6 GB VM the agent (~1.3 GB) + Mongo swap and
+  everything crawls. More RAM is the fix; right-size before going fleet-wide.
+
+---
+
+## Config file gotchas
+
+```bash
+# Validate config BEFORE restart (catches typos without a half-started service)
+python3 -c "import configparser; configparser.ConfigParser().read('/etc/aruba-agent/config.ini'); print('config OK')"
+# Find duplicate section headers (each section must appear exactly once)
+grep -n '^\[' /etc/aruba-agent/config.ini | sort -t: -k2
+```
+
+- **One section each.** A pasted-twice `[store]`/`[interfaces]` gives
+  `DuplicateSectionError` and the agent won't start. Merge the keys into the
+  first section and delete the extra header. (The agent now logs a clear
+  one-liner naming the section + line instead of a raw traceback.)
+- **Secrets live here.** `config.ini` is gitignored — never commit it; back it
+  up (`cp config.ini config.ini.bak`) before hand-edits.
 
 ---
 

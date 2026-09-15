@@ -95,12 +95,17 @@ Cheapest-highest-value first:
 - ✅ **Interface-level monitoring** — SNMP ifXTable collector (GETBULK), staggered
     bounded poll task with anti-chatter controls, in/out utilization to the TS
     store, and a switch-detail Interfaces table. `[interfaces]` (off by default).
-    Threshold alerts on these are the next item. See INTERFACE_MONITORING_SPEC.md.
+    Real CRC errors via dot3StatsFCSErrors (not ifInErrors). Metrics bounded by
+    a Mongo TTL + skip-idle. See INTERFACE_MONITORING_SPEC.md.
+- ✅ **MAC table + search** — hourly bridge-FDB sweep (`[l2]`), per-port MACs on
+    the switch page, top-nav MAC finder (edge-port-first). `fdb.py` + Mongo `fdb`.
 - ⬜ **Threshold alerting engine** — generic CPU/mem/temp/PoE/interface-% rules
     → alerts (generalize beyond up/down + subnet + web-server).
 - ⬜ **SNMP trap receiver** — PSU/temp/fan/VSF/LAG events.
 - ⬜ **Syslog collector** — ingest + search device syslog.
-- ⬜ **Topology** — LLDP/CDP neighbor discovery + a network map.
+- 🟡 **Topology** — LLDP/CDP neighbor discovery + per-port device-type
+    classification **done** (`lldp.py`, folded into the `[l2]` sweep; Neighbor
+    column on the switch page). Remaining: build the network **map** from it.
 - ⬜ **Inventory** — model/serial/OS/EoL/license tracking + export.
 - ⬜ **Scheduled reports** — SLA, backup status, inventory (PDF/email).
 - ⬜ **Maintenance windows** — scheduled, vs today's manual mute/unmanage.
