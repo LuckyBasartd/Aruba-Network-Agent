@@ -33,6 +33,10 @@ Run one interface poll cycle and print a summary:
 Probe interfaces on a SINGLE switch (fast; for tuning/debugging):
   python main.py [/path/to/config.ini] --interfaces-poll-once --host 10.40.0.6
 
+Run one L2 (MAC/FDB) discovery sweep, or probe one switch's MAC table:
+  python main.py [/path/to/config.ini] --l2-discover-once
+  python main.py [/path/to/config.ini] --l2-discover-once --host 10.40.0.6
+
 Decrypt a single backup file to stdout for restore:
   python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
@@ -167,6 +171,7 @@ def main() -> None:
     encrypt_help_mode = "--encrypt-help" in args
     import_mongo_mode = "--import-state-to-mongo" in args
     interfaces_once_mode = "--interfaces-poll-once" in args
+    l2_once_mode = "--l2-discover-once" in args
     # --decrypt-backup <path> is a two-token flag; the next positional
     # is the backup file path. Extract it now so the path doesn't get
     # mis-parsed as config_path below.
@@ -487,6 +492,64 @@ def main() -> None:
                 print(f"  ifName rows returned: {len(col)}; sample: {sample}")
         sys.exit(0)
 
+    # ── --l2-discover-once ──────────────────────────────────────────────────────
+    # Run one L2 (MAC/FDB) discovery sweep and print a summary. --host <ip>
+    # scopes it to a single switch and dumps that switch's MAC table.
+    if l2_once_mode:
+        import logging as _logging
+        _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
+        from aruba_agent.store import make_store
+        from aruba_agent.tasks.l2_discovery import L2DiscoveryTask
+        _sb = (cfg.get("store", "backend", fallback="json")
+               if cfg.has_section("store") else "json")
+        _sf = cfg.get("agent", "state_file",
+                      fallback="/var/lib/aruba-agent/state.json")
+        _once_store = make_store(_sb, snapshot_path=_sf, cfg=cfg)
+        _once_state = AgentState(store=_once_store)
+        snmp_agent2 = build_snmp_agent(cfg)
+        if snmp_agent2 is None:
+            print("--l2-discover-once: SNMP is not configured ([snmp]).", file=sys.stderr)
+            sys.exit(2)
+        l2task = L2DiscoveryTask(cfg, _once_state, snmp_agent2, _once_store)
+        l2task.enabled = True
+
+        if iface_host:
+            from aruba_agent import fdb as _fdb
+            import time as _t
+            prof = _once_state.get_snmp_profile_for_host(iface_host) or None
+            print(f"l2: probing {iface_host} profile={prof or '(default)'} ...")
+            t0 = _t.time()
+            recs = _fdb.collect(snmp_agent2, iface_host, profile_name=prof)
+            dt = _t.time() - t0
+            if recs is None:
+                print(f"  FDB walk FAILED in {dt:.1f}s — last_error="
+                      f"{snmp_agent2.last_error!r} detail={snmp_agent2.last_detail!r}")
+                sys.exit(2)
+            byport = {}
+            for r in recs:
+                byport.setdefault((r["ifindex"], r["ifname"]), []).append(r)
+            print(f"  {len(recs)} MAC(s) across {len(byport)} port(s) in {dt:.1f}s")
+            for (ifidx, ifname), rs in sorted(byport.items(),
+                    key=lambda kv: (0, int(kv[0][0])) if kv[0][0].isdigit() else (1, kv[0][0]))[:20]:
+                macs = ", ".join(sorted(x["mac_fmt"] for x in rs)[:6])
+                more = "" if len(rs) <= 6 else f" (+{len(rs)-6})"
+                print(f"    {ifname:<16} {len(rs):>4} mac(s): {macs}{more}")
+            if len(byport) > 20:
+                print(f"    ... (+{len(byport)-20} more ports)")
+            sys.exit(0)
+
+        elig = l2task.eligible()
+        print(f"l2: discovering {len(elig)} switch(es) ...")
+        l2task.run()
+        summ = l2task.summary()
+        total = sum(summ.values())
+        for name in sorted(summ, key=lambda n: -summ[n])[:20]:
+            print(f"  {name:<28} {summ[name]} MAC(s)")
+        if len(summ) > 20:
+            print(f"  ... (+{len(summ)-20} more)")
+        print(f"l2: {total} MAC(s) across {len(summ)} switch(es).")
+        sys.exit(0)
+
     # Audit log — append-only file separate from journald.
     # Operator-controllable path with the same [agent] block as the
     # state file and master key. Failures are non-fatal: audit.install
@@ -681,6 +744,16 @@ def main() -> None:
                  interface_task.poll_seconds, interface_task.max_workers,
                  interface_task.physical_only)
 
+    # Layer-2 discovery (MAC/FDB, later LLDP/CDP) — optional, off by default.
+    # Slow cadence; polls every known switch when [l2] include is blank.
+    l2_task = None
+    if cfg.getboolean("l2", "enabled", fallback=False):
+        from aruba_agent.tasks.l2_discovery import L2DiscoveryTask
+        l2_task = L2DiscoveryTask(cfg, state, snmp_agent, _store)
+        scheduler.add_interval(l2_task.poll_seconds, l2_task.run)
+        log.info("L2 discovery scheduled every %ds (max_workers=%d)",
+                 l2_task.poll_seconds, l2_task.max_workers)
+
     # Web-server health check (VPN controller) — optional, off by default.
     if cfg.getboolean("webserver_health", "enabled", fallback=False):
         from aruba_agent.tasks.webserver_health import WebServerHealthTask
@@ -714,6 +787,7 @@ def main() -> None:
         monitor_manager   = manager,
         manual_hosts_path = _manual_hosts_path,
         interface_task    = interface_task,
+        l2_task           = l2_task,
     )
     start_web(flask_app, host=web_host, port=web_port, threads=web_threads)
 

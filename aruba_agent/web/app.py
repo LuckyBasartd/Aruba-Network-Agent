@@ -170,6 +170,7 @@ def create_app(
                                # restart to see their new host monitored.
     manual_hosts_path: Optional[str] = None,
     interface_task = None,   # InterfacePollTask — current per-interface stats
+    l2_task = None,          # L2DiscoveryTask — MAC/FDB search
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.config["JSON_SORT_KEYS"] = False
@@ -3529,6 +3530,41 @@ def create_app(
         if state.switches.get(name) is None:
             abort(404)
         return jsonify({"enabled": True, "interfaces": interface_task.get_current(name)})
+
+    @app.get("/api/mac")
+    @require_login
+    def api_mac_search():
+        """Search the bridge FDB for a MAC (any spelling). ?all=1 shows every
+        learned location; default collapses to the edge port per switch."""
+        from aruba_agent import fdb as _fdb
+        q = (request.args.get("q") or "").strip()
+        show_all = request.args.get("all") in ("1", "true", "yes")
+        canon = _fdb.normalize_mac(q)
+        if l2_task is None:
+            return jsonify({"enabled": False, "query": q, "results": []})
+        if not canon:
+            return jsonify({"enabled": True, "query": q, "valid": False, "results": []})
+        results = l2_task.search(canon, edge_only=not show_all)
+        return jsonify({"enabled": True, "query": q, "valid": True,
+                        "mac": _fdb.format_mac(canon), "results": results})
+
+    @app.get("/tools/mac")
+    @require_login
+    def mac_finder():
+        """MAC lookup results page (target of the top-nav search box)."""
+        from aruba_agent import fdb as _fdb
+        q = (request.args.get("q") or "").strip()
+        show_all = request.args.get("all") in ("1", "true", "yes")
+        canon = _fdb.normalize_mac(q) if q else None
+        results, valid = [], (canon is not None)
+        if l2_task is not None and canon:
+            results = l2_task.search(canon, edge_only=not show_all)
+        return render_template("mac_finder.html",
+                               q=q, valid=valid, show_all=show_all,
+                               mac=_fdb.format_mac(canon) if canon else q,
+                               results=results,
+                               l2_enabled=(l2_task is not None),
+                               **_settings_context())
 
     @app.get("/api/backups/<hostname>/diff")
     @require_login

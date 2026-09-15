@@ -17,6 +17,11 @@
   .na-help:hover{color:#58a6ff;}
   .na-logout{color:#8b949e;text-decoration:none;font-size:15px;}
   .na-logout:hover{color:#f85149;}
+  .na-search{position:relative;}
+  .na-search input{background:#0d1117;border:1px solid #30363d;border-radius:7px;
+    color:#c9d1d9;font-size:13px;padding:5px 10px 5px 28px;width:170px;transition:width .15s,border-color .15s;}
+  .na-search input:focus{outline:none;border-color:#58a6ff;width:210px;}
+  .na-search .bi{position:absolute;left:9px;top:50%;transform:translateY(-50%);color:#6e7681;font-size:13px;pointer-events:none;}
   .na-crumb{font-size:13px;color:#6e7681;padding:14px 20px 0;}
   .na-crumb a{color:#8b949e;text-decoration:none;}
   .na-crumb a:hover{color:#58a6ff;}
@@ -31,6 +36,11 @@
   </div>
   <div class="na-right">
     {% if current_user %}
+    <form class="na-search" action="{{ url_for('mac_finder') }}" method="get" role="search">
+      <i class="bi bi-search"></i>
+      <input type="search" name="q" placeholder="Find MAC / device…" autocomplete="off"
+             title="Search the MAC forwarding table" value="{{ request.args.get('q','') if request.endpoint=='mac_finder' else '' }}">
+    </form>
     <a class="na-help" href="{{ url_for('help_page') }}" title="Help &amp; troubleshooting"><i class="bi bi-question-circle"></i></a>
     <span class="na-user"><i class="bi bi-person-circle"></i>{{ current_user }}{% if auth_method %} <span style="opacity:.7">({{ auth_method }})</span>{% endif %}</span>
     <a class="na-logout" href="{{ url_for('logout') }}" title="Sign out"><i class="bi bi-box-arrow-right"></i></a>
