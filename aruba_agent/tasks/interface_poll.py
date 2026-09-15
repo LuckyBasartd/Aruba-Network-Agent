@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 from aruba_agent import interfaces as ifc
+from aruba_agent.snmp import close_thread_event_loop
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +89,14 @@ class InterfacePollTask:
     # ── polling ───────────────────────────────────────────────────────────────
 
     def _poll_one(self, sw) -> int:
+        try:
+            return self._poll_one_inner(sw)
+        finally:
+            # Pool worker threads are recreated each sweep; close this thread's
+            # asyncio loop so its socketpair fds don't leak (see snmp.py).
+            close_thread_event_loop()
+
+    def _poll_one_inner(self, sw) -> int:
         if self.jitter_seconds > 0:
             time.sleep(random.uniform(0, self.jitter_seconds))
         rows = ifc.collect(self.snmp, sw.host,

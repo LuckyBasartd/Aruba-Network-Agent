@@ -68,6 +68,31 @@ def _ensure_thread_event_loop() -> None:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
+def close_thread_event_loop() -> None:
+    """Close and unbind the current thread's asyncio loop, freeing the
+    self-pipe socketpair fds it holds.
+
+    Call this at the end of a *short-lived* worker (e.g. a ThreadPoolExecutor
+    task in the interface/L2 polls): those threads are recreated every sweep,
+    so a loop that is never closed leaks 2 fds per worker per sweep and
+    eventually exhausts the process's file descriptors. Do NOT call it from the
+    long-lived one-thread-per-switch monitors — they reuse their loop for the
+    life of the thread. Best-effort and never raises."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        return
+    try:
+        if loop is not None and not loop.is_closed():
+            loop.close()
+    except Exception:
+        pass
+    try:
+        asyncio.set_event_loop(None)
+    except Exception:
+        pass
+
+
 # ─── standard MIB-2 OIDs ─────────────────────────────────────────────────────
 # 1.3.6.1.2.1.1 = SNMPv2-MIB::system
 

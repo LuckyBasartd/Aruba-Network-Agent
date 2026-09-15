@@ -20,6 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from aruba_agent import fdb
+from aruba_agent.snmp import close_thread_event_loop
 from aruba_agent.tasks.interface_poll import _csv, _matches
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,12 @@ class L2DiscoveryTask:
     # ── discovery ───────────────────────────────────────────────────────────────
 
     def _discover_one(self, sw) -> int:
+        try:
+            return self._discover_one_inner(sw)
+        finally:
+            close_thread_event_loop()   # free the worker thread's loop fds
+
+    def _discover_one_inner(self, sw) -> int:
         if self.jitter_seconds > 0:
             time.sleep(random.uniform(0, self.jitter_seconds))
         recs = fdb.collect(self.snmp, sw.host,

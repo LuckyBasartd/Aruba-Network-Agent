@@ -224,3 +224,24 @@ def test_bulk_walk_empty_bases_returns_empty(monkeypatch):
     _install_fake_pysnmp(monkeypatch, mib)
     agent = _agent()
     assert agent.bulk_walk("10.40.0.6", []) == {}
+
+
+def test_close_thread_event_loop_frees_loop():
+    """close_thread_event_loop() must close and unbind a loop created by
+    _ensure_thread_event_loop, so ThreadPoolExecutor workers don't leak fds."""
+    import asyncio, threading
+    from aruba_agent import snmp as _snmp
+
+    captured = {}
+    def worker():
+        _snmp._ensure_thread_event_loop()
+        loop = asyncio.get_event_loop()
+        captured["loop"] = loop
+        assert not loop.is_closed()
+        _snmp.close_thread_event_loop()
+        captured["closed"] = loop.is_closed()
+        # a second call is a harmless no-op (loop already gone)
+        _snmp.close_thread_event_loop()
+
+    t = threading.Thread(target=worker); t.start(); t.join()
+    assert captured["closed"] is True
