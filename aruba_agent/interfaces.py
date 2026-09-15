@@ -31,6 +31,7 @@ OIDS = {
     "in_disc":     "1.3.6.1.2.1.2.2.1.13",
     "out_disc":    "1.3.6.1.2.1.2.2.1.19",
     "if_type":     "1.3.6.1.2.1.2.2.1.3",        # 6 = ethernetCsmacd
+    "fcs_err":     "1.3.6.1.2.1.10.7.2.1.3",     # dot3StatsFCSErrors (real CRC)
 }
 
 # The columns we actually walk (skip alias if you want fewer varbinds).
@@ -78,6 +79,7 @@ def assemble_rows(columns: Dict[str, Dict[str, str]],
             "hc_in":      _int(columns.get("hc_in", {}).get(idx), 0),
             "hc_out":     _int(columns.get("hc_out", {}).get(idx), 0),
             "in_err":     _int(columns.get("in_err", {}).get(idx), 0),
+            "crc_err":    _int(columns.get("fcs_err", {}).get(idx), 0),
             "out_err":    _int(columns.get("out_err", {}).get(idx), 0),
             "in_disc":    _int(columns.get("in_disc", {}).get(idx), 0),
             "out_disc":   _int(columns.get("out_disc", {}).get(idx), 0),

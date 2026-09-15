@@ -67,3 +67,20 @@ def test_collect_snmp_failure_returns_none():
     class DeadSnmp:
         def bulk_walk(self, *a, **k): return None
     assert ifc.collect(DeadSnmp(), "x") is None
+
+
+def test_crc_err_from_fcs_not_iferrors():
+    """CRC column must come from dot3StatsFCSErrors, independent of ifInErrors.
+    WAP jumbo-frame negotiation bumps ifInErrors (giants) but not FCS, so a
+    healthy AP port shows in_err>0 while crc_err==0."""
+    cols = {
+        "if_name": {"1": "1/1/1"}, "if_type": {"1": "6"},
+        "oper": {"1": "1"}, "admin": {"1": "1"}, "high_speed": {"1": "5000"},
+        "in_err":  {"1": "93440"},        # giants from AP jumbo negotiation
+        "fcs_err": {"1": "0"},            # no real CRC errors
+    }
+    r = ifc.assemble_rows(cols)["1"]
+    assert r["in_err"] == 93440 and r["crc_err"] == 0
+    # a port with genuine CRC errors surfaces them
+    cols["fcs_err"] = {"1": "17"}
+    assert ifc.assemble_rows(cols)["1"]["crc_err"] == 17
