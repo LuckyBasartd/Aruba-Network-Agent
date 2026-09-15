@@ -339,21 +339,39 @@ alert_policy = critical       # critical | critical+linkdown | none
 ```
 
 **Privileged port (162).** The agent runs as non-root, so binding 162 needs a
-capability or a redirect. Pick one:
+capability. Use a **systemd AmbientCapabilities override** — do NOT use `setcap`
+on the python binary: the unit has `NoNewPrivileges=yes`, and the kernel refuses
+to exec a file-capability binary under that, so the service dies with exit
+code 126.
 
 ```bash
-# A) grant the venv python the capability (note: setcap needs the REAL binary,
-#    not a symlink — resolve it first)
-PYBIN=$(readlink -f /opt/aruba-agent/venv/bin/python)
-sudo setcap 'cap_net_bind_service=+ep' "$PYBIN"
-sudo systemctl restart aruba-agent
+# Correct: grant the capability via the unit (works with NoNewPrivileges)
+sudo systemctl edit aruba-agent
+#   add these two lines, save:
+#     [Service]
+#     AmbientCapabilities=CAP_NET_BIND_SERVICE
+sudo systemctl daemon-reload && sudo systemctl restart aruba-agent
 
-# B) or listen high + redirect 162 -> 1620 (set [traps] port = 1620)
-sudo iptables -t nat -A PREROUTING -p udp --dport 162 -j REDIRECT --to-ports 1620
+# If you previously ran setcap, REMOVE it (it causes the exit-126 crash loop):
+sudo setcap -r "$(readlink -f /opt/aruba-agent/venv/bin/python)"
 ```
+
+Confirm: `journalctl -u aruba-agent | grep -i 'trap receiver'` should show
+`Trap receiver listening on 0.0.0.0:162` (it logs late in startup — give it
+~30s). Note: `ss -lunp | grep 162` is a quick check but the pysnmp UDP socket
+doesn't always show a tidy `:162` line; the log line is the source of truth.
+
+**Alternative (no privileges):** set `[traps] port = 16200` and redirect —
+`sudo iptables -t nat -A PREROUTING -p udp --dport 162 -j REDIRECT --to-ports 16200`
+(save the rule so it survives reboot). Test the listener directly with
+`snmptrap -v2c -c public 127.0.0.1:16200 ...`.
 
 If it can't bind you'll see a clear `cannot bind ...:162` line in the log and
 traps stay disabled (the rest of the agent runs normally).
+
+**Received traps don't log by default** unless you're on the build with the
+receipt log — verify reception via `db.traps` or the Traps page:
+`mongosh --quiet aruba_agent --eval 'db.traps.find().sort({ts:-1}).limit(3).toArray()'`
 
 **Switch side** — point devices at the agent and enable traps (syntax varies):
 

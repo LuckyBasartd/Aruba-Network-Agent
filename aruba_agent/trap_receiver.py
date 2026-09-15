@@ -96,12 +96,17 @@ class TrapReceiver:
         except Exception as exc:
             log.error("trap: save failed (%s)", exc)
 
+        alerted = False
         if traps.should_alert(rec, self.alert_policy) and self._rate_ok(switch, rec["name"]):
+            alerted = True
             subj = f"[Network Agent] {rec['severity'].upper()} trap: {rec['name']} on {switch}"
             try:
                 self.notifier.send(subj, message)
             except Exception as exc:
                 log.error("trap: alert email failed (%s)", exc)
+        log.info("trap: %s from %s (%s) severity=%s%s",
+                 rec["name"], source_ip, switch, rec["severity"],
+                 " -> ALERT emailed" if alerted else "")
         return doc
 
     def _summarize(self, rec: dict, switch: str, varbinds) -> str:
