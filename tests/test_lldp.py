@@ -71,3 +71,32 @@ def test_collect_snmp_failure_returns_none():
     class Dead:
         def bulk_walk(self, *a, **k): return None
     assert lldp.collect(Dead(), "x") is None
+
+
+def test_text_fallback_classifies_phones_without_cap_bits():
+    # Yealink SIP-T31P: no capability bits advertised -> classify by sysName
+    cols = {
+        lldp.OID_LLDP_LOC_PORTID:  {"25": "1/1/25"},
+        lldp.OID_LLDP_REM_SYSNAME: {"0.25.1": "SIP-T31P"},
+        lldp.OID_LLDP_REM_CAP_ENA: {"0.25.1": ""},          # empty caps
+    }
+    r = lldp.assemble_lldp(cols)[0]
+    assert r["device_type"] == "voip-phone"
+
+
+def test_text_fallback_ap_and_switch():
+    assert lldp.classify_by_text("AP-315-lobby", "ArubaOS (MODEL: 315)") == "wireless-ap"
+    assert lldp.classify_by_text("core-sw1", "Aruba JL658A 6300M") == "switch"
+    assert lldp.classify_by_text("mystery-box", "") is None
+    # capability bits still win when present (not overridden by text)
+    assert lldp.classify_lldp("0x2000") == "switch"
+
+
+def test_refine_keeps_confident_cap_type():
+    # AP by caps stays AP even if name is ambiguous
+    cols = {
+        lldp.OID_LLDP_LOC_PORTID:  {"5": "1/1/5"},
+        lldp.OID_LLDP_REM_SYSNAME: {"0.5.1": "device5"},
+        lldp.OID_LLDP_REM_CAP_ENA: {"0.5.1": "0x1000"},     # WLAN AP bit
+    }
+    assert lldp.assemble_lldp(cols)[0]["device_type"] == "wireless-ap"

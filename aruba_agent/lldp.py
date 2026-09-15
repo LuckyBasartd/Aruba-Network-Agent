@@ -120,6 +120,40 @@ def classify_cdp(caps_pretty: str) -> str:
     return "other"
 
 
+# Name/description hints for when a neighbor doesn't advertise capability bits
+# (many VoIP phones and some APs don't set lldpRemSysCapEnabled). Ordered:
+# first match wins, so put the most specific classes first.
+_TEXT_HINTS = [
+    ("voip-phone", ("sip-", "sip ", "yealink", "polycom", "grandstream", "snom",
+                    "cisco ip phone", "ip phone", "avaya", "phone", "voip",
+                    "sep")),               # SEP = Cisco phone device-id prefix
+    ("wireless-ap", ("aruba ap", "ap-", "ap ", "instant ap", " iap", "aironet",
+                     "access point", "wireless ap")),
+    ("router",   ("router", "gateway", "mikrotik", "vyos", "edgerouter", "isr",
+                  "asr")),
+    ("switch",   ("switch", "procurve", "aruba-os", "arubaos-switch", "catalyst",
+                  "nexus", "aruba jl", "aruba cx", "6300", "6400", "2930", "2540")),
+]
+
+
+def classify_by_text(*texts: str) -> Optional[str]:
+    """Best-effort device type from a neighbor's sysName/sysDesc/platform."""
+    blob = " ".join(t for t in texts if t).lower()
+    if not blob:
+        return None
+    for dtype, needles in _TEXT_HINTS:
+        if any(n in blob for n in needles):
+            return dtype
+    return None
+
+
+def _refine(dtype: str, *texts: str) -> str:
+    """Keep a confident capability-based type; otherwise try the name/desc."""
+    if dtype in ("unknown", "other"):
+        return classify_by_text(*texts) or dtype
+    return dtype
+
+
 def _local_port_num(suffix: str) -> Optional[str]:
     """lldpRemTable suffix = timemark.localportnum.remindex -> localportnum."""
     parts = suffix.split(".")
@@ -146,7 +180,9 @@ def assemble_lldp(columns: Dict[str, Dict[str, str]]) -> List[dict]:
             "neighbor":    (name or "").strip(),
             "rem_port":    (portid.get(suffix) or portdsc.get(suffix) or "").strip(),
             "rem_desc":    (sysdesc.get(suffix) or "").strip(),
-            "device_type": classify_lldp(capena.get(suffix, "")),
+            "device_type": _refine(classify_lldp(capena.get(suffix, "")),
+                                   (name or ""), (sysdesc.get(suffix) or ""),
+                                   (portid.get(suffix) or "")),
         })
     return out
 
@@ -168,7 +204,8 @@ def assemble_cdp(columns: Dict[str, Dict[str, str]]) -> List[dict]:
             "neighbor":    (name or "").strip(),
             "rem_port":    (devport.get(suffix) or "").strip(),
             "rem_desc":    (platform.get(suffix) or "").strip(),
-            "device_type": classify_cdp(caps.get(suffix, "")),
+            "device_type": _refine(classify_cdp(caps.get(suffix, "")),
+                                   (name or ""), (platform.get(suffix) or "")),
         })
     return out
 
