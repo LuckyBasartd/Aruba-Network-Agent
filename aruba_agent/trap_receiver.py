@@ -177,6 +177,27 @@ class TrapReceiver:
             log.error("Trap receiver: pysnmp trap API unavailable (%s) — traps disabled", exc)
             return
 
+        # pysnmp's asyncio openServerMode binds lazily on the loop, so a
+        # PermissionError on a privileged port is swallowed and the "listening"
+        # log lies. Pre-bind a plain socket to surface the real error up front.
+        import socket as _sock
+        try:
+            _t = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+            _t.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+            _t.bind((self.bind_address, self.port))
+            _t.close()
+        except PermissionError:
+            log.error("Trap receiver: permission denied binding UDP %d "
+                      "(privileged port). Grant CAP_NET_BIND_SERVICE via a "
+                      "systemd AmbientCapabilities override, or set a high "
+                      "[traps] port (e.g. 16200) + an iptables 162->port "
+                      "redirect. Traps DISABLED.", self.port)
+            return
+        except OSError as exc:
+            log.error("Trap receiver: cannot bind %s:%d (%s). Traps DISABLED.",
+                      self.bind_address, self.port, exc)
+            return
+
         try:
             snmp_engine = engine.SnmpEngine()
             self._engine = snmp_engine
@@ -185,10 +206,8 @@ class TrapReceiver:
                     snmp_engine, udp.domainName,
                     udp.UdpTransport().openServerMode((self.bind_address, self.port)))
             except Exception as exc:
-                log.error("Trap receiver: cannot bind %s:%d (%s). UDP %d is "
-                          "privileged — grant CAP_NET_BIND_SERVICE or use a high "
-                          "[traps] port with a redirect.",
-                          self.bind_address, self.port, exc, self.port)
+                log.error("Trap receiver: cannot bind %s:%d (%s).",
+                          self.bind_address, self.port, exc)
                 return
 
             # v2c communities
