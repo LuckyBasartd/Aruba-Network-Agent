@@ -3524,12 +3524,28 @@ def create_app(
     @app.get("/api/switch/<name>/interfaces")
     @require_login
     def api_switch_interfaces(name: str):
-        """Current per-interface stats for a switch (from the last poll)."""
+        """Current per-interface stats for a switch (from the last poll),
+        enriched with the MAC(s) learned on each port from the L2 FDB."""
         if interface_task is None:
             return jsonify({"enabled": False, "interfaces": []})
         if state.switches.get(name) is None:
             abort(404)
-        return jsonify({"enabled": True, "interfaces": interface_task.get_current(name)})
+        rows = interface_task.get_current(name)
+        # Join per-port MACs from the bridge FDB (L2 discovery). Cheap: one
+        # indexed load_fdb per request; empty/no-op when L2 isn't enabled.
+        by_if: dict = {}
+        if l2_task is not None:
+            try:
+                for r in (l2_task.store.load_fdb(name) or []):
+                    by_if.setdefault(str(r.get("ifindex")), []).append(r.get("mac_fmt"))
+            except Exception:
+                by_if = {}
+        enriched = []
+        for row in rows:
+            macs = by_if.get(str(row.get("ifIndex")), [])
+            enriched.append({**row, "macs": macs, "mac_count": len(macs)})
+        return jsonify({"enabled": True, "l2": l2_task is not None,
+                        "interfaces": enriched})
 
     @app.get("/api/mac")
     @require_login
