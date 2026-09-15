@@ -109,6 +109,8 @@ aruba_agent/
   interfaces.py              SNMP ifXTable collector: util + CRC (dot3StatsFCSErrors), pure
   fdb.py                     bridge MAC table collector (Q-BRIDGE + fallback), pure
   lldp.py                    LLDP/CDP neighbor collector + device-type classifier, pure
+  traps.py                   SNMP trap classifier + alert-policy (pure)
+  trap_receiver.py           UDP-162 trap listener (pysnmp ntfrcv v2c/v3) + handle_trap
   secrets_store.py           Fernet encrypt/decrypt + redact()
   snmp.py / snmp_profiles.py SNMPv3 (pysnmp) + SnmpProfile registry
   manual_hosts.py            manually-pinned hosts/profiles
@@ -452,6 +454,14 @@ SolarWinds-parity port monitoring, all SNMP, both off by default, both poll
   section each (DuplicateSectionError otherwise); ~4-8 GB RAM for 481 switches;
   pool workers must close their asyncio loop per sweep (fd leak, fixed).
   See TROUBLESHOOTING.md "Interface & L2 monitoring" + "Performance".
+
+**SNMP trap receiver** (`trap_receiver.py` + `traps.py`, `[traps]`, off by
+default): UDP-162 listener (pysnmp NotificationReceiver, v2c communities + v3
+USM users from named profiles) in its own thread. `handle_trap()` (pure,
+tested) classifies -> maps source IP to a switch -> stores (Mongo `traps`,
+TTL-bounded) -> emails on CRITICAL only (system/auth/hardware; link changes
+store-only), rate-limited per (switch,trap). Web: /traps page + /api/traps.
+Port 162 is privileged — setcap or redirect (see TROUBLESHOOTING.md).
 
 ---
 

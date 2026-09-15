@@ -101,7 +101,9 @@ Cheapest-highest-value first:
     the switch page, top-nav MAC finder (edge-port-first). `fdb.py` + Mongo `fdb`.
 - ⬜ **Threshold alerting engine** — generic CPU/mem/temp/PoE/interface-% rules
     → alerts (generalize beyond up/down + subnet + web-server).
-- ⬜ **SNMP trap receiver** — PSU/temp/fan/VSF/LAG events.
+- ✅ **SNMP trap receiver** — UDP-162 v2c/v3 listener; classifies PSU/temp/fan/
+    VSF/link/auth traps, stores them (Traps page), emails on critical only
+    (rate-limited). `trap_receiver.py` + `traps.py`, `[traps]`.
 - ⬜ **Syslog collector** — ingest + search device syslog.
 - 🟡 **Topology** — LLDP/CDP neighbor discovery + per-port device-type
     classification **done** (`lldp.py`, folded into the `[l2]` sweep; Neighbor

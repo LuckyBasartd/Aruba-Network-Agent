@@ -324,6 +324,67 @@ grep -n '^\[' /etc/aruba-agent/config.ini | sort -t: -k2
 
 ---
 
+## SNMP trap receiver
+
+Listens on UDP 162 for v2c/v3 traps, classifies + stores them, and emails on
+critical ones. Off by default (`[traps] enabled = false`).
+
+```ini
+[traps]
+enabled = true
+port = 162
+communities = public          # v2c community the switches send with
+v3_profiles =                 # or SNMP profile name(s) for authenticated v3
+alert_policy = critical       # critical | critical+linkdown | none
+```
+
+**Privileged port (162).** The agent runs as non-root, so binding 162 needs a
+capability or a redirect. Pick one:
+
+```bash
+# A) grant the venv python the capability (note: setcap needs the REAL binary,
+#    not a symlink — resolve it first)
+PYBIN=$(readlink -f /opt/aruba-agent/venv/bin/python)
+sudo setcap 'cap_net_bind_service=+ep' "$PYBIN"
+sudo systemctl restart aruba-agent
+
+# B) or listen high + redirect 162 -> 1620 (set [traps] port = 1620)
+sudo iptables -t nat -A PREROUTING -p udp --dport 162 -j REDIRECT --to-ports 1620
+```
+
+If it can't bind you'll see a clear `cannot bind ...:162` line in the log and
+traps stay disabled (the rest of the agent runs normally).
+
+**Switch side** — point devices at the agent and enable traps (syntax varies):
+
+```
+# Aruba CX
+snmp-server host <agent-ip> trap version v2c community <community>
+snmpv3 ... (for v3)
+# ProCurve / AOS-Switch
+snmp-server host <agent-ip> community "<community>"
+snmp-server enable traps
+```
+
+**Verify:**
+
+```bash
+# Is the agent listening?
+sudo ss -lunp | grep ':162'
+# Send a test coldStart from anywhere with net-snmp:
+snmptrap -v2c -c <community> <agent-ip> '' 1.3.6.1.6.3.1.1.5.1
+# Watch it arrive
+sudo journalctl -u aruba-agent -f | grep -i trap
+# Or check Mongo / the Traps page (nav bar -> Traps)
+mongosh --quiet aruba_agent --eval 'db.traps.find().sort({ts:-1}).limit(5).toArray()'
+```
+
+Trap history is bounded by the same `[store] metrics_retention_days` TTL.
+Critical-alert emails are de-duplicated per (switch, trap) within
+`alert_dedup_seconds` so a flapping component can't spam.
+
+---
+
 ## Deploy / update (reference)
 
 ```bash
