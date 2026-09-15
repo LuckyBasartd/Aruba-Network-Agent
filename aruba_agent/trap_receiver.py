@@ -54,6 +54,8 @@ class TrapReceiver:
         self._thread = None
         self._recent: Dict[Tuple[str, str], float] = {}
         self._lock = threading.Lock()
+        self._v3_users: list = []        # [(user, authProto, authKey, privProto, privKey)]
+        self._learned_engines: set = set()   # engine IDs we've registered users for
 
     # ── host → switch name ──────────────────────────────────────────────────────
 
@@ -215,8 +217,16 @@ class TrapReceiver:
                 if comm:
                     config.addV1System(snmp_engine, f"area-{i}", comm)
 
-            # v3 users from the named SNMP profiles (reuse polling creds)
-            self._add_v3_users(snmp_engine, config)
+            # v3 users from the named SNMP profiles (reuse polling creds).
+            # Register for the local engine now, and learn each switch's
+            # remote engine ID from its first (failed) trap via the observer.
+            self._build_v3_users()
+            self._register_v3_users(snmp_engine, config)
+            try:
+                snmp_engine.observer.registerObserver(
+                    self._v3_learn, 'rfc3412.prepareDataElements:sm-failure')
+            except Exception as exc:
+                log.warning('Trap receiver: could not register v3 learn observer (%s)', exc)
 
             ntfrcv.NotificationReceiver(snmp_engine, self._cb)
             snmp_engine.transportDispatcher.jobStarted(1)
@@ -229,18 +239,15 @@ class TrapReceiver:
         except Exception as exc:
             log.error("Trap receiver crashed: %s", exc)
 
-    def _add_v3_users(self, snmp_engine, config) -> None:
+    def _build_v3_users(self) -> None:
+        """Resolve [traps] v3_profiles into concrete USM user specs (decrypted)."""
+        self._v3_users = []
         if not self.v3_profiles:
             return
         try:
             from aruba_agent.snmp_profiles import from_config
-            reg = from_config(self._cfg)
-        except Exception as exc:
-            log.warning("Trap receiver: could not load SNMP profiles for v3 (%s)", exc)
-            return
-        # map our protocol names to pysnmp objects
-        try:
             from pysnmp.entity import config as _c
+            reg = from_config(self._cfg)
             auth_map = {"MD5": _c.usmHMACMD5AuthProtocol, "SHA": _c.usmHMACSHAAuthProtocol,
                         "SHA256": _c.usmHMAC192SHA256AuthProtocol,
                         "SHA512": _c.usmHMAC384SHA512AuthProtocol,
@@ -248,22 +255,62 @@ class TrapReceiver:
             priv_map = {"DES": _c.usmDESPrivProtocol, "AES128": _c.usmAesCfb128Protocol,
                         "AES256": _c.usmAesCfb256Protocol, "NONE": _c.usmNoPrivProtocol}
         except Exception as exc:
-            log.warning("Trap receiver: pysnmp USM protocols unavailable (%s)", exc)
+            log.warning("Trap receiver: could not prepare v3 users (%s)", exc)
             return
         for pname in self.v3_profiles:
             prof = reg.get(pname)
             if prof is None:
                 continue
             c = prof.creds
+            self._v3_users.append((
+                c.username,
+                auth_map.get((c.auth_protocol or "SHA").upper(), auth_map["SHA"]),
+                c.auth_password or "",
+                priv_map.get((c.priv_protocol or "AES128").upper(), priv_map["AES128"]),
+                c.priv_password or "",
+            ))
+
+    def _register_v3_users(self, snmp_engine, config, security_engine_id=None) -> int:
+        """Register all resolved v3 users, optionally bound to a specific
+        (remote) securityEngineId. Returns how many were added."""
+        n = 0
+        for (user, authp, authk, privp, privk) in self._v3_users:
             try:
-                config.addV3User(
-                    snmp_engine, c.username,
-                    auth_map.get((c.auth_protocol or "SHA").upper(), auth_map["SHA"]),
-                    c.auth_password or "",
-                    priv_map.get((c.priv_protocol or "AES128").upper(), priv_map["AES128"]),
-                    c.priv_password or "")
+                if security_engine_id is not None:
+                    config.addV3User(snmp_engine, user, authp, authk, privp, privk,
+                                     securityEngineId=security_engine_id)
+                else:
+                    config.addV3User(snmp_engine, user, authp, authk, privp, privk)
+                n += 1
             except Exception as exc:
-                log.warning("Trap receiver: could not add v3 user %r (%s)", pname, exc)
+                log.debug("Trap receiver: addV3User(%s) failed (%s)", user, exc)
+        return n
+
+    def _v3_learn(self, snmp_engine, execpoint, variables, cbCtx) -> None:
+        """pysnmp observer: on a security failure (typically UnknownSecurityName
+        because a v3 trap carries the *sender's* engine ID, which we can't know
+        in advance), learn that engine ID and register our v3 user(s) against
+        it so subsequent traps from that switch authenticate. Runs in the
+        dispatcher thread, so addV3User here is thread-safe."""
+        try:
+            eid = variables.get("securityEngineId") or variables.get("contextEngineId")
+            if eid is None:
+                si = variables.get("statusInformation")
+                if isinstance(si, dict):
+                    eid = si.get("contextEngineId") or si.get("securityEngineId")
+            if eid is None:
+                return
+            key = bytes(eid)
+            if not key or key in self._learned_engines:
+                return
+            self._learned_engines.add(key)
+            from pysnmp.entity import config as _c
+            added = self._register_v3_users(snmp_engine, _c, security_engine_id=eid)
+            pretty = eid.prettyPrint() if hasattr(eid, "prettyPrint") else key.hex()
+            log.info("Trap receiver: learned v3 engine %s — registered %d user(s); "
+                     "subsequent traps from it will authenticate", pretty, added)
+        except Exception as exc:
+            log.debug("Trap receiver: v3 learn observer error: %s", exc)
 
     def _cb(self, snmp_engine, state_ref, ctx_engine_id, ctx_name, var_binds, cb_ctx):
         """pysnmp NotificationReceiver callback. Extract source + varbinds and
