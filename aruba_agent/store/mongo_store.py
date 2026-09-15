@@ -37,6 +37,7 @@ class MongoStore:
                  runtime_collection: str = "runtime",
                  metrics_collection: str = "metrics",
                  counters_collection: str = "if_counters",
+                 fdb_collection: str = "fdb",
                  server_selection_timeout_ms: int = 5000,
                  tls: bool = False) -> None:
         self._uri = uri
@@ -45,6 +46,8 @@ class MongoStore:
         self._runtime_name = runtime_collection
         self._metrics_name = metrics_collection
         self._counters_name = counters_collection
+        self._fdb_name = fdb_collection
+        self._fdb_indexed = False
         self._client = None
         self._ReplaceOne = None
         self.error: str = ""
@@ -203,6 +206,72 @@ class MongoStore:
         if not doc:
             return None
         return doc.get("counters") or {}
+
+    # ── MAC forwarding database (bridge FDB) ──────────────────────────────────
+
+    def _ensure_fdb_index(self, db) -> None:
+        if self._fdb_indexed:
+            return
+        try:
+            db[self._fdb_name].create_index("mac")
+            db[self._fdb_name].create_index("device")
+            self._fdb_indexed = True
+        except Exception as exc:
+            log.debug("MongoStore: fdb index create failed (%s)", exc)
+
+    def save_fdb(self, device: str, records: list, ts=None) -> None:
+        """Replace one device's FDB rows (one doc per learned MAC/port)."""
+        db = self._db()
+        if db is None:
+            return
+        when = ts or datetime.now(timezone.utc)
+        try:
+            self._ensure_fdb_index(db)
+            coll = db[self._fdb_name]
+            coll.delete_many({"device": device})
+            docs = []
+            for r in (records or []):
+                docs.append({
+                    "device": device, "mac": r.get("mac"),
+                    "mac_fmt": r.get("mac_fmt"), "vlan": r.get("vlan"),
+                    "ifindex": r.get("ifindex"), "ifname": r.get("ifname"),
+                    "port_mac_count": r.get("port_mac_count"), "ts": when,
+                })
+            if docs:
+                coll.insert_many(docs, ordered=False)
+        except Exception as exc:
+            log.error("MongoStore: save_fdb failed for %s (%s)", device, exc)
+
+    def search_fdb(self, mac: str, limit: int = 200) -> list:
+        db = self._db()
+        if db is None:
+            return []
+        try:
+            cur = (db[self._fdb_name].find({"mac": mac})
+                   .sort("port_mac_count", 1).limit(int(limit)))
+            out = []
+            for d in cur:
+                d.pop("_id", None)
+                out.append(d)
+            return out
+        except Exception as exc:
+            log.error("MongoStore: search_fdb failed (%s)", exc)
+            return []
+
+    def load_fdb(self, device: str) -> list:
+        db = self._db()
+        if db is None:
+            return []
+        try:
+            cur = db[self._fdb_name].find({"device": device}).sort("ifindex", 1)
+            out = []
+            for d in cur:
+                d.pop("_id", None)
+                out.append(d)
+            return out
+        except Exception as exc:
+            log.error("MongoStore: load_fdb failed (%s)", exc)
+            return []
 
     def close(self) -> None:
         if self._client is not None:

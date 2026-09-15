@@ -75,5 +75,15 @@ class JsonStore:
     def load_counters(self, device):
         return None
 
+    # FDB (MAC table) is Mongo-only, like metrics/counters.
+    def save_fdb(self, device, records, ts=None):
+        return None
+
+    def search_fdb(self, mac, limit=200):
+        return []
+
+    def load_fdb(self, device):
+        return []
+
     def close(self) -> None:
         pass

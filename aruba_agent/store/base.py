@@ -45,3 +45,18 @@ class Store(Protocol):
         """Return the last persisted counter snapshot for one device, or None.
         No-op (None) on backends without support."""
         ...
+
+    def save_fdb(self, device: str, records: list, ts=None) -> None:
+        """Replace the persisted MAC forwarding-database rows for one device.
+        records: [{mac, mac_fmt, vlan, ifindex, ifname, port_mac_count}].
+        No-op on backends without support."""
+        ...
+
+    def search_fdb(self, mac: str, limit: int = 200) -> list:
+        """Find every device/port that has learned ``mac`` (canonical 12-hex),
+        edge port first (lowest port_mac_count). [] on unsupported backends."""
+        ...
+
+    def load_fdb(self, device: str) -> list:
+        """Return all FDB rows for one device. [] on unsupported backends."""
+        ...
