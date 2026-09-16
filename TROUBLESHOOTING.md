@@ -414,6 +414,42 @@ Critical-alert emails are de-duplicated per (switch, trap) within
 
 ---
 
+## Threshold alerting (health + interface metrics)
+
+Rules (Settings -> Thresholds, or the **Alerts** nav item) watch a metric and
+email on sustained breach + recovery. Off by default.
+
+```ini
+[health]        # CPU/mem/temperature poll that feeds device-health rules
+enabled = true
+poll_seconds = 300
+
+[thresholds]    # the alerting engine
+enabled = true
+eval_seconds = 60
+rules_file = /var/lib/aruba-agent/thresholds.json
+```
+
+- **Metrics** you can alert on: `if_util_in`, `if_util_out`, `crc_errors`
+  (need `[interfaces]`), and `cpu`, `memory`, `temperature` (need `[health]`).
+- **Anti-flap:** a rule only fires after the value breaches for its
+  `duration_s`, fires once (deduped), and sends a recovery email when it clears.
+  Scope each rule by name/IP/CIDR (blank = all).
+- **Validate health OIDs** before trusting device rules — they are best-effort
+  per vendor:
+
+```bash
+sudo /opt/aruba-agent/venv/bin/python /opt/aruba-agent/main.py /etc/aruba-agent/config.ini --health-once --host 10.40.0.6
+# cpu=.. memory=.. temperature=..   (None => adjust health.VENDOR_OIDS for that model)
+```
+
+  If a value reads `None`, the OID for that vendor/model needs correcting in
+  `aruba_agent/health.py` (VENDOR_OIDS) — CPU via HOST-RESOURCES/enterprise,
+  memory via enterprise or hrStorage, temperature via ENTITY-SENSOR.
+- Active alerts show live on the Thresholds page (and via `/api/thresholds/active`).
+
+---
+
 ## Deploy / update (reference)
 
 ```bash

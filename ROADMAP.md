@@ -99,8 +99,9 @@ Cheapest-highest-value first:
     a Mongo TTL + skip-idle. See INTERFACE_MONITORING_SPEC.md.
 - ✅ **MAC table + search** — hourly bridge-FDB sweep (`[l2]`), per-port MACs on
     the switch page, top-nav MAC finder (edge-port-first). `fdb.py` + Mongo `fdb`.
-- ⬜ **Threshold alerting engine** — generic CPU/mem/temp/PoE/interface-% rules
-    → alerts (generalize beyond up/down + subnet + web-server).
+- ✅ **Threshold alerting engine** — rules (web UI) on interface util/CRC +
+    device CPU/mem/temperature, sustained-breach + recovery emails.
+    thresholds.py/thresholds_store.py/health.py + [thresholds]/[health].
 - ✅ **SNMP trap receiver** — UDP-162 v2c/v3 listener; classifies PSU/temp/fan/
     VSF/link/auth traps, stores them (Traps page), emails on critical only
     (rate-limited). `trap_receiver.py` + `traps.py`, `[traps]`.

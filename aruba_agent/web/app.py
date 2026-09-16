@@ -1292,6 +1292,68 @@ def create_app(
                      target=name, ip=request.remote_addr)
         return jsonify({"status": "ok"})
 
+    @app.get("/settings/thresholds")
+    @require_login
+    def thresholds_page():
+        rules = threshold_store.list_rules() if threshold_store is not None else []
+        active = threshold_task.active_alerts() if threshold_task is not None else []
+        from aruba_agent.thresholds_store import (VALID_METRICS, VALID_OPERATORS,
+                                                  VALID_SEVERITY)
+        return render_template("thresholds.html", rules=rules, active=active,
+                               metrics=VALID_METRICS, operators=VALID_OPERATORS,
+                               severities=VALID_SEVERITY,
+                               enabled=(threshold_task is not None),
+                               **_settings_context())
+
+    @app.post("/api/thresholds")
+    @require_login
+    def api_thresholds_save():
+        if threshold_store is None:
+            return jsonify({"error": "threshold store unavailable"}), 503
+        d = request.get_json(silent=True) or request.form
+        ok, err = threshold_store.save_rule(
+            (d.get("name") or "").strip(),
+            (d.get("metric") or "").strip(),
+            (d.get("operator") or "").strip(),
+            d.get("value"),
+            duration_s=d.get("duration_s", 300),
+            severity=(d.get("severity") or "warning").strip(),
+            include=(d.get("include") or "").strip(),
+            exclude=(d.get("exclude") or "").strip(),
+            enabled=str(d.get("enabled", "true")).lower() in ("1", "true", "on", "yes"),
+            added_by=session.get("user", ""))
+        if not ok:
+            return jsonify({"error": err}), 400
+        audit.record("threshold.save", user=session.get("user"),
+                     target=(d.get("name") or "").strip(), ip=request.remote_addr)
+        return jsonify({"status": "ok"})
+
+    @app.post("/api/thresholds/<name>/delete")
+    @require_login
+    def api_thresholds_delete(name: str):
+        if threshold_store is None or not threshold_store.remove(name):
+            return jsonify({"error": "not found"}), 404
+        audit.record("threshold.delete", user=session.get("user"),
+                     target=name, ip=request.remote_addr)
+        return jsonify({"status": "ok"})
+
+    @app.post("/api/thresholds/<name>/toggle")
+    @require_login
+    def api_thresholds_toggle(name: str):
+        if threshold_store is None:
+            return jsonify({"error": "unavailable"}), 503
+        d = request.get_json(silent=True) or request.form
+        enabled = str(d.get("enabled", "true")).lower() in ("1", "true", "on", "yes")
+        if not threshold_store.set_enabled(name, enabled):
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"status": "ok", "enabled": enabled})
+
+    @app.get("/api/thresholds/active")
+    @require_login
+    def api_thresholds_active():
+        active = threshold_task.active_alerts() if threshold_task is not None else []
+        return jsonify({"enabled": threshold_task is not None, "active": active})
+
     @app.post("/api/config-push/execute")
     @require_login
     def api_config_push_execute():

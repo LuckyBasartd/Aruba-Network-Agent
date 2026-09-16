@@ -110,6 +110,9 @@ aruba_agent/
   fdb.py                     bridge MAC table collector (Q-BRIDGE + fallback), pure
   lldp.py                    LLDP/CDP neighbor collector + device-type classifier, pure
   traps.py                   SNMP trap classifier + alert-policy (pure)
+  thresholds.py              threshold evaluation engine (sustained breach, pure)
+  thresholds_store.py        alert-rule store (JSON CRUD)
+  health.py                  CPU/mem/temp collector (per-vendor OIDs, pure)
   trap_receiver.py           UDP-162 trap listener (pysnmp ntfrcv v2c/v3) + handle_trap
   secrets_store.py           Fernet encrypt/decrypt + redact()
   snmp.py / snmp_profiles.py SNMPv3 (pysnmp) + SnmpProfile registry
@@ -137,6 +140,8 @@ aruba_agent/
     config_push.py           batch CLI config push (netmiko, multi-vendor)
     interface_poll.py        per-port util/CRC poll -> live table + metrics (anti-chatter)
     l2_discovery.py          hourly MAC-table (FDB) + LLDP/CDP neighbor sweep
+    health_poll.py           CPU/mem/temp poll -> metrics + samples()
+    threshold_eval.py        periodic rule evaluation -> email fire/recovery
     firmware.py              on-demand firmware update
   web/
     app.py                   all routes (see §7)
@@ -462,6 +467,19 @@ tested) classifies -> maps source IP to a switch -> stores (Mongo `traps`,
 TTL-bounded) -> emails on CRITICAL only (system/auth/hardware; link changes
 store-only), rate-limited per (switch,trap). Web: /traps page + /api/traps.
 Port 162 is privileged — setcap or redirect (see TROUBLESHOOTING.md).
+
+---
+
+## 13c. Threshold alerting (Sep 2026)
+
+Rules (thresholds_store.py, JSON at [thresholds] rules_file; CRUD via Settings
+-> Thresholds / the Alerts nav) watch a metric (if_util_in/out, crc_errors,
+cpu, memory, temperature) with operator+value+duration_s+severity+scope.
+ThresholdEvalTask ([thresholds], every eval_seconds) pulls samples from
+interface_poll.samples() + health_poll.samples(), runs thresholds.py
+ThresholdEvaluator (sustained-breach + dedup + recovery), emails via notifier.
+Device health from health.py/health_poll.py ([health]); vendor OIDs are
+best-effort, validate with --health-once --host. active_alerts() feeds the UI.
 
 ---
 
