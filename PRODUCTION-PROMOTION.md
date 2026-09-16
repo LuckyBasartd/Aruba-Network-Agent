@@ -62,12 +62,12 @@ git push origin v3.7.0
 git push production main
 git push production v3.7.0
 
-# --- On argos-2026: deploy ---
+# --- On argos-2026: deploy (pulls main into SRC, rsyncs to /opt, pip installs, restarts) ---
 sudo /home/aruba-agent-deploy/bin/deploy.sh
-# deploy.sh has a known regression (git pull only). Ensure the rest ran:
-sudo /opt/aruba-agent/venv/bin/pip install -r /opt/aruba-agent/requirements.txt   # pulls pymongo, pins pysnmp<6.2
-git -C /opt/aruba-agent describe --tags        # expect v3.7.0
-sudo systemctl restart aruba-agent
+# Watch for: "=== Deploy OK — aruba-agent active on <REV> ==="  (note the REV)
+# Verify the deployed revision matches the Mac HEAD:
+sudo -u aruba-agent-deploy git -C /home/aruba-agent-deploy/src/Network-Agent describe --tags   # expect v3.7.0
+# /opt is an rsync target (not a git repo) — the deploy log's REV is the source of truth.
 ```
 
 Confirm the prod `config.ini` has NO new features enabled yet (they default
@@ -79,8 +79,17 @@ count matches Stage 0; a manual backup still works
 (`--controller-backup` dry-run or wait for the nightly). Watch `journalctl -u
 aruba-agent -n 50` for tracebacks.
 
-**Rollback:** `cd /opt/aruba-agent && sudo git checkout v3.5.0 && sudo systemctl restart aruba-agent`
-(JSON state untouched, so this is a clean revert).
+**Rollback (prod deploy model):** roll the SRC checkout back and re-sync:
+```bash
+SRC=/home/aruba-agent-deploy/src/Network-Agent
+sudo -u aruba-agent-deploy git -C "$SRC" checkout v3.5.0
+sudo rsync -rlpt --delete --exclude='__pycache__/' --exclude='*.pyc' "$SRC/aruba_agent/" /opt/aruba-agent/aruba_agent/
+sudo cp -f "$SRC/main.py" /opt/aruba-agent/main.py
+sudo /opt/aruba-agent/venv/bin/python -m pip install -q -r /opt/aruba-agent/requirements.txt
+sudo systemctl restart aruba-agent
+# to resume forward later:  sudo -u aruba-agent-deploy git -C "$SRC" checkout main
+```
+(JSON state untouched, so this is a clean revert.)
 
 ---
 
@@ -185,7 +194,7 @@ flat and `free -m` has headroom. Widen `include` to the fleet last.
 ---
 
 ## Rollback summary
-- Stage 1 (code): `git checkout v3.5.0` + restart.
+- Stage 1 (code): checkout v3.5.0 in SRC + rsync to /opt + restart (see Stage 1).
 - Stage 3 (backend): `[store] backend = json` + restart (JSON state stays live).
 - Stage 4 (a feature misbehaves): set that section `enabled = false` + restart.
 - Full revert: `git checkout v3.5.0`, remove `[store]`, restart — back to the
