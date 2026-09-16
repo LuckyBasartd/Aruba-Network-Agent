@@ -286,6 +286,23 @@ class TrapReceiver:
                 log.debug("Trap receiver: addV3User(%s) failed (%s)", user, exc)
         return n
 
+    @staticmethod
+    def _engine_id_from_failure(variables):
+        """Pull msgAuthoritativeEngineID from a security-failure observer's
+        variables. pysnmp puts the raw USM securityParameters (a BER-encoded
+        SEQUENCE whose first element is the engine ID) under
+        'securityParameters'; decode it. Returns an OctetString or None."""
+        sp = variables.get("securityParameters")
+        if sp is None:
+            return None
+        try:
+            from pyasn1.codec.ber import decoder
+            seq, _ = decoder.decode(bytes(sp))
+            eid = seq.getComponentByPosition(0)          # msgAuthoritativeEngineID
+            return eid if bytes(eid) else None
+        except Exception:
+            return None
+
     def _v3_learn(self, snmp_engine, execpoint, variables, cbCtx) -> None:
         """pysnmp observer: on a security failure (typically UnknownSecurityName
         because a v3 trap carries the *sender's* engine ID, which we can't know
@@ -293,11 +310,7 @@ class TrapReceiver:
         it so subsequent traps from that switch authenticate. Runs in the
         dispatcher thread, so addV3User here is thread-safe."""
         try:
-            eid = variables.get("securityEngineId") or variables.get("contextEngineId")
-            if eid is None:
-                si = variables.get("statusInformation")
-                if isinstance(si, dict):
-                    eid = si.get("contextEngineId") or si.get("securityEngineId")
+            eid = self._engine_id_from_failure(variables)
             if eid is None:
                 return
             key = bytes(eid)

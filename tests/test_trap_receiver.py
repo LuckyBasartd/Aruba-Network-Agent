@@ -73,3 +73,21 @@ def test_handle_trap_never_raises_on_store_failure():
     rx=_rx(store=BadStore())
     doc=rx.handle_trap("10.0.0.1", COLDSTART, [])   # must not raise
     assert doc["name"]=="coldStart"
+
+
+def test_engine_id_extracted_from_security_params():
+    """_v3_learn must pull msgAuthoritativeEngineID out of the raw USM
+    securityParameters (BER SEQUENCE, component 0) — the pysnmp sm-failure
+    observer exposes it there, not as a direct key."""
+    raw = bytes.fromhex('301a' + '0408' + '8000000009090909' + '020100' +
+                        '020100' + '0404' + '6e657473' + '0400' + '0400')
+    class FakeOS:
+        def __bytes__(self): return raw
+    eid = TrapReceiver._engine_id_from_failure({'securityParameters': FakeOS()})
+    assert eid is not None and bytes(eid).hex() == '8000000009090909'
+    # no securityParameters -> None (graceful)
+    assert TrapReceiver._engine_id_from_failure({}) is None
+    # garbage -> None
+    class Bad:
+        def __bytes__(self): return b'\\x00\\x01\\x02'
+    assert TrapReceiver._engine_id_from_failure({'securityParameters': Bad()}) is None
