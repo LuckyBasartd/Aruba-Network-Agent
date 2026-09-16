@@ -30,7 +30,14 @@ class FakeSnmp:
         }
         return m.get(oid)
     def bulk_walk(self, host, oids, profile_name=None):
-        return {health.OID_ENTPHYSENSOR_VAL: {"1": "41", "2": "53"}}
+        if health.OID_ENTPHYSENSOR_TYPE in oids:
+            return {
+                health.OID_ENTPHYSENSOR_TYPE:  {"1": "8", "2": "8", "3": "10"},  # 2 celsius + 1 rpm
+                health.OID_ENTPHYSENSOR_VAL:   {"1": "41000", "2": "53000", "3": "8000"},
+                health.OID_ENTPHYSENSOR_SCALE: {"1": "8", "2": "8", "3": "9"},   # milli
+                health.OID_ENTPHYSENSOR_PREC:  {"1": "0", "2": "0", "3": "0"},
+            }
+        return {}
 
 
 def test_collect_procurve_vendor():
@@ -48,8 +55,11 @@ class FakeSnmpCX:
         out = {}
         if health.OID_HR_PROCESSOR_LOAD in oids:
             out[health.OID_HR_PROCESSOR_LOAD] = {"1": "20", "2": "40"}   # avg 30
-        if health.OID_ENTPHYSENSOR_VAL in oids:
-            out[health.OID_ENTPHYSENSOR_VAL] = {"1": "45"}
+        if health.OID_ENTPHYSENSOR_TYPE in oids:
+            out[health.OID_ENTPHYSENSOR_TYPE]  = {"1": "8"}
+            out[health.OID_ENTPHYSENSOR_VAL]   = {"1": "45000"}
+            out[health.OID_ENTPHYSENSOR_SCALE] = {"1": "8"}
+            out[health.OID_ENTPHYSENSOR_PREC]  = {"1": "0"}
         # hrStorage RAM row for memory fallback
         if "1.3.6.1.2.1.25.2.3.1.5" in oids:
             out["1.3.6.1.2.1.25.2.3.1.2"] = {"3": "1.3.6.1.2.1.25.2.1.2"}  # RAM type
@@ -94,3 +104,20 @@ def test_health_task_records_and_samples():
     samples={(s["metric"]) : s for s in t.samples()}
     assert samples["cpu"]["value"]==37.0 and samples["cpu"]["device"]=="sw1"
     assert samples["memory"]["instance"]==""
+
+
+def test_decode_entity_temp_scale_precision_and_filter():
+    w = {
+        health.OID_ENTPHYSENSOR_TYPE:  {"1": "8", "2": "10", "3": "8"},  # celsius, rpm, celsius
+        health.OID_ENTPHYSENSOR_VAL:   {"1": "19875", "2": "9000", "3": "41000"},
+        health.OID_ENTPHYSENSOR_SCALE: {"1": "8", "2": "9", "3": "8"},   # milli, units, milli
+        health.OID_ENTPHYSENSOR_PREC:  {"1": "0", "2": "0", "3": "0"},
+    }
+    # 19875 milli -> 19.9 ; 41000 milli -> 41.0 ; rpm ignored -> max 41.0
+    assert health.decode_entity_temp(w) == 41.0
+    # precision variant: scale units(9), precision 3 -> divide by 1000
+    w2 = {health.OID_ENTPHYSENSOR_TYPE:{"1":"8"}, health.OID_ENTPHYSENSOR_VAL:{"1":"19875"},
+          health.OID_ENTPHYSENSOR_SCALE:{"1":"9"}, health.OID_ENTPHYSENSOR_PREC:{"1":"3"}}
+    assert health.decode_entity_temp(w2) == 19.9
+    # no celsius sensors -> None
+    assert health.decode_entity_temp({health.OID_ENTPHYSENSOR_TYPE:{"1":"10"}}) is None

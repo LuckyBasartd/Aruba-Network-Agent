@@ -33,14 +33,14 @@ OID_ENTPHYSENSOR_PREC = "1.3.6.1.2.1.99.1.1.1.3"     # entPhySensorPrecision
 VENDOR_OIDS: Dict[str, dict] = {
     "aruba_cx": {
         "cpu_walk":  [OID_HR_PROCESSOR_LOAD],
-        "temp_walk": [OID_ENTPHYSENSOR_VAL],
+        "temp_entity": True,
         # Aruba CX memory: prefer HOST-RESOURCES hrStorage (handled generically)
     },
     "aruba_os": {   # ProCurve / ArubaOS-Switch (HP enterprise 11)
         "cpu_get":   "1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0",              # hpSwitchCpuStat
         "mem_total": "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.5.1",        # hpLocalMemTotalBytes
         "mem_alloc": "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.7.1",        # hpLocalMemAllocatedBytes
-        "temp_walk": [OID_ENTPHYSENSOR_VAL],
+        "temp_entity": True,
     },
     "cisco_ios": {
         "cpu_walk":  ["1.3.6.1.4.1.9.9.109.1.1.1.1.8"],                 # cpmCPUTotal5minRev
@@ -75,6 +75,41 @@ def max_temp(vals: List, scale: float = 1.0) -> Optional[float]:
     if not nums:
         return None
     return round(max(nums) * scale, 1)
+
+
+# EntitySensorDataScale (RFC 3433): exponent relative to units(9)=10^0.
+_SCALE_EXP = {1:-24,2:-21,3:-18,4:-15,5:-12,6:-9,7:-6,8:-3,9:0,10:3,11:6,12:9,13:12,14:15}
+_SENSOR_CELSIUS = "8"   # entPhySensorType celsius(8)
+
+
+def decode_entity_temp(walked: Dict[str, Dict[str, str]]) -> Optional[float]:
+    """Decode ENTITY-SENSOR-MIB into the max Celsius reading, applying each
+    sensor's entPhySensorScale + entPhySensorPrecision, and filtering to
+    temperature (celsius) sensors only (so we don't pick up fan RPM/voltage)."""
+    types = walked.get(OID_ENTPHYSENSOR_TYPE, {}) or {}
+    vals  = walked.get(OID_ENTPHYSENSOR_VAL, {}) or {}
+    scales= walked.get(OID_ENTPHYSENSOR_SCALE, {}) or {}
+    precs = walked.get(OID_ENTPHYSENSOR_PREC, {}) or {}
+    temps = []
+    for idx, t in types.items():
+        if str(t).strip() != _SENSOR_CELSIUS:
+            continue
+        v = _num(vals.get(idx))
+        if v is None:
+            continue
+        try:
+            scale = int(str(scales.get(idx, 9)).strip() or 9)
+        except ValueError:
+            scale = 9
+        try:
+            prec = int(str(precs.get(idx, 0)).strip() or 0)
+        except ValueError:
+            prec = 0
+        reading = v * (10 ** _SCALE_EXP.get(scale, 0))
+        if prec > 0:
+            reading = reading / (10 ** prec)
+        temps.append(reading)
+    return round(max(temps), 1) if temps else None
 
 
 def collect(snmp, host: str, vendor: str = "",
@@ -127,10 +162,15 @@ def collect(snmp, host: str, vendor: str = "",
 
     # ── Temperature (max Celsius sensor) ──
     try:
-        cols = vmap.get("temp_walk", [OID_ENTPHYSENSOR_VAL])
-        w = _walk(cols)
-        vals = [v for col in cols for v in (w.get(col, {}) or {}).values()]
-        result["temperature"] = max_temp(vals)
+        if vmap.get("temp_entity", not vmap.get("temp_walk")):
+            w = _walk([OID_ENTPHYSENSOR_TYPE, OID_ENTPHYSENSOR_VAL,
+                       OID_ENTPHYSENSOR_SCALE, OID_ENTPHYSENSOR_PREC])
+            result["temperature"] = decode_entity_temp(w)
+        else:
+            cols = vmap.get("temp_walk", [OID_ENTPHYSENSOR_VAL])
+            w = _walk(cols)
+            vals = [v for col in cols for v in (w.get(col, {}) or {}).values()]
+            result["temperature"] = max_temp(vals)
     except Exception as exc:
         log.debug("health: temp read failed on %s (%s)", host, exc)
 
