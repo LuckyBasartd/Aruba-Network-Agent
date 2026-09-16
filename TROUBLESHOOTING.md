@@ -397,6 +397,17 @@ sudo journalctl -u aruba-agent -f | grep -i trap
 mongosh --quiet aruba_agent --eval 'db.traps.find().sort({ts:-1}).limit(5).toArray()'
 ```
 
+**v3 traps — engine-ID learning.** SNMPv3 traps authenticate against the
+*sender's* engine ID, which differs from its polling engine ID and can't be
+known in advance. The receiver learns it automatically: the **first** trap from
+each switch fails USM (logged as `learned v3 engine 0x… — registered N user(s)`)
+and every subsequent trap from that switch authenticates. So per switch you may
+lose only the very first trap after the agent starts; no per-switch config is
+needed beyond `[traps] v3_profiles = <profile with the trap user>`. If v3 traps
+never authenticate, confirm the profile's user/auth/priv match the switch's
+`snmpv3 user` and that traps are reaching the listener (see the raw-listener
+test above).
+
 Trap history is bounded by the same `[store] metrics_retention_days` TTL.
 Critical-alert emails are de-duplicated per (switch, trap) within
 `alert_dedup_seconds` so a flapping component can't spam.
