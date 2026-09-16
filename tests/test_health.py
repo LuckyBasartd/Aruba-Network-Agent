@@ -121,3 +121,30 @@ def test_decode_entity_temp_scale_precision_and_filter():
     assert health.decode_entity_temp(w2) == 19.9
     # no celsius sensors -> None
     assert health.decode_entity_temp({health.OID_ENTPHYSENSOR_TYPE:{"1":"10"}}) is None
+
+
+def test_procurve_falls_back_to_host_resources():
+    """A 6100-class 'aruba_os' box that lacks the HP CPU/mem OIDs must fall
+    back to HOST-RESOURCES (the 10.80.9.80 case)."""
+    class FakeSnmp6100:
+        last_error = ""
+        def get(self, host, oid, profile_name=None):
+            return None                       # HP enterprise CPU/mem OIDs absent
+        def bulk_walk(self, host, oids, profile_name=None):
+            out = {}
+            if health.OID_HR_PROCESSOR_LOAD in oids:
+                out[health.OID_HR_PROCESSOR_LOAD] = {"1": "22"}
+            if "1.3.6.1.2.1.25.2.3.1.5" in oids:
+                out["1.3.6.1.2.1.25.2.3.1.2"] = {"3": "1.3.6.1.2.1.25.2.1.2"}
+                out["1.3.6.1.2.1.25.2.3.1.5"] = {"3": "1000"}
+                out["1.3.6.1.2.1.25.2.3.1.6"] = {"3": "350"}
+            if health.OID_ENTPHYSENSOR_TYPE in oids:
+                out[health.OID_ENTPHYSENSOR_TYPE]  = {"1": "8"}
+                out[health.OID_ENTPHYSENSOR_VAL]   = {"1": "29800"}
+                out[health.OID_ENTPHYSENSOR_SCALE] = {"1": "8"}
+                out[health.OID_ENTPHYSENSOR_PREC]  = {"1": "0"}
+            return out
+    r = health.collect(FakeSnmp6100(), "10.80.9.80", vendor="aruba_os")
+    assert r["cpu"] == 22.0            # hrProcessorLoad fallback
+    assert r["memory"] == 35.0         # hrStorage fallback (350/1000)
+    assert r["temperature"] == 29.8    # ENTITY-SENSOR

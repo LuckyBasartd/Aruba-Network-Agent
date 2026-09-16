@@ -131,46 +131,53 @@ def collect(snmp, host: str, vendor: str = "",
         except Exception:
             return None
 
-    # ── CPU ──
+    def _walk_avg(cols):
+        if not cols:
+            return None
+        w = _walk(cols)
+        return average([v for c in cols for v in (w.get(c, {}) or {}).values()])
+
+    # ── CPU: vendor OID, then HOST-RESOURCES hrProcessorLoad ──
     try:
+        cpu = None
         if vmap.get("cpu_get"):
-            result["cpu"] = _num(_get(vmap["cpu_get"]))
-        else:
-            cols = vmap.get("cpu_walk", [OID_HR_PROCESSOR_LOAD])
-            w = _walk(cols)
-            vals = [v for col in cols for v in (w.get(col, {}) or {}).values()]
-            result["cpu"] = average(vals)
+            cpu = _num(_get(vmap["cpu_get"]))
+        if cpu is None:
+            cpu = _walk_avg(vmap.get("cpu_walk"))
+        if cpu is None:
+            cpu = _walk_avg([OID_HR_PROCESSOR_LOAD])
+        result["cpu"] = cpu
     except Exception as exc:
         log.debug("health: cpu read failed on %s (%s)", host, exc)
 
-    # ── Memory (percent used) ──
+    # ── Memory %used: vendor OIDs, then HOST-RESOURCES hrStorage ──
     try:
+        mem = None
         if vmap.get("mem_total") and vmap.get("mem_alloc"):
-            result["memory"] = compute_mem_pct(_get(vmap["mem_alloc"]), _get(vmap["mem_total"]))
-        elif vmap.get("mem_used") and vmap.get("mem_free"):
+            mem = compute_mem_pct(_get(vmap["mem_alloc"]), _get(vmap["mem_total"]))
+        if mem is None and vmap.get("mem_used") and vmap.get("mem_free"):
             u, f = _num(_get(vmap["mem_used"])), _num(_get(vmap["mem_free"]))
             if u is not None and f is not None:
-                result["memory"] = compute_mem_pct(u, u + f)
-        else:
-            result["memory"] = _hr_storage_mem_pct(_walk([
-                "1.3.6.1.2.1.25.2.3.1.2",   # hrStorageType
-                "1.3.6.1.2.1.25.2.3.1.5",   # hrStorageSize
-                "1.3.6.1.2.1.25.2.3.1.6",   # hrStorageUsed
-            ]))
+                mem = compute_mem_pct(u, u + f)
+        if mem is None:
+            mem = _hr_storage_mem_pct(_walk([
+                "1.3.6.1.2.1.25.2.3.1.2", "1.3.6.1.2.1.25.2.3.1.5",
+                "1.3.6.1.2.1.25.2.3.1.6"]))
+        result["memory"] = mem
     except Exception as exc:
         log.debug("health: mem read failed on %s (%s)", host, exc)
 
-    # ── Temperature (max Celsius sensor) ──
+    # ── Temperature: vendor direct OID (e.g. Cisco), then ENTITY-SENSOR ──
     try:
-        if vmap.get("temp_entity", not vmap.get("temp_walk")):
-            w = _walk([OID_ENTPHYSENSOR_TYPE, OID_ENTPHYSENSOR_VAL,
-                       OID_ENTPHYSENSOR_SCALE, OID_ENTPHYSENSOR_PREC])
-            result["temperature"] = decode_entity_temp(w)
-        else:
-            cols = vmap.get("temp_walk", [OID_ENTPHYSENSOR_VAL])
-            w = _walk(cols)
-            vals = [v for col in cols for v in (w.get(col, {}) or {}).values()]
-            result["temperature"] = max_temp(vals)
+        temp = None
+        if vmap.get("temp_walk"):
+            w = _walk(vmap["temp_walk"])
+            temp = max_temp([v for c in vmap["temp_walk"] for v in (w.get(c, {}) or {}).values()])
+        if temp is None:
+            temp = decode_entity_temp(_walk([
+                OID_ENTPHYSENSOR_TYPE, OID_ENTPHYSENSOR_VAL,
+                OID_ENTPHYSENSOR_SCALE, OID_ENTPHYSENSOR_PREC]))
+        result["temperature"] = temp
     except Exception as exc:
         log.debug("health: temp read failed on %s (%s)", host, exc)
 
