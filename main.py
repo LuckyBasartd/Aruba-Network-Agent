@@ -37,6 +37,9 @@ Run one L2 (MAC/FDB) discovery sweep, or probe one switch's MAC table:
   python main.py [/path/to/config.ini] --l2-discover-once
   python main.py [/path/to/config.ini] --l2-discover-once --host 10.40.0.6
 
+Probe device health (CPU/mem/temp) for one switch or all:
+  python main.py [/path/to/config.ini] --health-once --host 10.40.0.6
+
 Decrypt a single backup file to stdout for restore:
   python main.py [/path/to/config.ini] --decrypt-backup /var/lib/aruba-agent/backups/<host>/<file>.cfg.enc > restored.cfg
 """
@@ -190,6 +193,7 @@ def main() -> None:
     import_mongo_mode = "--import-state-to-mongo" in args
     interfaces_once_mode = "--interfaces-poll-once" in args
     l2_once_mode = "--l2-discover-once" in args
+    health_once_mode = "--health-once" in args
     # --decrypt-backup <path> is a two-token flag; the next positional
     # is the backup file path. Extract it now so the path doesn't get
     # mis-parsed as config_path below.
@@ -579,6 +583,48 @@ def main() -> None:
               f"{len(summ)} switch(es).")
         sys.exit(0)
 
+    # ── --health-once ───────────────────────────────────────────────────────────
+    # Probe CPU/memory/temperature for one switch (--host) or all eligible.
+    if health_once_mode:
+        import logging as _logging
+        _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
+        from aruba_agent.store import make_store
+        from aruba_agent import health as _health
+        _sb = (cfg.get("store", "backend", fallback="json")
+               if cfg.has_section("store") else "json")
+        _sf = cfg.get("agent", "state_file", fallback="/var/lib/aruba-agent/state.json")
+        _once_store = make_store(_sb, snapshot_path=_sf, cfg=cfg)
+        _once_state = AgentState(store=_once_store)
+        snmp_agent2 = build_snmp_agent(cfg)
+        if snmp_agent2 is None:
+            print("--health-once: SNMP is not configured ([snmp]).", file=sys.stderr)
+            sys.exit(2)
+        if iface_host:
+            sw = None
+            for x in _once_state.switches.values():
+                if x.host == iface_host:
+                    sw = x; break
+            vendor = getattr(sw, "vendor", "") if sw else ""
+            prof = _once_state.get_snmp_profile_for_host(iface_host) or None
+            print(f"health: probing {iface_host} vendor={vendor or '(unknown)'} "
+                  f"profile={prof or '(default)'} ...")
+            r = _health.collect(snmp_agent2, iface_host, vendor=vendor, profile_name=prof)
+            print(f"  cpu={r['cpu']}%  memory={r['memory']}%  temperature={r['temperature']}C")
+            if all(v is None for v in r.values()):
+                print("  (nothing read — the vendor OIDs in health.VENDOR_OIDS likely "
+                      "need adjusting for this model)")
+            sys.exit(0)
+        from aruba_agent.tasks.health_poll import HealthPollTask
+        task = HealthPollTask(cfg, _once_state, snmp_agent2, _once_store)
+        task.enabled = True
+        elig = task.eligible()
+        print(f"health: polling {len(elig)} switch(es) ...")
+        task.run()
+        for name in sorted(task._current)[:20]:
+            v = task._current[name]
+            print(f"  {name:<26} cpu={v.get('cpu')} mem={v.get('memory')} temp={v.get('temperature')}")
+        sys.exit(0)
+
     # Audit log — append-only file separate from journald.
     # Operator-controllable path with the same [agent] block as the
     # state file and master key. Failures are non-fatal: audit.install
@@ -793,6 +839,37 @@ def main() -> None:
         trap_receiver = TrapReceiver(cfg, state, _store, notifier)
         trap_receiver.start()
 
+    # Device health poll (CPU/mem/temp) — optional, feeds threshold alerts.
+    health_task = None
+    if cfg.getboolean("health", "enabled", fallback=False):
+        from aruba_agent.tasks.health_poll import HealthPollTask
+        health_task = HealthPollTask(cfg, state, snmp_agent, _store)
+        scheduler.add_interval(health_task.poll_seconds, health_task.run,
+                               run_at_start=cfg.getboolean("health", "run_at_start", fallback=True))
+        log.info("Health poll scheduled every %ds (max_workers=%d)",
+                 health_task.poll_seconds, health_task.max_workers)
+
+    # Threshold alerting engine. Build the rule store always (so the web UI can
+    # manage rules even before enabling), schedule the evaluator only if enabled.
+    from aruba_agent.thresholds_store import ThresholdStore
+    _thr_path = (cfg.get("thresholds", "rules_file",
+                         fallback="/var/lib/aruba-agent/thresholds.json")
+                 if cfg.has_section("thresholds")
+                 else "/var/lib/aruba-agent/thresholds.json")
+    threshold_store = ThresholdStore(_thr_path)
+    threshold_task = None
+    if cfg.getboolean("thresholds", "enabled", fallback=False):
+        from aruba_agent.tasks.threshold_eval import ThresholdEvalTask
+        sources = []
+        if interface_task is not None:
+            sources.append(interface_task.samples)
+        if health_task is not None:
+            sources.append(health_task.samples)
+        threshold_task = ThresholdEvalTask(cfg, threshold_store, notifier, sources)
+        scheduler.add_interval(threshold_task.eval_seconds, threshold_task.run)
+        log.info("Threshold alerting scheduled every %ds (%d sample source(s))",
+                 threshold_task.eval_seconds, len(sources))
+
     # Web-server health check (VPN controller) — optional, off by default.
     if cfg.getboolean("webserver_health", "enabled", fallback=False):
         from aruba_agent.tasks.webserver_health import WebServerHealthTask
@@ -828,6 +905,8 @@ def main() -> None:
         interface_task    = interface_task,
         l2_task           = l2_task,
         trap_store        = _store,
+        threshold_store   = threshold_store,
+        threshold_task    = threshold_task,
     )
     start_web(flask_app, host=web_host, port=web_port, threads=web_threads)
 

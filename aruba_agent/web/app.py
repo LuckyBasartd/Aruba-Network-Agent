@@ -172,6 +172,8 @@ def create_app(
     interface_task = None,   # InterfacePollTask — current per-interface stats
     l2_task = None,          # L2DiscoveryTask — MAC/FDB search
     trap_store = None,       # Store — query received SNMP traps
+    threshold_store = None,  # ThresholdStore — alert rules CRUD
+    threshold_task = None,   # ThresholdEvalTask — active alerts
 ) -> Flask:
     app = Flask(__name__, template_folder="templates")
     app.config["JSON_SORT_KEYS"] = False

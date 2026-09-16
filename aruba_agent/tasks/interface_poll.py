@@ -211,6 +211,28 @@ class InterfacePollTask:
         with self._lock:
             return {n: len(rows) for n, rows in self._current.items()}
 
+    def samples(self) -> list:
+        """Current per-interface readings as threshold-evaluator samples:
+        if_util_in / if_util_out (%) and crc_errors (count), instance=ifName."""
+        with self._lock:
+            snapshot = {n: list(rows) for n, rows in self._current.items()}
+        out = []
+        for name, rows in snapshot.items():
+            sw = self.state.switches.get(name)
+            host = getattr(sw, "host", name) if sw else name
+            for r in rows:
+                inst = r.get("name", "")
+                if r.get("in_util") is not None:
+                    out.append({"device": name, "host": host, "metric": "if_util_in",
+                                "value": r["in_util"], "instance": inst})
+                if r.get("out_util") is not None:
+                    out.append({"device": name, "host": host, "metric": "if_util_out",
+                                "value": r["out_util"], "instance": inst})
+                if r.get("crc_err") is not None:
+                    out.append({"device": name, "host": host, "metric": "crc_errors",
+                                "value": r["crc_err"], "instance": inst})
+        return out
+
 
 def _sortkey(ifindex: str):
     try:

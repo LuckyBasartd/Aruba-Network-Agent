@@ -659,3 +659,22 @@ v3_profiles =
 alert_policy = critical
 # Suppress repeat emails for the same (switch, trap) within N seconds
 alert_dedup_seconds = 300
+
+[health]
+# Device health poll: CPU %, memory used %, temperature (C) via SNMP, for
+# threshold alerts. Vendor OIDs are best-effort — validate with --health-once.
+enabled = false
+poll_seconds = 300
+max_workers = 8
+run_at_start = true
+# Empty include = every known switch (same scoping as [interfaces]/[l2]).
+include =
+exclude =
+
+[thresholds]
+# Threshold alerting engine: rules (managed in the web UI, Settings -> Thresholds)
+# evaluate interface + health metrics and email on sustained breach + recovery.
+enabled = false
+# How often to evaluate current metrics against the rules (floor 30s).
+eval_seconds = 60
+rules_file = /var/lib/aruba-agent/thresholds.json
