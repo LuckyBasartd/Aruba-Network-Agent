@@ -105,7 +105,8 @@ Cheapest-highest-value first:
 - ✅ **SNMP trap receiver** — UDP-162 v2c/v3 listener; classifies PSU/temp/fan/
     VSF/link/auth traps, stores them (Traps page), emails on critical only
     (rate-limited). `trap_receiver.py` + `traps.py`, `[traps]`.
-- ⬜ **Syslog collector** — ingest + search device syslog.
+- ❌ **Syslog collector** — OUT OF SCOPE. Syslog stays on the existing Kiwi
+    Syslog Server; not part of the SolarWinds replacement.
 - 🟡 **Topology** — LLDP/CDP neighbor discovery + per-port device-type
     classification **done** (`lldp.py`, folded into the `[l2]` sweep; Neighbor
     column on the switch page). Remaining: build the network **map** from it.
