@@ -273,7 +273,15 @@ New / notable keys:
 
 ---
 
-## 9. Current state (as of v3.5.0)
+## 9. Current state (prod on v3.7.0 + MongoDB as of 2026-09-18)
+
+**Production promotion done 2026-09-18:** argos-2026 promoted from v3.5.0
+(JSON) to **v3.7.0 + MongoDB** (staged, parity-first — see
+PRODUCTION-PROMOTION.md). 476 devices migrated; MongoStore live; mute
+persists across restart. New pollers (interfaces/l2/health/thresholds/
+traps) intentionally still OFF on prod (Stage 4, enable gradually).
+Rollback = [store] backend=json + restart. Mongo: localhost:27017, auth,
+aruba_agent user; installed via subscription-manager MongoDB_8 repo.
 
 `v3.5.0` bundles: full UI redesign (modern shell/nav, Home, breadcrumbs,
 rebrand to "Network Agent"); dashboard metric cards + grouped reachability view

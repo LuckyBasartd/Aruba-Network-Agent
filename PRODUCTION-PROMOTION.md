@@ -134,6 +134,16 @@ just installed and idle.
 
 ---
 
+> **Prod install note (argos-2026, done 2026-09-18):** MongoDB is not from the
+> public repo — USD manages it via subscription-manager/Satellite. Enable with
+> `sudo subscription-manager repos --enable "MongoDB_8"` (auto-disables after a
+> few weeks; re-enable before any Mongo update). Install:
+> `sudo dnf install -y mongodb-org`. The Satellite GPG key was rejected by
+> el10's crypto policy ("No binding signature"), so it was installed once with
+> `--nogpgcheck` (packages still come from the trusted internal Satellite over
+> HTTPS); flag the key (`0x90CFB1F5`) to the sysadmin to fix for future updates.
+> Result: MongoDB 8.0.32, `127.0.0.1:27017`, auth enabled, `aruba_agent` user.
+
 ## Stage 3 — Migrate state to Mongo and cut the backend over
 
 Agent is still running on JSON. Import the live state, verify, then flip.
