@@ -283,6 +283,31 @@ class NetworkScannerTask:
         )
         return all_ips
 
+    @staticmethod
+    def _diff_new(current: Dict[str, str], existing: Dict[str, str],
+                  known_ips: set) -> Dict[str, str]:
+        """Devices to alert as NEW: pinged now, not in last scan's CSV, AND not
+        already monitored by the agent. Excluding the monitored set stops known
+        switches from being re-flagged when they miss an ICMP ping in the sweep
+        (intermittent under load / WAN-distant hosts)."""
+        return {ip: current[ip]
+                for ip in (set(current) - set(existing) - set(known_ips or ()))}
+
+    def _known_monitored_ips(self) -> set:
+        ips = set()
+        try:
+            for sw in self.state.switches.values():
+                h = getattr(sw, "host", None)
+                if h:
+                    ips.add(h)
+            for d in getattr(self.state, "device_inventory", []) or []:
+                ip = d.get("ip") if isinstance(d, dict) else None
+                if ip:
+                    ips.add(ip)
+        except Exception as exc:
+            log.debug("Scanner: could not build known-IP set (%s)", exc)
+        return ips
+
     def run(self) -> None:
         if not self.subnets:
             log.warning("Scanner: no subnets configured — skipping")
@@ -290,7 +315,9 @@ class NetworkScannerTask:
         log.info("Network scanner task started")
         existing = self._load_existing()
         current  = self._scan()
-        new_devs = {ip: current[ip] for ip in set(current) - set(existing)}
+        # Only alert on devices we don't already monitor — a known switch that
+        # flapped out of the ping CSV must not be re-reported as "new".
+        new_devs = self._diff_new(current, existing, self._known_monitored_ips())
 
         if new_devs:
             log.info("Scanner: %d new device(s) found", len(new_devs))
