@@ -64,6 +64,18 @@ class HealthPollTask:
         try:
             return self._poll_one_inner(sw)
         finally:
+            # health uses snmp.get() (cached per-thread engine) as well as
+            # bulk_walk. The cached engine's asyncio timeout timer lives on this
+            # thread's event loop, so we MUST tear the engine down before closing
+            # the loop — otherwise the next switch on this worker reuses the
+            # engine on a dead loop, its timeout never fires, and the call hangs
+            # forever (worker stalls, sweep never completes). Reset then close.
+            try:
+                reset = getattr(self.snmp, "_reset_engine", None)
+                if reset:
+                    reset()
+            except Exception:
+                pass
             close_thread_event_loop()
 
     def _poll_one_inner(self, sw) -> int:

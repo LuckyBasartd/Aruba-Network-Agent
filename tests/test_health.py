@@ -148,3 +148,15 @@ def test_procurve_falls_back_to_host_resources():
     assert r["cpu"] == 22.0            # hrProcessorLoad fallback
     assert r["memory"] == 35.0         # hrStorage fallback (350/1000)
     assert r["temperature"] == 29.8    # ENTITY-SENSOR
+
+
+def test_health_poll_resets_cached_engine_each_switch():
+    """Each switch must reset the cached SNMP engine (so a closed event loop
+    can't leave a stale engine that hangs the next switch)."""
+    calls = {"reset": 0}
+    class SnmpWithReset(FakeSnmp):
+        def _reset_engine(self): calls["reset"] += 1
+    st = State([SW("sw1", "10.0.0.1"), SW("sw2", "10.0.0.2")])
+    t = hp.HealthPollTask(_cfg(), st, SnmpWithReset(), FakeStore())
+    t.run()
+    assert calls["reset"] >= 2                     # once per switch
